@@ -22,7 +22,7 @@ import {
 import type { LayoutCode, Page } from "../types/model.ts";
 import { plainText } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
-import { paintPage, type Paint, type ShapePaint } from "../engine/export/svg.ts";
+import { cornerBadgePaths, paintPage, type Paint, type ShapePaint } from "../engine/export/svg.ts";
 import { fitView, quickBarAnchor } from "../engine/view.ts";
 import type { NodeBox } from "../engine/layout.ts";
 import {
@@ -767,6 +767,16 @@ export function MindCanvas({ page }: MindCanvasProps) {
                 strokeWidth={b.lineWidth}
               />
               {b.id !== editingId && topicLines(b)}
+              {cornerBadgePaths(b).map((d, i) => (
+                <path
+                  key={`badge-${i}`}
+                  d={d}
+                  fill="none"
+                  stroke={b.line}
+                  strokeWidth={1}
+                  pointerEvents="none"
+                />
+              ))}
               {b.hiddenCount > 0 && (
                 <g
                   style={{ cursor: "pointer" }}

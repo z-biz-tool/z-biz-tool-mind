@@ -45,6 +45,9 @@ export interface ShapePaint {
   lines: string[];
   /** 折叠徽标（+3）。 */
   hiddenCount: number;
+  /** 左下角标：有备注 / 有超链接。 */
+  note: boolean;
+  link: boolean;
 }
 
 export interface Paint {
@@ -90,6 +93,8 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
       lines: b.lines,
       // 折叠徽标数的是整条子树，与大纲面板同一个数（P-1：一份数据一个答案）
       hiddenCount: s.extras.collapsed ? descendants(page, s.id).length : 0,
+      note: Boolean(s.extras.note),
+      link: Boolean(s.extras.hyperlink),
     });
   }
   const pad = opts.padding ?? 40;
@@ -155,9 +160,33 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
           `<text x="${round(b.x + b.w - 6)}" y="${round(b.y + b.h - 2.5)}" font-size="8" text-anchor="middle" fill="${b.line}">${b.hiddenCount}</text>`
       );
     }
+    for (const d of cornerBadgePaths(b)) {
+      out.push(`<path d="${d}" fill="none" stroke="${b.line}" stroke-width="1"/>`);
+    }
   }
   out.push("</svg>");
   return out.join("\n");
+}
+
+/**
+ * 主题左下角的那对角标（右下角留给折叠计数）。
+ *
+ * 几何只写这一处：SVG 导出与画布各自 map 同一批 path，
+ * 两份坐标各算一遍就会出现"导出的图上有、屏幕上没有"这种事（P-2 只有一条绘制路径）。
+ */
+export function cornerBadgePaths(
+  b: Pick<ShapePaint, "x" | "y" | "w" | "h" | "note" | "link">
+): string[] {
+  const out: string[] = [];
+  const base = b.y + b.h - 5;
+  let x = b.x + 6;
+  if (b.note) {
+    // 一页折了角的纸 + 一道横线
+    out.push(`M${x} ${base - 8} h5 l3 3 v5 h-8 z M${x + 2} ${base - 4} h3`);
+    x += 11;
+  }
+  if (b.link) out.push(`M${x} ${base - 1} l6 -6 M${x + 2} ${base - 7} h5 v5`);
+  return out;
 }
 
 function strokeOf(p: Paint, c: ConnectorPath): string {
