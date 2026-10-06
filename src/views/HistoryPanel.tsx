@@ -16,6 +16,7 @@ import type { BackupEntry } from "../services/native.ts";
 import { native } from "../services/native.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { useRecent } from "../stores/recentStore.ts";
+import { useSettings } from "../stores/settingsStore.ts";
 import { humanSize, timestampName } from "../utils/id.ts";
 import type { Page } from "../types/model.ts";
 
@@ -54,6 +55,8 @@ export function HistoryPanel(_props?: HistoryPanelProps) {
   const clearAutosave = useRecent((s) => s.clearAutosave);
 
   const path = useDoc((s) => s.path);
+  // 回收站留几天归选项里的 backupKeepDays 管；0/缺值退回配额默认，别把"留 0 天"当成"全清"。
+  const keepDays = useSettings((s) => s.settings.save.backupKeepDays) || QUOTA.trashKeepDays;
   const openBytes = useDoc((s) => s.openBytes);
 
   const [pending, setPending] = useState<BackupEntry | null>(null);
@@ -110,10 +113,10 @@ export function HistoryPanel(_props?: HistoryPanelProps) {
     try {
       // store 里只有 purgeBackup（清的是历史版本），回收站的按时清理没有对应 action，只能直连 native；
       // 因此这里必须自己补一次 refreshTrash，否则列表还在显示刚被删掉的行。
-      const n = await native.trashPurgeOlderThan(QUOTA.trashKeepDays);
+      const n = await native.trashPurgeOlderThan(keepDays);
       await refreshTrash();
       msgApi.success(
-        n ? `已清理 ${n} 项超过 ${QUOTA.trashKeepDays} 天的回收站条目` : "没有超期的回收站条目"
+        n ? `已清理 ${n} 项超过 ${keepDays} 天的回收站条目` : "没有超期的回收站条目"
       );
     } catch (e) {
       msgApi.error(e instanceof Error ? e.message : String(e));
@@ -223,7 +226,7 @@ export function HistoryPanel(_props?: HistoryPanelProps) {
                     disabled={trash.length === 0}
                     onClick={() => void purgeOldTrash()}
                   >
-                    清理 {QUOTA.trashKeepDays} 天前
+                    清理 {keepDays} 天前
                   </Button>
                 }
               >
@@ -232,7 +235,7 @@ export function HistoryPanel(_props?: HistoryPanelProps) {
               {trash.length === 0 ? (
                 <EmptyState
                   title="回收站是空的"
-                  description={`删除的脑图在这儿留 ${QUOTA.trashKeepDays} 天。`}
+                  description={`删除的脑图在这儿留 ${keepDays} 天。`}
                 />
               ) : (
                 trash.map((t) => (

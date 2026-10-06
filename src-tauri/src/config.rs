@@ -238,10 +238,8 @@ pub fn read_json_file(path: &Path, fallback: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     // 环境变量是进程级的，并发跑测试时会互相踩，这里串行化。
-    static GUARD: Mutex<()> = Mutex::new(());
 
     fn isolated(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -256,7 +254,7 @@ mod tests {
 
     #[test]
     fn writes_then_reads_back_and_merges_page() {
-        let _g = GUARD.lock().unwrap();
+        let _g = crate::lock_config_env();
         let dir = isolated("merge");
         let _ = std::fs::remove_dir_all(&dir);
         let patch: Value = serde_json::from_str(r#"{"autoSave":false}"#).unwrap();
@@ -271,7 +269,7 @@ mod tests {
 
     #[test]
     fn corrupt_config_is_backed_up_not_dropped() {
-        let _g = GUARD.lock().unwrap();
+        let _g = crate::lock_config_env();
         let dir = isolated("corrupt");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

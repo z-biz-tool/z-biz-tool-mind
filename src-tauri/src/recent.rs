@@ -95,10 +95,14 @@ pub fn touch(path: &str, title: &str, kind: &str) -> Result<Vec<RecentItem>, Str
     Ok(list())
 }
 
-/// 按容量裁剪：固定项优先保留，其余按插入顺序（新→旧）截断。
+/// 按容量裁剪：固定项优先保留，其余按打开时间从新到旧截断。
 fn trim(items: Vec<RecentItem>, max: usize) -> Vec<RecentItem> {
-    let (pinned, others): (Vec<RecentItem>, Vec<RecentItem>) =
+    let (pinned, mut others): (Vec<RecentItem>, Vec<RecentItem>) =
         items.into_iter().partition(|i| i.pinned);
+    // 判新旧必须看 opened_at，不能看向量位置：本函数的返回值会原样存回 recent.json，
+    // 固定项被提到了最前，等它被取消固定时就顶着"最新"的位置赖着不走，
+    // 真正更旧的那条反而先被裁掉。
+    others.sort_by(|a, b| b.opened_at.cmp(&a.opened_at));
     let slots = max.saturating_sub(pinned.len());
     let kept_others = others.into_iter().take(slots).collect::<Vec<_>>();
     let mut out = pinned;
@@ -144,9 +148,6 @@ pub fn set_capacity(max: usize) -> Result<Vec<RecentItem>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static GUARD: Mutex<()> = Mutex::new(());
 
     fn isolated(tag: &str) -> PathBuf {
         let dir =
@@ -158,7 +159,7 @@ mod tests {
 
     #[test]
     fn reopen_updates_time_without_duplicate() {
-        let _g = GUARD.lock().unwrap();
+        let _g = crate::lock_config_env();
         let dir = isolated("dedup");
         touch("/tmp/a.emmx", "A", "local").unwrap();
         touch("/tmp/a.emmx", "A 改名", "local").unwrap();
@@ -171,7 +172,7 @@ mod tests {
 
     #[test]
     fn over_capacity_drops_unpinned_first() {
-        let _g = GUARD.lock().unwrap();
+        let _g = crate::lock_config_env();
         let dir = isolated("cap");
         set_capacity(2).unwrap();
         touch("/tmp/x1.emmx", "1", "local").unwrap();
@@ -188,9 +189,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 固定要能取消：取消后那条重新变成可淘汰项，否则收紧容量永远裁不动它。
+    /// 顺带钉住"重复打开不丢固定状态"—— touch 会整条重建，很容易写成一律 pinned:false。
+    #[test]
+    fn unpin_makes_the_item_evictable_again() {
+        let _g = crate::lock_config_env();
+        let dir = isolated("unpin");
+        set_capacity(2).unwrap();
+        touch("/tmp/u1.emmx", "1", "local").unwrap();
+        touch("/tmp/u2.emmx", "2", "local").unwrap();
+        set_pinned("/tmp/u1.emmx", true).unwrap();
+        touch("/tmp/u1.emmx", "1 改名", "local").unwrap();
+        assert!(
+            list().iter().any(|i| i.path == "/tmp/u1.emmx" && i.pinned),
+            "重复打开应保住固定状态"
+        );
+        touch("/tmp/u3.emmx", "3", "local").unwrap();
+        assert!(
+            list().iter().any(|i| i.path == "/tmp/u1.emmx"),
+            "固定项不应被容量淘汰"
+        );
+        set_pinned("/tmp/u1.emmx", false).unwrap();
+        touch("/tmp/u4.emmx", "4", "local").unwrap();
+        let items = list();
+        // 具体裁掉哪一条取决于三条记录的 opened_at 是否拉开，测试里这几下都落在同一毫秒，
+        // 所以只断言可保证的那部分：取消固定后它不再享有豁免，列表回到容量以内。
+        assert_eq!(items.len(), 2, "取消固定后要回到容量以内");
+        assert!(items.iter().all(|i| !i.pinned), "取消固定后不应再有豁免项");
+        std::env::remove_var("Z_MIND_CONFIG_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn clear_removes_list_not_files() {
-        let _g = GUARD.lock().unwrap();
+        let _g = crate::lock_config_env();
         let dir = isolated("clear");
         let file = std::env::temp_dir().join(format!("z-mind-keep-{}.emmx", uuid::Uuid::new_v4()));
         std::fs::write(&file, b"zip-placeholder").unwrap();

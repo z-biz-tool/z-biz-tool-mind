@@ -254,7 +254,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
               {sectionHeader("format", "新文档的默认样式")}
               <Field
                 label="默认布局"
-                hint="只影响新建与导入；已存在的页把布局记在自己的 <Layout V> 里，改这里不会回头改它们。"
+                hint="只影响新建的文档与画布；导入的文档按源文件走，已存在的页把布局记在自己的 <Layout V> 里，改这里不会回头改它们。"
               >
                 <Select
                   style={{ width: 220 }}

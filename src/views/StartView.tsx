@@ -30,6 +30,8 @@ export function StartView({ onNew, onOpen, onImport }: StartViewProps) {
   const storeError = useRecent((s) => s.error);
   const refreshRecent = useRecent((s) => s.refreshRecent);
   const removeRecent = useRecent((s) => s.removeRecent);
+  const deleteFile = useRecent((s) => s.deleteFile);
+  const togglePin = useRecent((s) => s.togglePin);
   const clearRecent = useRecent((s) => s.clearRecent);
   /** 首屏骨架屏自己记账：refreshRecent 不置 loading（只有 refreshAll 会），借 store 的 loading 会一直 false。 */
   const [ready, setReady] = useState(false);
@@ -66,6 +68,11 @@ export function StartView({ onNew, onOpen, onImport }: StartViewProps) {
   async function removeItem(path: string) {
     await removeRecent(path);
     setNotice(`已从最近列表移除：${path}`);
+  }
+
+  // 删除失败时 store 已经把原生错误写进 storeError，这里不再叠一句"删除失败"。
+  async function deleteItem(path: string) {
+    if (await deleteFile(path)) setNotice(`已删除文件，${QUOTA.trashKeepDays} 天内可在“历史与备份 → 回收站”放回原处：${path}`);
   }
 
   async function clearAll() {
@@ -153,7 +160,7 @@ export function StartView({ onNew, onOpen, onImport }: StartViewProps) {
       ) : recent.length === 0 ? (
         <EmptyState
           title="还没有打开过脑图"
-          description={`亿图把最近文件固定在 ${QUOTA.recentMax} 条以内，存满后按打开时间淘汰最旧的一条；点“新建空白脑图”开始第一条。`}
+          description={`亿图的最近文件最多留 ${QUOTA.recentMax} 条，存满后按打开时间淘汰最旧的一条，被固定住的那些不参与淘汰；点“新建空白脑图”开始第一条。`}
           action={
             <Button type="primary" onClick={onNew}>
               新建空白脑图
@@ -174,7 +181,13 @@ export function StartView({ onNew, onOpen, onImport }: StartViewProps) {
                 item={item}
                 onOpen={(it) => onOpen(it.path)}
                 onRemove={(it) => void removeItem(it.path)}
+                onPin={(it) => void togglePin(it.path)}
                 onReveal={native.available ? (it) => void reveal(it) : undefined}
+                onDelete={
+                  missing[item.path]
+                    ? undefined
+                    : (it) => void deleteItem(it.path)
+                }
               />
               {missing[item.path] ? (
                 <div className="zm-row-meta" style={{ padding: "0 12px 8px" }}>

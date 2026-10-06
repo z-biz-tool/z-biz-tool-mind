@@ -82,7 +82,7 @@ export function createPage(name: string, code: LayoutCode = "balanced"): Page {
   };
 }
 
-export function createDocument(title = "未命名"): DocumentModel {
+export function createDocument(title = "未命名", code: LayoutCode = "balanced"): DocumentModel {
   const now = formatStamp(new Date());
   return {
     properties: {
@@ -100,7 +100,7 @@ export function createDocument(title = "未命名"): DocumentModel {
       timelineWidth: 1000,
       calloutLayout: 1,
     },
-    pages: [createPage(title)],
+    pages: [createPage(title, code)],
     activePageId: String(DEFAULTS.pageIdBase),
     gantt: {
       workDay: [...DEFAULTS.ganttWorkDay],

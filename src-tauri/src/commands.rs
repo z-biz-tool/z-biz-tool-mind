@@ -110,6 +110,11 @@ pub fn recent_set_capacity(max_count: usize) -> Result<Vec<recent::RecentItem>, 
     recent::set_capacity(max_count)
 }
 
+#[tauri::command]
+pub fn recent_set_pinned(path: String, pinned: bool) -> Result<Vec<recent::RecentItem>, String> {
+    recent::set_pinned(&path, pinned)
+}
+
 // ---------- 文件字节 ----------
 
 #[tauri::command]

@@ -115,13 +115,10 @@ pub fn has(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static GUARD: Mutex<()> = Mutex::new(());
 
     #[test]
     fn roundtrips_and_nonce_makes_ciphertext_unique() {
-        let _g = GUARD.lock().unwrap();
+        let _g = crate::lock_config_env();
         let dir = std::env::temp_dir().join(format!("z-mind-secret-{}", uuid::Uuid::new_v4()));
         std::env::set_var("Z_MIND_CONFIG_DIR", &dir);
         let a = encrypt("sk-test-123").expect("加密应成功");

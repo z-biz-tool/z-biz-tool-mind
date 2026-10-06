@@ -83,6 +83,24 @@ function fromBase64(text: string): Uint8Array {
 const LS_CONFIG = "z-mind:config";
 const LS_RECENT = "z-mind:recent";
 
+// 与 Rust 侧 recent.rs 的默认 max_count 对齐；QUOTA.recentMax 是"用户能调到多少"，
+// 这里是"没调过时的容量"，两者不是一回事，别拿 UI 那个数当后备。
+const RECENT_MAX = 20;
+
+/** 浏览器后备要与 Rust 同规格：固定项排最前、其余按打开时间倒序。 */
+function sortRecent(list: RecentItem[]): RecentItem[] {
+  return [...list].sort(
+    (a, b) => Number(b.pinned) - Number(a.pinned) || b.openedAt - a.openedAt,
+  );
+}
+
+/** 淘汰只裁未固定的，固定的不因容量被挤掉（照 recent.rs 的 trim）。 */
+function trimRecent(list: RecentItem[], max: number): RecentItem[] {
+  const pinned = list.filter((r) => r.pinned);
+  const others = list.filter((r) => !r.pinned);
+  return [...pinned, ...others.slice(0, Math.max(0, max - pinned.length))];
+}
+
 /** 会话内的历史版本：浏览器关了就没了，但至少"覆盖前留一份"的语义是真的。 */
 const memBackups: BackupEntry[] = [];
 const memBackupBlobs = new Map<string, Uint8Array>();
@@ -166,17 +184,22 @@ export const native = {
   },
 
   async recentList(): Promise<RecentItem[]> {
-    if (!isTauri) return lsGet<RecentItem[]>(LS_RECENT, []);
+    if (!isTauri) return sortRecent(lsGet<RecentItem[]>(LS_RECENT, []));
     return call<RecentItem[]>("recent_list");
   },
 
   async recentTouch(path: string, title: string, kind: string): Promise<RecentItem[]> {
     if (!isTauri) {
-      const list = lsGet<RecentItem[]>(LS_RECENT, []).filter((r) => r.path !== path);
-      list.unshift({ path, title, kind, openedAt: Date.now(), pinned: false });
-      const capped = list.slice(0, 20);
+      const prev = lsGet<RecentItem[]>(LS_RECENT, []);
+      // 重复打开只刷新时间，固定状态要跟着那条记录走，不能默默被清掉。
+      const pinned = prev.find((r) => r.path === path)?.pinned ?? false;
+      const list = [
+        { path, title, kind, openedAt: Date.now(), pinned },
+        ...prev.filter((r) => r.path !== path),
+      ];
+      const capped = trimRecent(list, RECENT_MAX);
       lsSet(LS_RECENT, capped);
-      return capped;
+      return sortRecent(capped);
     }
     return call<RecentItem[]>("recent_touch", { path, title, kind });
   },
@@ -200,11 +223,22 @@ export const native = {
 
   async recentSetCapacity(maxCount: number): Promise<RecentItem[]> {
     if (!isTauri) {
-      const list = lsGet<RecentItem[]>(LS_RECENT, []).slice(0, maxCount);
+      const list = trimRecent(lsGet<RecentItem[]>(LS_RECENT, []), maxCount);
       lsSet(LS_RECENT, list);
       return list;
     }
     return call<RecentItem[]>("recent_set_capacity", { maxCount });
+  },
+
+  async recentSetPinned(path: string, pinned: boolean): Promise<RecentItem[]> {
+    if (!isTauri) {
+      const list = lsGet<RecentItem[]>(LS_RECENT, []).map((r) =>
+        r.path === path ? { ...r, pinned } : r,
+      );
+      lsSet(LS_RECENT, list);
+      return sortRecent(list);
+    }
+    return call<RecentItem[]>("recent_set_pinned", { path, pinned });
   },
 
   /**

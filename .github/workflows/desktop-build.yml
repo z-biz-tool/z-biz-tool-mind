@@ -7,6 +7,11 @@ name: desktop-build
 #   macos-latest    → 两份架构（arm64 给 Apple Silicon，x86_64 给 Intel）的 .dmg + .app
 # 两个闸门先跑完：前端（类型检查 + 464 例测试 + vite 构建）和 Rust 格式。
 # Rust 编译一趟三分钟，没必要为已经红了的前端或一个换行缩进再等一遍。
+#
+# cargo test 不在 ubuntu 那个闸门里跑，而是在 windows / macOS 两个 job 里各跑一遍：
+# Linux 上要 cargo test 就得先 apt 装一整套 GTK/WebKit，装失败的信息看起来还像代码问题；
+# 更要紧的是路径判据本身分平台 —— 本机第一轮真跑就撞出 "validate('/proc/self/environ')
+# 在 Windows 上被放行" 这种只在某一边才成立的断言，只在 Linux 跑等于没测。
 
 on:
   push:
@@ -71,6 +76,8 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      - run: cargo test
+        working-directory: src-tauri
       # beforeBuildCommand 会再跑一次 npm run build：前端产物要打进 crate，不能省。
       # 走仓库里同一个入口，本机与 CI 只有"体检由谁做"这一处区别。
       - run: node scripts/build-desktop.mjs --skip-check
@@ -107,6 +114,8 @@ jobs:
           workspaces: src-tauri
           key: ${{ matrix.triple }}
       - run: npm ci
+      - run: cargo test
+        working-directory: src-tauri
       - run: node scripts/build-desktop.mjs --skip-check --arch=${{ matrix.arch }}
       # .app 是目录，直接 upload 会丢可执行位与 Frameworks 里的符号链接，先打成 tar。
       - name: 打包 .app

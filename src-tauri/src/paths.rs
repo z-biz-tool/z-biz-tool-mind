@@ -49,10 +49,10 @@ fn denied_roots() -> Vec<PathBuf> {
 }
 
 fn is_denied(path: &Path) -> bool {
-    denied_roots()
-        .iter()
-        .map(normalize_root)
-        .any(|root| !root.as_os_str().is_empty() && path.starts_with(root))
+    denied_roots().iter().any(|root| {
+        let root = normalize_root(root);
+        !root.as_os_str().is_empty() && path.starts_with(root)
+    })
 }
 
 fn normalize_root(root: &Path) -> PathBuf {
@@ -86,19 +86,19 @@ pub fn validate(path: &str, write: bool) -> Result<PathBuf, String> {
     let canonical = probe
         .canonicalize()
         .map_err(|e| format!("路径不存在或不可访问: {} ({})", abs.display(), e))?;
-    let final_path = match tail {
-        Some(name) => canonical.join(name),
-        None => canonical,
-    };
 
     // 软链接在这里已经被 canonicalize 解开了：指向系统目录的链子也照样拦。
     let in_app_root = allowed_roots()
         .iter()
-        .map(normalize_root)
-        .any(|r| canonical.starts_with(r));
+        .any(|r| canonical.starts_with(normalize_root(r)));
     if is_denied(&canonical) && !in_app_root {
         return Err(format!("系统目录不允许读写: {}", path));
     }
+
+    let final_path = match tail {
+        Some(name) => canonical.join(name),
+        None => canonical,
+    };
     if write {
         ensure_parent(&final_path)?;
     }
@@ -174,15 +174,30 @@ mod tests {
 
     #[test]
     fn allows_config_dir_and_blocks_system_dir() {
-        let dir = get_config_dir();
+        let _g = crate::lock_config_env();
+        // 指向临时目录，别往用户真实的 ~/.z-mind 里写测试文件。
+        let dir = std::env::temp_dir().join(format!("z-mind-paths-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("Z_MIND_CONFIG_DIR", &dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let inside = dir.join("ok.emmx");
+        let inside = get_config_dir().join("ok.emmx");
         std::fs::write(&inside, b"x").unwrap();
         let ok = validate(inside.to_str().unwrap(), false);
         assert!(ok.is_ok(), "配置目录内的文件应通过，实际 {:?}", ok.err());
-        let bad = validate("/proc/self/environ", false);
-        assert!(bad.is_err(), "系统路径应被拒绝");
-        std::fs::remove_file(&inside).ok();
+
+        // 拿本机真实存在的系统目录来验，不写死 /proc/self/environ：
+        // Windows 上它会被解析成当前盘的一个相对路径（D:\proc\...），父目录 canonicalize 到 D:\
+        // 之后谁都不像系统目录，于是被放行，这条断言就变成了在测一个不存在的行为。
+        let sample = denied_roots()
+            .into_iter()
+            .find(|r| r.exists())
+            .expect("测试机上应至少有一个系统目录");
+        let bad = validate(
+            sample.join("z-mind-should-be-blocked").to_str().unwrap(),
+            false,
+        );
+        assert!(bad.is_err(), "系统路径应被拒绝，实际 {:?}", bad);
+        std::env::remove_var("Z_MIND_CONFIG_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

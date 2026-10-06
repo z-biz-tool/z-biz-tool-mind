@@ -19,6 +19,9 @@ interface RecentStore {
   refreshTrash: () => Promise<void>;
   refreshAutosave: () => Promise<void>;
   removeRecent: (path: string) => Promise<void>;
+  /** 删除文档本身（进回收站），并把这条记录从最近列表摘掉。 */
+  deleteFile: (path: string) => Promise<boolean>;
+  togglePin: (path: string) => Promise<void>;
   clearRecent: () => Promise<void>;
   deleteBackup: (id: string) => Promise<void>;
   purgeBackup: (days: number) => Promise<void>;
@@ -88,6 +91,33 @@ export const useRecent = create<RecentStore>((set, get) => ({
   async removeRecent(path) {
     try {
       set({ recent: await native.recentRemove(path) });
+    } catch (e) {
+      fail(set, e);
+    }
+  },
+
+  // 顺序不能反：先删文件再摘列表。反过来一旦删除失败，列表里那条已经没了，
+  // 磁盘上的文件却还留着 —— 用户看到"已移除"，实际什么都没删掉。
+  // 回收站条目由 Rust 侧 to_trash 生成，这里只负责删完把列表刷回来。
+  async deleteFile(path) {
+    try {
+      await native.fileRemove(path);
+      set({ recent: await native.recentRemove(path) });
+      await get().refreshTrash();
+      return true;
+    } catch (e) {
+      fail(set, e);
+      return false;
+    }
+  },
+
+  // 固定/取消固定：后端返回整份重排过的列表（固定项在前），这里直接采用，
+  // 不在前端再排一次，否则两边的排序规则会分叉。
+  async togglePin(path) {
+    const target = get().recent.find((r) => r.path === path);
+    if (!target) return;
+    try {
+      set({ recent: await native.recentSetPinned(path, !target.pinned) });
     } catch (e) {
       fail(set, e);
     }

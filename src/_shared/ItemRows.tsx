@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Popconfirm } from "antd";
 import type { BackupEntry, RecentItem } from "../services/native.ts";
 import { humanSize, timestampName } from "../utils/id.ts";
 
@@ -29,11 +30,15 @@ export function RecentRow({
   onOpen,
   onRemove,
   onReveal,
+  onPin,
+  onDelete,
 }: {
   item: RecentItem;
   onOpen: (item: RecentItem) => void;
   onRemove?: (item: RecentItem) => void;
   onReveal?: (item: RecentItem) => void;
+  onPin?: (item: RecentItem) => void;
+  onDelete?: (item: RecentItem) => void;
 }) {
   return (
     <Row
@@ -42,11 +47,17 @@ export function RecentRow({
         <>
           <span>{timestampName(new Date(item.openedAt))}</span>
           <span className="zm-tag">{item.kind === "local" ? "本地" : item.kind}</span>
+          {item.pinned ? <span className="zm-tag">已固定</span> : null}
           <span className="zm-path">{item.path}</span>
         </>
       }
       actions={
         <>
+          {onPin && (
+            <button type="button" className="zm-btn zm-btn-ghost" onClick={() => onPin(item)}>
+              {item.pinned ? "取消固定" : "固定"}
+            </button>
+          )}
           {onReveal && (
             <button type="button" className="zm-btn zm-btn-ghost" onClick={() => onReveal(item)}>
               打开所在
@@ -56,6 +67,20 @@ export function RecentRow({
             <button type="button" className="zm-btn zm-btn-ghost" onClick={() => onRemove(item)}>
               移除
             </button>
+          )}
+          {onDelete && (
+            <Popconfirm
+              title="删除这个脑图？"
+              description="文件移入回收站，可在“历史与备份 → 回收站”放回原处。"
+              okText="删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => onDelete(item)}
+            >
+              <button type="button" className="zm-btn zm-btn-ghost">
+                删除文件
+              </button>
+            </Popconfirm>
           )}
         </>
       }

@@ -165,7 +165,7 @@ fn find_entry(id: &str) -> Option<(String, BackupEntry)> {
     for (key, v) in &index {
         if let Ok(items) = serde_json::from_value::<Vec<BackupEntry>>(v.clone()) {
             if let Some(hit) = items.into_iter().find(|i| i.id == id) {
-                return Some((key, hit));
+                return Some((key.to_string(), hit));
             }
         }
     }
@@ -435,9 +435,6 @@ pub fn trash_purge_older_than(days: i64) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static GUARD: Mutex<()> = Mutex::new(());
 
     fn isolated(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("z-mind-bak-{}-{}", tag, uuid::Uuid::new_v4()));
@@ -449,7 +446,7 @@ mod tests {
 
     #[test]
     fn history_rotates_oldest_beyond_limit() {
-        let _g = GUARD.lock().unwrap();
+        let _g = crate::lock_config_env();
         let dir = isolated("rotate");
         for i in 0..12 {
             let bytes = format!("payload-{}", i).into_bytes();
@@ -469,7 +466,7 @@ mod tests {
 
     #[test]
     fn trash_moves_instead_of_deleting() {
-        let _g = GUARD.lock().unwrap();
+        let _g = crate::lock_config_env();
         let dir = isolated("trash");
         let file = std::env::temp_dir().join(format!("z-mind-t-{}.emmx", uuid::Uuid::new_v4()));
         std::fs::write(&file, b"hello").unwrap();
@@ -486,7 +483,7 @@ mod tests {
 
     #[test]
     fn autosave_keeps_docname_and_rereads() {
-        let _g = GUARD.lock().unwrap();
+        let _g = crate::lock_config_env();
         let dir = isolated("auto");
         let p = autosave("/tmp/我的导图.emmx", b"abc").unwrap();
         assert!(p.contains("我的导图"));

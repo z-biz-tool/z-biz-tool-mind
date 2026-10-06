@@ -175,11 +175,16 @@ export function splitCsv(text: string): string[][] {
 }
 
 /** 拖进来的图片/附件不算导入，走 media 通道；这里只收文本类扩展名。 */
-export const IMPORT_EXTENSIONS = [".emmx", ".xmind", ".mm", ".opml", ".md", ".markdown", ".txt", ".csv"];
+/**
+ * 选择框里只收**真的有解析器**的扩展名。.xmind 一度挂在这里，用户选完只能拿到
+ * "还没有对应的解析器" —— 一个能让用户点出错误的选项，比没有这个选项更坏。
+ * 拖拽路径仍会嗅出 xmind 并给出原因（见 App.tsx 的 doImport）。
+ */
+export const IMPORT_EXTENSIONS = [".mm", ".opml", ".md", ".markdown", ".txt", ".csv"];
 
 export function importFilter(): { name: string; extensions: string[] }[] {
   return [
-    { name: "脑图文件", extensions: ["emmx", "xmind", "mm", "opml"] },
+    { name: "大纲/思维导图文件", extensions: ["mm", "opml"] },
     { name: "文本文件", extensions: ["md", "markdown", "txt", "csv"] },
     { name: "所有文件", extensions: ["*"] },
   ];

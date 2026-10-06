@@ -9,13 +9,25 @@
  * 所有写路径都必须走 mutate()，否则撤销栈会漏一步 —— 这是这类编辑器最难查的一类 bug。
  */
 import { create } from "zustand";
-import type { DocumentModel, Page, Shape } from "../types/model.ts";
+import type { DocumentModel, LayoutCode, Page, Shape } from "../types/model.ts";
 import { plainText } from "../types/model.ts";
 import { createDocument, createPage } from "../model/factory.ts";
+import { LAYOUT_LABELS } from "../model/constants.ts";
 import { canRedo, canUndo, commit, createHistory, currentDoc, redo, reset, stackDepth, undo, type HistoryState } from "../engine/history.ts";
 import { normalize } from "../engine/tree.ts";
 import { parseEmmx, writeEmmx } from "../engine/emmx/codec.ts";
 import { native } from "../services/native.ts";
+import { useSettings } from "./settingsStore.ts";
+
+/**
+ * 选项页的"默认布局"：新建文档和新建画布都必须真的读它，否则那个下拉框就是个摆设。
+ * 配置里是按字符串存的（Rust 的 config.json 也存字符串），所以先对着 LAYOUT_LABELS 验一遍，
+ * 认不出的值退回 balanced，而不是让一个脏值把布局算成 NaN。
+ */
+function defaultLayout(): LayoutCode {
+  const v = useSettings.getState().settings.format.defaultLayout;
+  return v in LAYOUT_LABELS ? (v as LayoutCode) : "balanced";
+}
 
 export interface DocStoreState {
   hist: HistoryState | null;
@@ -113,7 +125,7 @@ export const useDoc = create<DocStore>((set, get) => ({
   warnings: [],
 
   async newDoc(title) {
-    const doc = createDocument(title ?? "中心主题");
+    const doc = createDocument(title ?? "中心主题", defaultLayout());
     const now = Date.now();
     set({
       hist: createHistory(doc, "新建"),
@@ -209,8 +221,11 @@ export const useDoc = create<DocStore>((set, get) => ({
       };
       const bytes = await writeEmmx(stamp);
       const r = await native.fileWriteBytes(path, bytes, true);
-      // 覆盖前 Rust 侧已自动留一份，这里补一次显式备份，"每次保存都进历史版本"这条规则要能兑现。
-      await native.backupNow(path, stamp.pages[0].name, "save", bytes).catch(() => undefined);
+      // 覆盖前 Rust 侧已自动留一份兜底；这一步是"每次保存都进历史版本"，归选项里的开关管。
+      // 关掉它只是不再累积历史版本，兜底备份仍在，误操作不至于直接丢文件。
+      if (useSettings.getState().settings.save.backupOnSave) {
+        await native.backupNow(path, stamp.pages[0].name, "save", bytes).catch(() => undefined);
+      }
       const at = Date.now();
       set({
         hist: { ...s.hist, present: { ...s.hist.present, doc: stamp } },
@@ -266,7 +281,7 @@ export const useDoc = create<DocStore>((set, get) => ({
     // 画布 id 必须全文档唯一：page.id 是页签的 key，也是 document.xml 里的引用。
     const used = doc.pages.map((p) => Number(p.id)).filter((n) => Number.isFinite(n));
     const id = String(Math.max(0, ...used) + 1);
-    const page = { ...createPage(name ?? `画布${doc.pages.length + 1}`), id };
+    const page = { ...createPage(name ?? `画布${doc.pages.length + 1}`, defaultLayout()), id };
     if (get().mutateDoc("新建画布", (d) => ({ ...d, pages: [...d.pages, page] }))) {
       set({ activePageId: page.id, selection: [page.rootId], focusId: page.rootId, editingId: null });
     }
