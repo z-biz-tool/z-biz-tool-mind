@@ -29,12 +29,24 @@ const flag = (name) => {
 function check(os) {
   const problems = [];
   const cargo = spawnSync("cargo", ["--version"], { encoding: "utf8", shell: os === "win32" });
+  // rustup 装在 ~/.cargo/bin，但 --no-modify-path（或装完没重开终端）时不在 PATH 里。
+  // 这种情况要说"PATH 里没有"，不能说"缺 Rust 工具链"——后者会把人引去再装一遍。
+  const rustupCargo = join(
+    process.env.CARGO_HOME || join(process.env.HOME || process.env.USERPROFILE || "", ".cargo", "bin"),
+    os === "win32" ? "cargo.exe" : "cargo"
+  );
   if (cargo.error || cargo.status !== 0) {
-    problems.push(
-      os === "win32"
-        ? "缺 Rust 工具链。装 rustup：https://rustup.rs（Windows 上还要 “使用 C++ 的桌面开发” 工作负载，或改装 stable-x86_64-pc-windows-gnu）"
-        : "缺 Rust 工具链。装 rustup：curl https://sh.rustup.rs -sSf | sh，再 xcode-select --install"
-    );
+    if (existsSync(rustupCargo)) {
+      problems.push(
+        `Rust 已经装了（${rustupCargo}），但不在 PATH 里：把 %USERPROFILE%\\.cargo\\bin 加进 PATH，或本次用 "$env:PATH;$env:USERPROFILE\\.cargo\\bin" 那样的方式跑`
+      );
+    } else {
+      problems.push(
+        os === "win32"
+          ? "缺 Rust 工具链。装 rustup：https://rustup.rs（Windows 上还要 “使用 C++ 的桌面开发” 工作负载，或改装 stable-x86_64-pc-windows-gnu）"
+          : "缺 Rust 工具链。装 rustup：curl https://sh.rustup.rs -sSf | sh，再 xcode-select --install"
+      );
+    }
   } else {
     const host = /host: (\S+)/.exec(spawnSync("rustc", ["-vV"], { encoding: "utf8" }).stdout ?? "")?.[1] ?? "";
     if (os === "win32" && host.endsWith("-msvc") && !existsSync(join("C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe"))) {
@@ -99,6 +111,19 @@ if (r.error) {
 }
 if (r.status !== 0) process.exit(r.status ?? 1);
 
-const outDir = join(ROOT, "src-tauri", "target", ...((extra[1] ? [extra[1]] : []).concat("release", "bundle")));
+// 产物目录未必是 src-tauri/target：CARGO_TARGET_DIR 能把编译产物整体挪走（本机 D: 是机械盘，
+// 编译这类小文件密集的 IO 在 SSD 上快好几倍）。真实位置问 cargo，别拼字符串骗用户。
+const meta = spawnSync("cargo", ["metadata", "--format-version", "1", "--no-deps"], {
+  encoding: "utf8",
+  cwd: join(ROOT, "src-tauri"),
+});
+let targetDir = join(ROOT, "src-tauri", "target");
+try {
+  const parsed = JSON.parse(meta.stdout).target_directory;
+  if (parsed) targetDir = parsed;
+} catch {
+  // cargo 不在 PATH 上：按默认位置提示，至少不是空字符串。
+}
+const outDir = join(targetDir, ...((extra[1] ? [extra[1]] : []).concat("release", "bundle")));
 console.log(`\n安装包在：${outDir}`);
 console.log(os === "win32" ? "  nsis/*.exe（当前用户安装）  msi/*.msi" : "  dmg/*.dmg  macos/*.app");
