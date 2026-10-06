@@ -1,0 +1,28 @@
+[package]
+name = "z-biz-tool-mind"
+version = "0.1.0"
+description = "思维导图桌面工具 - 对标亿图脑图MindMaster"
+authors = ["z-biz-tool"]
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "z_biz_tool_mind_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = { version = "2", features = [] }
+tauri-plugin-clipboard-manager = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+chrono = "0.4"
+sha2 = "0.10"
+data-encoding = "2"
+aes-gcm = "0.10.3"
+getrandom = "0.2"

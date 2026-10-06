@@ -1,0 +1,155 @@
+/**
+ * 绘制数据（paint）：画布渲染和 SVG/PDF/PNG 导出共用同一份计算结果。
+ *
+ * 这条是 P-2 的落地：布局引擎算出中心点和尺寸，样式引擎算出颜色和字号，
+ * 到这里只剩"把已算好的东西画出来"。屏上看到的和导出的图不一致，
+ * 一定是因为有人绕过 paint 自己算了一遍 —— 所以 paint 只在这里出现一次。
+ */
+import type { Page } from "../../types/model.ts";
+import { computeLayout, type ConnectorPath, type LayoutResult } from "../layout.ts";
+import { descendants } from "../tree.ts";
+import { contrastText, defaultPalette, styleFor, type Resolved, type ThemePalette } from "../style.ts";
+import { DEFAULTS } from "../../model/constants.ts";
+
+export interface RenderOptions {
+  padding?: number;
+  background?: string;
+  displayLevel?: number;
+  palette?: ThemePalette;
+  /** 只显示这些分支（下钻 / 单页导出）。 */
+  only?: string[];
+}
+
+export interface ShapePaint {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  fill: string;
+  line: string;
+  lineWidth: number;
+  rounding: number;
+  textColor: string;
+  fontSize: number;
+  fontFamily: string;
+  bold: boolean;
+  lines: string[];
+  /** 折叠徽标（+3）。 */
+  hiddenCount: number;
+}
+
+export interface Paint {
+  layout: LayoutResult;
+  boxes: ShapePaint[];
+  connectors: ConnectorPath[];
+  width: number;
+  height: number;
+  minX: number;
+  minY: number;
+  background: string;
+}
+
+export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
+  const palette = opts.palette ?? defaultPalette();
+  const layout = computeLayout(page, { displayLevel: opts.displayLevel ?? 9, only: opts.only, palette });
+  const boxes: ShapePaint[] = [];
+  for (const id of layout.order) {
+    const b = layout.boxes[id];
+    const s = page.shapes[id];
+    if (!b || !s) continue;
+    const r: Resolved = styleFor(page, s, palette);
+    boxes.push({
+      id,
+      x: b.x - b.w / 2,
+      y: b.y - b.h / 2,
+      w: b.w,
+      h: b.h,
+      fill: r.fill,
+      line: r.line,
+      lineWidth: r.lineWidth,
+      rounding: r.rounding,
+      textColor: r.font.color ?? contrastText(r.fill),
+      fontSize: r.font.size ?? DEFAULTS.fontSize,
+      fontFamily: r.font.family ?? palette.fontFamily,
+      bold: Boolean(r.font.bold),
+      // 折行只有一处：布局量盒子时用的就是这份 lines，绘制再折一次等于第二条绘制路径（P-2）。
+      lines: b.lines,
+      // 折叠徽标数的是整条子树，与大纲面板同一个数（P-1：一份数据一个答案）
+      hiddenCount: s.extras.collapsed ? descendants(page, s.id).length : 0,
+    });
+  }
+  const pad = opts.padding ?? 40;
+  return {
+    layout,
+    boxes,
+    connectors: layout.connectors,
+    width: layout.width + pad * 2,
+    height: layout.height + pad * 2,
+    minX: layout.bounds.minX - pad,
+    minY: layout.bounds.minY - pad,
+    background: opts.background ?? "#ffffff",
+  };
+}
+
+/**
+ * 字体名用单引号：整串要塞进 font-family="..." 这个双引号属性里。
+ * 用双引号的话 SVG 就不是良构 XML —— 浏览器当文档渲染时看不出来（HTML 解析器宽容），
+ * 一旦走 <img src="data:image/svg+xml,..."> 这条路（PNG 与位图 PDF 的必经之路）就是解码失败。
+ */
+export const FONT_STACK = `微软雅黑, 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', Verdana, sans-serif`;
+
+const XML_ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+
+export function esc(s: string): string {
+  return s.replace(/[&<>"]/g, (c) => XML_ESC[c]);
+}
+
+/** SVG 导出。矢量、可编辑，也是 PNG / 位图 PDF 的中间产物。 */
+export function buildSvg(page: Page, opts: RenderOptions = {}): string {
+  const p = paintPage(page, opts);
+  const out: string[] = [];
+  out.push(`<?xml version="1.0" encoding="UTF-8" standalone="no"?>`);
+  out.push(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${round(p.width)}" height="${round(p.height)}" ` +
+      `viewBox="${round(p.minX)} ${round(p.minY)} ${round(p.width)} ${round(p.height)}" font-family="${FONT_STACK}">`
+  );
+  out.push(`<rect x="${round(p.minX)}" y="${round(p.minY)}" width="${round(p.width)}" height="${round(p.height)}" fill="${p.background}"/>`);
+  out.push(`<g fill="none" stroke-linecap="round">`);
+  for (const c of p.connectors) {
+    out.push(`<path d="${esc(c.d)}" stroke="${strokeOf(p, c)}" stroke-width="1.6"/>`);
+  }
+  out.push(`</g>`);
+  for (const b of p.boxes) {
+    const rx = Math.min(b.rounding, b.w / 2, b.h / 2);
+    out.push(
+      `<rect x="${round(b.x)}" y="${round(b.y)}" width="${round(b.w)}" height="${round(b.h)}" rx="${round(rx)}" ` +
+        `fill="${b.fill}" stroke="${b.line}" stroke-width="${b.lineWidth}"/>`
+    );
+    const lh = b.fontSize * 1.35;
+    const startY = b.y + b.h / 2 - ((b.lines.length - 1) * lh) / 2 + b.fontSize * 0.35;
+    b.lines.forEach((line, ix) => {
+      out.push(
+        `<text x="${round(b.x + b.w / 2)}" y="${round(startY + ix * lh)}" font-size="${round(b.fontSize)}" ` +
+          `text-anchor="middle"${b.bold ? ' font-weight="bold"' : ""} fill="${b.textColor}">${esc(line)}</text>`
+      );
+    });
+    if (b.hiddenCount > 0) {
+      out.push(
+        `<circle cx="${round(b.x + b.w - 6)}" cy="${round(b.y + b.h - 6)}" r="7" fill="#ffffff" stroke="${b.line}"/>` +
+          `<text x="${round(b.x + b.w - 6)}" y="${round(b.y + b.h - 2.5)}" font-size="8" text-anchor="middle" fill="${b.line}">${b.hiddenCount}</text>`
+      );
+    }
+  }
+  out.push("</svg>");
+  return out.join("\n");
+}
+
+function strokeOf(p: Paint, c: ConnectorPath): string {
+  const to = p.boxes.find((b) => b.id === c.toId);
+  return to ? to.line : DEFAULTS.lineColor;
+}
+
+function round(v: number): string {
+  return String(Math.round(v * 100) / 100);
+}

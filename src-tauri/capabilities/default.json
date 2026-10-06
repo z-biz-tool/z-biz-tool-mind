@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "默认能力：前端只做渲染，.emmx / 配置 / 备份的读写一律走后端带白名单校验的命令",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-message",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "clipboard-manager:allow-write-text"
+  ]
+}

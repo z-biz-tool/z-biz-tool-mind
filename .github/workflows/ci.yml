@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      # 首版没有提交 lockfile（本机无 Node，跑不了 npm ci 生成），CI 用 npm install。
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  backend:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # GitHub Runner 在 ~/.cargo/config.toml 里塞了 sparsedirective 形式的凭证配置，
+      # 2026-08 起 token 格式变化会让 cargo 直接报错。这个 workaround 在 _ref-terminal 已验证。
+      - name: Remove runner cargo config
+        run: rm -f "$HOME/.cargo/config.toml"
+      - name: Format check
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --lib
+      - name: Clippy
+        continue-on-error: true
+        run: cargo clippy -- -W warnings

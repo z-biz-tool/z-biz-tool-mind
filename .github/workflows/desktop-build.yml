@@ -1,0 +1,106 @@
+name: desktop-build
+
+# 为什么要一条流水线：安装包造不出来是物理限制，不是代码问题 ——
+# Windows 上没有 hdiutil，出不了 .dmg；macOS 上没有 WiX/NSIS，也出不了 .msi/.exe。
+# 所以"可导出 Windows 与 macOS"必须由两台机器完成：
+#   windows-latest  → bundle/nsis/*.exe + bundle/msi/*.msi
+#   macos-latest    → 两份架构（arm64 给 Apple Silicon，x86_64 给 Intel）的 .dmg + .app
+# web 这一关先把类型检查与 454 例测试跑完：Rust 编译三分钟，没必要为已经红了的前端再等一遍。
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "tests/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/desktop-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  web:
+    name: 前端闸门（typecheck + 测试 + vite 构建）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: node tests/run.mjs
+      - run: npm run build
+
+  windows:
+    name: Windows 安装包（.exe + .msi）
+    needs: web
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      # beforeBuildCommand 会再跑一次 npm run build：前端产物要打进 crate，不能省。
+      # 走仓库里同一个入口，本机与 CI 只有"体检由谁做"这一处区别。
+      - run: node scripts/build-desktop.mjs --skip-check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: z-biz-tool-mind-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+  macos:
+    name: macOS 安装包（${{ matrix.triple }}）
+    needs: web
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            triple: aarch64-apple-darwin
+          - arch: x86_64
+            triple: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.triple }}
+      - run: npm ci
+      - run: node scripts/build-desktop.mjs --skip-check --arch=${{ matrix.arch }}
+      # .app 是目录，直接 upload 会丢可执行位与 Frameworks 里的符号链接，先打成 tar。
+      - name: 打包 .app
+        run: tar -czf z-biz-tool-mind-${{ matrix.triple }}.app.tar.gz -C src-tauri/target/${{ matrix.triple }}/release/bundle/macos .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: z-biz-tool-mind-${{ matrix.triple }}
+          path: |
+            src-tauri/target/${{ matrix.triple }}/release/bundle/dmg/*.dmg
+            z-biz-tool-mind-${{ matrix.triple }}.app.tar.gz
+          if-no-files-found: error

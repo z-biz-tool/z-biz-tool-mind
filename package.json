@@ -1,0 +1,36 @@
+{
+  "name": "z-biz-tool-mind",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "思维导图桌面工具 - 对标亿图脑图MindMaster",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node tests/run.mjs",
+    "icons": "node scripts/gen-icons.mjs",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\""
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "antd": "^6.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "prettier": "^3.3.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0"
+  }
+}
