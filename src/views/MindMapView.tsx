@@ -6,12 +6,13 @@
  * 切到大纲/看板时它们没有意义，总工具条里出现灰掉的控件是亿图被吐槽过的细节。
  */
 import { useMemo } from "react";
-import { Segmented, Select, Tooltip } from "antd";
+import { Button, ColorPicker, Segmented, Select, Tooltip } from "antd";
 import { LAYOUT_LABELS } from "../model/constants.ts";
-import { maxDepth } from "../engine/tree.ts";
+import { maxDepth, updateStyle } from "../engine/tree.ts";
+import { styleFor } from "../engine/style.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { useUi } from "../stores/uiStore.ts";
-import type { LayoutCode, Page } from "../types/model.ts";
+import type { LayoutCode, Page, Shape, ShapeStyle } from "../types/model.ts";
 import { MindCanvas } from "../canvas/index.ts";
 
 const LAYOUT_OPTIONS = (Object.keys(LAYOUT_LABELS) as LayoutCode[]).map((code) => ({
@@ -21,11 +22,30 @@ const LAYOUT_OPTIONS = (Object.keys(LAYOUT_LABELS) as LayoutCode[]).map((code) =
 
 const LEVEL_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({ value: n, label: `${n} 级` }));
 
+const SIZE_OPTIONS = [10, 12, 14, 16, 18, 20, 24, 28, 36, 48].map((n) => ({ value: n, label: `${n}` }));
+
 export function MindMapView({ page }: { page: Page }) {
   const mutate = useDoc((s) => s.mutate);
   const displayLevels = useUi((s) => s.displayLevels);
   const setDisplayLevels = useUi((s) => s.setDisplayLevels);
   const deepest = useMemo(() => maxDepth(page), [page]);
+  const selection = useDoc((s) => s.selection);
+  /** 回显取选中的第一个：多选时"混合值"没有稳定的显示法，显示第一个比显示空值更诚实。 */
+  const picked = page.shapes[selection[0] ?? ""];
+  /** 控件上显示的是**画出来的那个色**，不是 style 里存的那个：没独立配色时 style.fill 是空的。 */
+  const look = picked ? styleFor(page, picked) : undefined;
+  /** 用户自己配过色 = StyleMask 的 bit0，此时换主题不再影响它，"跟随主题"才有意义。 */
+  const pinned = (picked?.style.mask ?? 0) & 1 ? true : false;
+
+  /** 样式只改选中的主题，其余节点原样留着 —— 一次 mutate 就是一步撤销。 */
+  const styleSelected = (label: string, patch: (s: Shape) => Partial<ShapeStyle>) => {
+    if (!selection.length) return;
+    mutate(label, (p) => {
+      let out = p;
+      for (const id of selection) if (out.shapes[id]) out = updateStyle(out, id, patch(out.shapes[id]));
+      return out;
+    });
+  };
 
   /** 批量折叠只写 extras.collapsed，不动结构：撤销一步就能整套还原。 */
   const collapseBranches = (collapsed: boolean) => {
@@ -64,6 +84,62 @@ export function MindMapView({ page }: { page: Page }) {
         />
         <span className="zm-bar-label">共 {deepest + 1} 级 · {Object.keys(page.shapes).length} 个主题</span>
         <div className="zm-bar-spacer" />
+        <span className="zm-bar-label">
+          样式{selection.length > 1 ? ` ${selection.length} 个主题` : ""}
+        </span>
+        <ColorPicker
+          size="small"
+          disabled={!picked}
+          value={look?.fill}
+          onChangeComplete={(c) =>
+            styleSelected("改填充色", (s) => ({
+              fill: { ...s.style.fill, type: "Solid", color: { v: c.toHexString() } },
+              mask: (s.style.mask ?? 0) | 1,
+            }))
+          }
+        />
+        <ColorPicker
+          size="small"
+          disabled={!picked}
+          value={look?.font.color}
+          onChangeComplete={(c) =>
+            styleSelected("改文字色", (s) => ({ font: { ...s.style.font, color: c.toHexString() } }))
+          }
+        />
+        <Select
+          size="small"
+          style={{ width: 76 }}
+          disabled={!picked}
+          value={look?.font.size}
+          options={SIZE_OPTIONS}
+          onChange={(size: number) => styleSelected("改字号", (s) => ({ font: { ...s.style.font, size } }))}
+        />
+        <Tooltip title="加粗只改选中的主题">
+          <Button
+            size="small"
+            type={look?.font.bold ? "primary" : "default"}
+            disabled={!picked}
+            onClick={() =>
+              // 取推导值来翻转：中心主题本来就没存 bold，对着 undefined 取反会得到 true，
+              // 用户看下去就是"第一次点没反应"。
+              styleSelected("切换加粗", (s) => ({ font: { ...s.style.font, bold: !styleFor(page, s).font.bold } }))
+            }
+          >
+            <b>B</b>
+          </Button>
+        </Tooltip>
+        {pinned && (
+          <Tooltip title="取消这部分的独立配色，重新跟着主题走">
+            <Button
+              size="small"
+              onClick={() =>
+                styleSelected("跟随主题", (s) => ({ fill: undefined, mask: (s.style.mask ?? 0) & ~1 }))
+              }
+            >
+              跟随主题
+            </Button>
+          </Tooltip>
+        )}
         <button type="button" className="zm-btn zm-btn-ghost" onClick={() => collapseBranches(true)}>
           全部折叠
         </button>

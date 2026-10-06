@@ -449,6 +449,10 @@ function parseShapeStyle(n: XmlNode): ShapeStyle {
     if (color.tint !== undefined) out.mask = (out.mask ?? 0) | 2;
     if (color.themeColor !== undefined) out.colorRef = color.themeColor;
   }
+  // 实测亿图在 </Geometries> 之后、每个 Shape 上都写 <StyleMask V>（doc1..5 共 1167 个形状，
+  // 取值只有 1/2/3）。上面自己按 Shade/Tint 数出来的只是推导线索，文件里写了就以它为准。
+  const styleMask = numVnode(n, "StyleMask", 0);
+  if (styleMask > 0) out.mask = styleMask;
   return out;
 }
 
@@ -882,6 +886,8 @@ function buildShape(s: Shape, ctx: WriteCtx): XmlNode | undefined {
   // Geometries 留空：P-2 布局是算出来的，亿图重开时会按 Transform 重新生成路径缓存。
   n.children.push(el("Geometries"));
   n.children.push(el("ShapeStyle", { V: "1" }));
+  // 独立配色必须能存住：丢了 StyleMask，重开后再换主题就会把用户挑的颜色盖掉。
+  if (s.style.mask !== undefined) n.children.push(el("StyleMask", { V: s.style.mask }));
   if (s.extras.attachments?.length) {
     const att = el("Attachments");
     for (const a of s.extras.attachments) {

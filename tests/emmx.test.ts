@@ -8,14 +8,17 @@
  * 4) 未识别属性不能被保存动作吃掉；
  * 5) 我们不认得的 <Layout V> 数字码不能被降级成认得的那个 —— 别人的文件开一次再存，
  *    布局属性不该发生变化。
+ * 6) <StyleMask V> 必须原样读进来再写回去 —— 它记的是"这个主题的颜色是用户自己挑的"，
+ *    丢了一位，保存重开之后换主题就会把用户挑的颜色盖掉。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { done, eq, ok, rejects, skip } from "./_harness.ts";
 import { readZip, decodeBytes } from "../src/engine/emmx/zip.ts";
-import { nodeEquals, parseXml, findAll, attr } from "../src/engine/emmx/xparse.ts";
+import { nodeEquals, parseXml, findAll, attr, numVnode } from "../src/engine/emmx/xparse.ts";
 import { modelEquals, parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
-import { insertChild, updateText } from "../src/engine/tree.ts";
+import { insertChild, updateStyle, updateText } from "../src/engine/tree.ts";
+import { applyPalette } from "../src/engine/style.ts";
 import { plainText } from "../src/types/model.ts";
 import type { Page } from "../src/types/model.ts";
 
@@ -126,6 +129,31 @@ if (!existsSync(FIXTURE)) {
   const switchedPage = { ...foreignPage, layout: { ...foreignPage.layout, code: "logicRight" as const } };
   const switchedXml = decodeBytes((await readZip(await writeEmmx(withPages(switchedPage)))).find((e) => /page\/page\.xml$/.test(e.name)).data);
   eq("改过布局后按新码写回", vOf(switchedXml), "8");
+
+  // --- StyleMask：实测 doc1 的 82 个主题**每一个**都带 <StyleMask V>（43 个 V=2、39 个 V=3）。
+  //   位 0 = 填充是用户自己挑的，换主题不该再动它。
+  const maskInFile = new Map<string, number>();
+  for (const n of xmlShapes) {
+    if (attr(n, "Type") === "MMConnector") continue;
+    maskInFile.set(attr(n, "ID"), numVnode(n, "StyleMask", 0));
+  }
+  eq("样本主题数", maskInFile.size, 82);
+  eq("文件里的 <StyleMask> 全部读进模型", Object.values(page.shapes).filter((s) => (s.style.mask ?? 0) !== (maskInFile.get(s.id) ?? 0)).length, 0);
+
+  const pinnedId = page.shapes[page.rootId].childIds[0];
+  const colored = updateStyle(page, pinnedId, {
+    fill: { type: "Solid", color: { v: "#c00000" } },
+    mask: (page.shapes[pinnedId].style.mask ?? 0) | 1,
+  });
+  const rt = (await parseEmmx(await writeEmmx(withPages(colored)))).doc.pages[0];
+  eq("自定义配色存住了", rt.shapes[pinnedId].style.fill?.color?.v, "#c00000");
+  ok("独立配色那一位存住了", ((rt.shapes[pinnedId].style.mask ?? 0) & 1) !== 0, String(rt.shapes[pinnedId].style.mask));
+  const after = applyPalette(rt);
+  eq("换主题盖不掉用户自己挑的颜色", after.shapes[pinnedId].style.fill?.color?.v, "#c00000");
+  const recolor = Object.keys(after.shapes).filter(
+    (id) => ((rt.shapes[id].style.mask ?? 0) & 1) === 0 && after.shapes[id].style.fill?.color?.v !== rt.shapes[id].style.fill?.color?.v,
+  ).length;
+  ok("换主题会重算未独立配色的主题", recolor > 0, String(recolor));
 
   // --- 坏输入
   await rejects("非 ZIP 报中文错误", parseEmmx(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])), "不是 ZIP 容器");
