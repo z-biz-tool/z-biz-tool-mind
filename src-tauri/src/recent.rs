@@ -31,7 +31,10 @@ pub struct RecentStore {
 
 impl Default for RecentStore {
     fn default() -> Self {
-        RecentStore { max_count: 20, items: Vec::new() }
+        RecentStore {
+            max_count: 20,
+            items: Vec::new(),
+        }
     }
 }
 
@@ -45,7 +48,8 @@ fn load() -> RecentStore {
 }
 
 fn save(store: &RecentStore) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(store).map_err(|e| format!("序列化最近列表失败: {}", e))?;
+    let text =
+        serde_json::to_string_pretty(store).map_err(|e| format!("序列化最近列表失败: {}", e))?;
     write_private(&store_path(), text.as_bytes())
 }
 
@@ -56,11 +60,7 @@ fn now_ms() -> i64 {
 pub fn list() -> Vec<RecentItem> {
     let mut items = load().items;
     // 固定的排前面，其余按最近打开时间倒序（与工作台列表一致）。
-    items.sort_by(|a, b| {
-        b.pinned
-            .cmp(&a.pinned)
-            .then(b.opened_at.cmp(&a.opened_at))
-    });
+    items.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.opened_at.cmp(&a.opened_at)));
     items
 }
 
@@ -68,8 +68,16 @@ pub fn touch(path: &str, title: &str, kind: &str) -> Result<Vec<RecentItem>, Str
     let mut store = load();
     let mut item = RecentItem {
         path: path.to_string(),
-        title: if title.is_empty() { path.to_string() } else { title.to_string() },
-        kind: if kind.is_empty() { "local".to_string() } else { kind.to_string() },
+        title: if title.is_empty() {
+            path.to_string()
+        } else {
+            title.to_string()
+        },
+        kind: if kind.is_empty() {
+            "local".to_string()
+        } else {
+            kind.to_string()
+        },
         opened_at: now_ms(),
         pinned: false,
     };
@@ -106,7 +114,10 @@ pub fn remove(path: &str) -> Result<Vec<RecentItem>, String> {
 }
 
 pub fn clear() -> Result<(), String> {
-    let store = RecentStore { max_count: load().max_count, items: Vec::new() };
+    let store = RecentStore {
+        max_count: load().max_count,
+        items: Vec::new(),
+    };
     save(&store)
 }
 
@@ -138,7 +149,8 @@ mod tests {
     static GUARD: Mutex<()> = Mutex::new(());
 
     fn isolated(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("z-mind-recent-{}-{}", tag, uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("z-mind-recent-{}-{}", tag, uuid::Uuid::new_v4()));
         std::env::set_var("Z_MIND_CONFIG_DIR", &dir);
         let _ = std::fs::remove_dir_all(&dir);
         dir
@@ -167,7 +179,10 @@ mod tests {
         set_pinned("/tmp/x1.emmx", true).unwrap();
         touch("/tmp/x3.emmx", "3", "local").unwrap();
         let items = list();
-        assert!(items.iter().any(|i| i.path == "/tmp/x1.emmx"), "固定项不应被淘汰");
+        assert!(
+            items.iter().any(|i| i.path == "/tmp/x1.emmx"),
+            "固定项不应被淘汰"
+        );
         assert_eq!(items.len(), 2, "总量不应超过上限");
         std::env::remove_var("Z_MIND_CONFIG_DIR");
         let _ = std::fs::remove_dir_all(&dir);

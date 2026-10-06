@@ -83,7 +83,10 @@ fn defaults() -> Map<String, Value> {
     );
     m.insert("rightMenu".into(), serde_json::json!({ "enabled": [] }));
     m.insert("recent".into(), serde_json::json!({ "maxCount": 20 }));
-    m.insert("quota".into(), serde_json::json!({ "aiPoints": 0, "aiUsed": 0 }));
+    m.insert(
+        "quota".into(),
+        serde_json::json!({ "aiPoints": 0, "aiUsed": 0 }),
+    );
     m
 }
 
@@ -112,7 +115,8 @@ fn merge_defaults(stored: &Value) -> Value {
     let mut out = base.as_object().cloned().unwrap_or_default();
     if let Some(obj) = stored.as_object() {
         for (k, v) in obj {
-            if let (Some(def), Some(got)) = (out.get(k).and_then(|x| x.as_object()), v.as_object()) {
+            if let (Some(def), Some(got)) = (out.get(k).and_then(|x| x.as_object()), v.as_object())
+            {
                 let mut merged = def.clone();
                 for (mk, mv) in got {
                     merged.insert(mk.clone(), mv.clone());
@@ -180,7 +184,9 @@ pub fn merge_page(page: &str, patch: &Value) -> Result<Value, String> {
     let obj = cfg
         .as_object_mut()
         .ok_or_else(|| "配置根节点不是对象".to_string())?;
-    let target = obj.entry(page.to_string()).or_insert_with(|| Value::Object(Map::new()));
+    let target = obj
+        .entry(page.to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
     match (target.as_object_mut(), patch.as_object()) {
         (Some(t), Some(p)) => {
             for (k, v) in p {

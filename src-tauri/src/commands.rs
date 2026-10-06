@@ -87,7 +87,11 @@ pub fn recent_list() -> Result<Vec<recent::RecentItem>, String> {
 }
 
 #[tauri::command]
-pub fn recent_touch(path: String, title: String, kind: String) -> Result<Vec<recent::RecentItem>, String> {
+pub fn recent_touch(
+    path: String,
+    title: String,
+    kind: String,
+) -> Result<Vec<recent::RecentItem>, String> {
     recent::touch(&path, &title, &kind)
 }
 
@@ -138,7 +142,11 @@ pub fn file_write_bytes(
     }
     let tmp = target.with_extension(format!(
         "{}.tmp",
-        uuid::Uuid::new_v4().simple().to_string().get(..8).unwrap_or("part")
+        uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .get(..8)
+            .unwrap_or("part")
     ));
     config::write_private(&tmp, &bytes)?;
     std::fs::rename(&tmp, &target).map_err(|e| format!("写入文件失败: {} ({})", path, e))?;
@@ -151,7 +159,9 @@ pub fn file_write_bytes(
 
 #[tauri::command]
 pub fn file_exists(path: String) -> Result<bool, String> {
-    Ok(paths::validate(&path, false).map(|p| p.exists()).unwrap_or(false))
+    Ok(paths::validate(&path, false)
+        .map(|p| p.exists())
+        .unwrap_or(false))
 }
 
 #[tauri::command]
@@ -251,10 +261,7 @@ pub fn backup_list(path: Option<String>) -> Result<Vec<backup::BackupEntry>, Str
 }
 
 #[tauri::command]
-pub fn backup_restore(
-    id: String,
-    target: Option<String>,
-) -> Result<serde_json::Value, String> {
+pub fn backup_restore(id: String, target: Option<String>) -> Result<serde_json::Value, String> {
     let (entry, bytes) = backup::read_backup(&id)?;
     match target {
         Some(t) => {
@@ -338,11 +345,16 @@ pub fn reveal_in_folder(path: String) -> Result<(), String> {
     let p = paths::validate(&path, false)?;
     let target = p.to_string_lossy().to_string();
     let spawn_result = if cfg!(target_os = "windows") {
-        std::process::Command::new("explorer").arg(format!("/select,{}", target)).spawn()
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", target))
+            .spawn()
     } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").args(["-R", &target]).spawn()
+        std::process::Command::new("open")
+            .args(["-R", &target])
+            .spawn()
     } else {
-        let parent = p.parent()
+        let parent = p
+            .parent()
             .map(|x| x.to_string_lossy().to_string())
             .unwrap_or(target.clone());
         std::process::Command::new("xdg-open").arg(parent).spawn()

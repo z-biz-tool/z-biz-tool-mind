@@ -28,25 +28,20 @@ fn allowed_roots() -> Vec<PathBuf> {
 fn denied_roots() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     #[cfg(windows)]
-    for key in ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"] {
+    for key in [
+        "SystemRoot",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramData",
+    ] {
         if let Ok(v) = std::env::var(key) {
             out.push(PathBuf::from(v));
         }
     }
     #[cfg(not(windows))]
     for p in [
-        "/System",
-        "/Library",
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/etc",
-        "/proc",
-        "/sys",
-        "/dev",
-        "/boot",
-        "/root",
+        "/System", "/Library", "/usr", "/bin", "/sbin", "/lib", "/etc", "/proc", "/sys", "/dev",
+        "/boot", "/root",
     ] {
         out.push(PathBuf::from(p));
     }
@@ -195,7 +190,11 @@ mod tests {
     fn blocks_windows_system_dirs() {
         // 系统盘不一定是 C:，判据取环境变量；这里直接拿 SystemRoot 拼一个一定存在的文件。
         let root = std::env::var("SystemRoot").expect("测试机应有 SystemRoot");
-        let hosts = Path::new(&root).join("System32").join("drivers").join("etc").join("hosts");
+        let hosts = Path::new(&root)
+            .join("System32")
+            .join("drivers")
+            .join("etc")
+            .join("hosts");
         assert!(
             validate(hosts.to_str().unwrap(), true).is_err(),
             "SystemRoot 之下必须拒绝：{}",

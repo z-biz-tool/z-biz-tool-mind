@@ -99,7 +99,12 @@ fn history_count() -> usize {
 }
 
 /// 保存一份历史版本。`bytes` 由前端序列化好，后端只负责落盘与索引。
-pub fn create(doc_path: &str, title: &str, reason: &str, bytes: &[u8]) -> Result<BackupEntry, String> {
+pub fn create(
+    doc_path: &str,
+    title: &str,
+    reason: &str,
+    bytes: &[u8],
+) -> Result<BackupEntry, String> {
     let key = doc_key(doc_path);
     let dir = root().join(&key);
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建备份目录失败: {}", e))?;
@@ -130,7 +135,10 @@ pub fn create(doc_path: &str, title: &str, reason: &str, bytes: &[u8]) -> Result
             let _ = std::fs::remove_file(dir.join(&old.id));
         }
     }
-    index.insert(key, serde_json::to_value(&list).map_err(|e| format!("索引序列化失败: {}", e))?);
+    index.insert(
+        key,
+        serde_json::to_value(&list).map_err(|e| format!("索引序列化失败: {}", e))?,
+    );
     save_index(&index)?;
     Ok(entry)
 }
@@ -218,12 +226,14 @@ pub fn purge_older_than(days: i64) -> Result<usize, String> {
             kept.push(it);
         }
         removed += expired;
-        next.insert(key.clone(), serde_json::to_value(kept).map_err(|e| e.to_string())?);
+        next.insert(
+            key.clone(),
+            serde_json::to_value(kept).map_err(|e| e.to_string())?,
+        );
     }
     save_index(&next)?;
     Ok(removed)
 }
-
 
 /// 自动保存：写入 autosave/<文档名>/<时间戳>.emmx，返回落盘路径。
 pub fn autosave(doc_path: &str, bytes: &[u8]) -> Result<String, String> {
@@ -404,7 +414,8 @@ pub fn trash_purge_older_than(days: i64) -> Result<usize, String> {
         let old = item
             .get("deletedAt")
             .and_then(|v| v.as_i64())
-            .unwrap_or(i64::MAX) < cutoff;
+            .unwrap_or(i64::MAX)
+            < cutoff;
         if old {
             if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
                 let _ = std::fs::remove_file(dir.join(id));
