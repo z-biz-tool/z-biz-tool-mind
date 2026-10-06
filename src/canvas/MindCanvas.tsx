@@ -233,6 +233,7 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const dragButton = useSettings((s) => s.settings.general.canvasDragButton);
   const wheelAt = useSettings((s) => s.settings.general.wheelZoom);
   const showQuickBar = useSettings((s) => s.settings.general.showQuickBar);
+  const topicWidthMode = useSettings((s) => s.settings.format.topicWidthMode);
 
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -241,10 +242,11 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const [draggingCanvas, setDraggingCanvas] = useState(false);
   const [draft, setDraft] = useState<{ id: string; text: string } | null>(null);
 
-  // P-2：布局是算出来的。page 是整页快照，换指向就是唯一的失效信号。
+  // P-2：布局是算出来的。page 是整页快照，换指向就是唯一的失效信号；
+  // 框宽模式不在 page 里（它是应用级设置），所以换模式也得重算，否则开关只在下一次编辑时才生效。
   const paint = useMemo(
-    () => paintPage(page, { displayLevel: displayLevels }),
-    [page, displayLevels]
+    () => paintPage(page, { displayLevel: displayLevels, topicWidthMode }),
+    [page, displayLevels, topicWidthMode]
   );
   const lineOf = useMemo(() => new Map(paint.boxes.map((b) => [b.id, b.line])), [paint]);
   const picked = useMemo(

@@ -8,7 +8,13 @@
 import type { Page } from "../../types/model.ts";
 import { computeLayout, type ConnectorPath, type LayoutResult } from "../layout.ts";
 import { descendants } from "../tree.ts";
-import { contrastText, defaultPalette, styleFor, type Resolved, type ThemePalette } from "../style.ts";
+import {
+  contrastText,
+  defaultPalette,
+  styleFor,
+  type Resolved,
+  type ThemePalette,
+} from "../style.ts";
 import { DEFAULTS } from "../../model/constants.ts";
 
 export interface RenderOptions {
@@ -18,6 +24,8 @@ export interface RenderOptions {
   palette?: ThemePalette;
   /** 只显示这些分支（下钻 / 单页导出）。 */
   only?: string[];
+  /** 主题框宽：fixed 把整页对齐到同一个宽度（与画布同一个开关）。 */
+  topicWidthMode?: "auto" | "fixed";
 }
 
 export interface ShapePaint {
@@ -52,7 +60,12 @@ export interface Paint {
 
 export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
   const palette = opts.palette ?? defaultPalette();
-  const layout = computeLayout(page, { displayLevel: opts.displayLevel ?? 9, only: opts.only, palette });
+  const layout = computeLayout(page, {
+    displayLevel: opts.displayLevel ?? 9,
+    only: opts.only,
+    palette,
+    topicWidthMode: opts.topicWidthMode,
+  });
   const boxes: ShapePaint[] = [];
   for (const id of layout.order) {
     const b = layout.boxes[id];
@@ -114,7 +127,9 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
     `<svg xmlns="http://www.w3.org/2000/svg" width="${round(p.width)}" height="${round(p.height)}" ` +
       `viewBox="${round(p.minX)} ${round(p.minY)} ${round(p.width)} ${round(p.height)}" font-family="${FONT_STACK}">`
   );
-  out.push(`<rect x="${round(p.minX)}" y="${round(p.minY)}" width="${round(p.width)}" height="${round(p.height)}" fill="${p.background}"/>`);
+  out.push(
+    `<rect x="${round(p.minX)}" y="${round(p.minY)}" width="${round(p.width)}" height="${round(p.height)}" fill="${p.background}"/>`
+  );
   out.push(`<g fill="none" stroke-linecap="round">`);
   for (const c of p.connectors) {
     out.push(`<path d="${esc(c.d)}" stroke="${strokeOf(p, c)}" stroke-width="1.6"/>`);

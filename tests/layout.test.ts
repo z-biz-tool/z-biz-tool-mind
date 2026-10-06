@@ -9,10 +9,22 @@
  */
 import { done, eq, near, ok } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
-import { charWidth, computeLayout, measureShape, textWidth, wrapText } from "../src/engine/layout.ts";
+import {
+  charWidth,
+  computeLayout,
+  measureShape,
+  textWidth,
+  wrapText,
+} from "../src/engine/layout.ts";
 import { paintPage } from "../src/engine/export/svg.ts";
 import { defaultPalette, EDRAW_FONT_SIZES, styleFor } from "../src/engine/style.ts";
-import { insertChild, setCollapsed, setFloating, updateStyle, updateText } from "../src/engine/tree.ts";
+import {
+  insertChild,
+  setCollapsed,
+  setFloating,
+  updateStyle,
+  updateText,
+} from "../src/engine/tree.ts";
 import { DEFAULTS } from "../src/model/constants.ts";
 import { plainText } from "../src/types/model.ts";
 
@@ -33,7 +45,11 @@ function add(parentId: string, text: string): string {
   const b = computeLayout(cur).boxes[root()];
   eq("中心主题按第 0 档字号（实测 14）量宽", b.w, 4 * EDRAW_FONT_SIZES[0] + PAD);
   eq("一行装得下就不折行", b.lines, ["中心主题"]);
-  eq("高度 = 行高 + 上下内边距", b.h, Math.round(EDRAW_FONT_SIZES[0] * 1.35 + DEFAULTS.topicPadY * 2));
+  eq(
+    "高度 = 行高 + 上下内边距",
+    b.h,
+    Math.round(EDRAW_FONT_SIZES[0] * 1.35 + DEFAULTS.topicPadY * 2)
+  );
 }
 
 // ---------------------------------------------------------------- 画布与导出共用一份折行
@@ -41,19 +57,38 @@ function add(parentId: string, text: string): string {
   cur = createPage("六投影同源");
   const dev = add(root(), "开发");
   add(dev, "登录联调 (AI 助手登录)");
-  const longId = add(dev, "这是一段很长的中文主题文字用来验证超过最大文本宽度之后会不会折行折行再折行折了还要再折一直折下去");
+  const longId = add(
+    dev,
+    "这是一段很长的中文主题文字用来验证超过最大文本宽度之后会不会折行折行再折行折了还要再折一直折下去"
+  );
   add(longId, "Latin words that keep going and going and going until the wrap kicks in");
   add(root(), "上线");
 
   const layout = computeLayout(cur);
   const paint = paintPage(cur);
   eq("paint 的盒子数与布局的 order 一一对应", paint.boxes.length, layout.order.length);
-  const drift = paint.boxes.filter((b) => b.lines.join("\u0001") !== layout.boxes[b.id]?.lines.join("\u0001"));
-  eq("绘制不再自己折第二次（P-2 只有一条绘制路径）", drift.map((d) => d.id), []);
-  const spill = paint.boxes.filter((b) => b.lines.some((l) => textWidth(l, b.fontSize) > b.w - PAD + 0.5));
-  eq("每一行都装得进自己的盒子", spill.map((s) => `${s.id}:${s.lines.length}`), []);
+  const drift = paint.boxes.filter(
+    (b) => b.lines.join("\u0001") !== layout.boxes[b.id]?.lines.join("\u0001")
+  );
+  eq(
+    "绘制不再自己折第二次（P-2 只有一条绘制路径）",
+    drift.map((d) => d.id),
+    []
+  );
+  const spill = paint.boxes.filter((b) =>
+    b.lines.some((l) => textWidth(l, b.fontSize) > b.w - PAD + 0.5)
+  );
+  eq(
+    "每一行都装得进自己的盒子",
+    spill.map((s) => `${s.id}:${s.lines.length}`),
+    []
+  );
   eq("长中文主题确实折了行", layout.boxes[longId].lines.length > 1, true);
-  eq("折几行就把盒子垫高几行", layout.boxes[longId].h, Math.round(layout.boxes[longId].lines.length * 10 * 1.35 + DEFAULTS.topicPadY * 2));
+  eq(
+    "折几行就把盒子垫高几行",
+    layout.boxes[longId].h,
+    Math.round(layout.boxes[longId].lines.length * 10 * 1.35 + DEFAULTS.topicPadY * 2)
+  );
   const maxW = Math.max(...Object.values(layout.boxes).map((b) => b.w));
   ok("盒子宽度不超过主题文本宽度上限", maxW <= DEFAULTS.topicMaxTextW + PAD, `实测 ${maxW}`);
 }
@@ -65,7 +100,11 @@ function add(parentId: string, text: string): string {
   const b = computeLayout(cur).boxes[root()];
   eq("用户字号优先于色板档位", b.w, 4 * 20 + PAD);
   eq("paint 也按同一个字号画", paintPage(cur).boxes.find((x) => x.id === root())?.fontSize, 20);
-  eq("measureShape 单独调用时按 opts 给的字号", measureShape(cur.shapes[root()], { fontSize: 20 }).w, 4 * 20 + PAD);
+  eq(
+    "measureShape 单独调用时按 opts 给的字号",
+    measureShape(cur.shapes[root()], { fontSize: 20 }).w,
+    4 * 20 + PAD
+  );
 }
 
 // ---------------------------------------------------------------- 可见性：折叠 / 显示层级 / 下钻
@@ -78,9 +117,26 @@ function add(parentId: string, text: string): string {
   const b1 = add(b, "乙一");
 
   eq("全展开的节点数", computeLayout(cur).order.length, 6);
-  eq("折叠只藏子树，自己那行还在", computeLayout(setCollapsed(cur, a1, true)).order, [root(), a, a1, b, b1]);
-  eq("显示 2 级时第 3 级不布局", computeLayout(cur, { displayLevel: 2 }).order, [root(), a, a1, b, b1]);
-  eq("下钻只看选中的那一枝（含中心主题）", computeLayout(cur, { only: [a] }).order, [root(), a, a1, a11]);
+  eq("折叠只藏子树，自己那行还在", computeLayout(setCollapsed(cur, a1, true)).order, [
+    root(),
+    a,
+    a1,
+    b,
+    b1,
+  ]);
+  eq("显示 2 级时第 3 级不布局", computeLayout(cur, { displayLevel: 2 }).order, [
+    root(),
+    a,
+    a1,
+    b,
+    b1,
+  ]);
+  eq("下钻只看选中的那一枝（含中心主题）", computeLayout(cur, { only: [a] }).order, [
+    root(),
+    a,
+    a1,
+    a11,
+  ]);
   eq("下钻另一枝", computeLayout(cur, { only: [b] }).order, [root(), b, b1]);
 }
 
@@ -95,8 +151,16 @@ function add(parentId: string, text: string): string {
   const L = computeLayout(cur);
   eq("连线数 = 除中心主题外每个可见节点一条", L.connectors.length, L.order.length - 1);
   eq("中心主题横向居中", L.boxes[root()].x, 0);
-  eq("右向布局里所有分支都在中心主题右边", L.order.filter((id) => id !== root()).every((id) => L.boxes[id].x > 0), true);
-  ok("子盒子的左缘不压父盒子的右缘（至少留出水平间距）", L.boxes[c1k].x - L.boxes[c1k].w / 2 >= L.boxes[c1].x + L.boxes[c1].w / 2, "");
+  eq(
+    "右向布局里所有分支都在中心主题右边",
+    L.order.filter((id) => id !== root()).every((id) => L.boxes[id].x > 0),
+    true
+  );
+  ok(
+    "子盒子的左缘不压父盒子的右缘（至少留出水平间距）",
+    L.boxes[c1k].x - L.boxes[c1k].w / 2 >= L.boxes[c1].x + L.boxes[c1].w / 2,
+    ""
+  );
   ok("同一层不重叠：子一在子二上面", L.boxes[c1k].y < L.boxes[c2k].y, "");
   eq("包围盒宽度与最外侧盒子一致", L.width, Math.round(L.bounds.maxX - L.bounds.minX));
   eq("包围盒高度与最外侧盒子一致", L.height, Math.round(L.bounds.maxY - L.bounds.minY));
@@ -105,7 +169,11 @@ function add(parentId: string, text: string): string {
   const r1 = add(root(), "右支");
   const l1 = add(root(), "左支");
   const balanced = computeLayout(cur);
-  eq("双向平衡把主分支分到两侧", [balanced.boxes[r1].x > 0, balanced.boxes[l1].x < 0], [true, true]);
+  eq(
+    "双向平衡把主分支分到两侧",
+    [balanced.boxes[r1].x > 0, balanced.boxes[l1].x < 0],
+    [true, true]
+  );
 }
 
 // ---------------------------------------------------------------- 浮动主题
@@ -119,19 +187,39 @@ function add(parentId: string, text: string): string {
   eq("浮动主题带着它的子一起进布局", L.order, [root(), f, fk, gk]);
   eq("浮动主题的落点是用户拖出来的，不是算出来的", [L.boxes[f].x, L.boxes[f].y], [300, -200]);
   eq("浮动的子主题堆在右下", [L.boxes[fk].x > 300, L.boxes[fk].y > -200], [true, true]);
-  eq("中心主题不连线到浮动主题，浮动枝内部照常连", L.connectors.map((c) => `${c.fromId}>${c.toId}`), [`${f}>${fk}`, `${fk}>${gk}`]);
+  eq(
+    "中心主题不连线到浮动主题，浮动枝内部照常连",
+    L.connectors.map((c) => `${c.fromId}>${c.toId}`),
+    [`${f}>${fk}`, `${fk}>${gk}`]
+  );
 
   // 浮动枝也是主题树：孙主题在大纲/看板/甘特里是递归数得到的，图形侧同样得画出来，
   // 否则同一份树在两种投影下主题集不一致（P-1）。
-  eq("浮动枝的每个主题都有盒子", [fk, gk].map((id) => Boolean(L.boxes[id])), [true, true]);
-  eq("浮动枝按自身根算层级：显示 1 层时孙主题不画", computeLayout(cur, { displayLevel: 1 }).order, [root(), f, fk]);
-  eq("显示 0 层只留根：浮动根和主根一样不受层级限制", computeLayout(cur, { displayLevel: 0 }).order, [root(), f]);
+  eq(
+    "浮动枝的每个主题都有盒子",
+    [fk, gk].map((id) => Boolean(L.boxes[id])),
+    [true, true]
+  );
+  eq("浮动枝按自身根算层级：显示 1 层时孙主题不画", computeLayout(cur, { displayLevel: 1 }).order, [
+    root(),
+    f,
+    fk,
+  ]);
+  eq(
+    "显示 0 层只留根：浮动根和主根一样不受层级限制",
+    computeLayout(cur, { displayLevel: 0 }).order,
+    [root(), f]
+  );
   ok("孙主题排在子的右侧", L.boxes[gk].x > L.boxes[fk].x, "");
 }
 
 // ---------------------------------------------------------------- 文本测量原语
 {
-  eq("中日韩按 1 em、空格按 0.3 em", [charWidth("中", 10), charWidth("　", 10), charWidth(" ", 10)], [10, 10, 3]);
+  eq(
+    "中日韩按 1 em、空格按 0.3 em",
+    [charWidth("中", 10), charWidth("　", 10), charWidth(" ", 10)],
+    [10, 10, 3]
+  );
   near("大写拉丁按 0.66 em", charWidth("A", 10), 6.6);
   near("小写拉丁按 0.55 em", charWidth("a", 10), 5.5);
   eq("textWidth 是逐字累加", textWidth("中a", 10), 15.5);
@@ -153,9 +241,40 @@ function add(parentId: string, text: string): string {
   eq(
     "每层盒子的宽度 = 该层样式字号量出来的文字宽（topicMinW 兜底）",
     [root(), m, s].map((id) => L.boxes[id].w),
-    [root(), m, s].map((id) => Math.max(DEFAULTS.topicMinW, Math.round(textWidth(plainText(cur.shapes[id].text), styleFor(cur, cur.shapes[id], palette).font.size) + PAD)))
+    [root(), m, s].map((id) =>
+      Math.max(
+        DEFAULTS.topicMinW,
+        Math.round(
+          textWidth(
+            plainText(cur.shapes[id].text),
+            styleFor(cur, cur.shapes[id], palette).font.size
+          ) + PAD
+        )
+      )
+    )
   );
-  eq("字号确实按层级递减", [root(), m, s].map((id) => styleFor(cur, cur.shapes[id], palette).font.size), [14, 12, 10]);
+  eq(
+    "字号确实按层级递减",
+    [root(), m, s].map((id) => styleFor(cur, cur.shapes[id], palette).font.size),
+    [14, 12, 10]
+  );
+}
+
+// ---------------------------------------------------------------- 主题框宽：固定 / 自动
+{
+  cur = createPage("框宽");
+  const a = add(root(), "短");
+  const b = add(root(), "这是一条明显长得多得多的分支主题");
+  const auto = computeLayout(cur);
+  const fixed = computeLayout(cur, { topicWidthMode: "fixed" });
+  const widest = Math.max(...Object.values(auto.boxes).map((x) => x.w));
+  ok("自动模式下长短不一", auto.boxes[a].w < auto.boxes[b].w);
+  eq("固定模式整页同一个框宽", new Set(Object.values(fixed.boxes).map((x) => x.w)).size, 1);
+  eq("固定取的是本页最宽那个", fixed.boxes[a].w, widest);
+  ok("长主题不再靠撑宽，靠折行", fixed.boxes[b].lines.length >= auto.boxes[b].lines.length);
+  ok("折出来的行数不会把盒子压矮", fixed.boxes[b].h >= auto.boxes[b].h);
+  const p = paintPage(cur, { topicWidthMode: "fixed" });
+  eq("画布与导出共用同一个开关", new Set(p.boxes.map((x) => x.w)).size, 1);
 }
 
 done();

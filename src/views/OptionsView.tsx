@@ -309,7 +309,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
               </Field>
               <Field
                 label="主题文字宽度"
-                hint="自动：文字撑到换行上限就折行；固定：所有主题同一个框宽，长文字靠省略号收尾。"
+                hint="固定：本页所有主题对齐到同一个框宽（取本页最宽那个），更长的文字折行；自动：每个主题按自己的文字收着。"
               >
                 <Radio.Group
                   value={settings.format.topicWidthMode}

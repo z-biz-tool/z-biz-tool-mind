@@ -12,6 +12,7 @@
  */
 
 import type { LayoutCode, Page, Shape } from "../types/model.ts";
+import { isTopic } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
 import { defaultPalette, styleFor, type ThemePalette } from "./style.ts";
 
@@ -54,9 +55,12 @@ export interface MeasureOptions {
   fontFamily?: string;
   maxWidth?: number;
   lineHeight?: number;
+  /** "固定框宽"：所有主题同一个宽度，长文字换行而不是把框撑宽。 */
+  fixedWidth?: number;
 }
 
-const WIDE = /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/;
+const WIDE =
+  /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/;
 
 export function charWidth(ch: string, fontSize: number): number {
   if (WIDE.test(ch)) return fontSize;
@@ -106,16 +110,24 @@ function shapeText(s: Shape): string {
  * 单个主题的盒子尺寸：文字 + 内边距 + 附件占位（图标行、图片、备注角标）。
  * 附件宽度不计入文字宽，但会抬高高度 —— 与实测的 MainIdea（111×50，文字 72×20）一致。
  */
-export function measureShape(s: Shape, opts: MeasureOptions = {}): { w: number; h: number; lines: string[] } {
+export function measureShape(
+  s: Shape,
+  opts: MeasureOptions = {}
+): { w: number; h: number; lines: string[] } {
   const fontSize = s.style.font?.size ?? opts.fontSize ?? DEFAULTS.fontSize;
-  const maxWidth = s.style.font?.size
-    ? DEFAULTS.topicMaxTextW
-    : opts.maxWidth ?? DEFAULTS.topicMaxTextW;
+  const fixed = opts.fixedWidth;
+  const maxWidth = fixed
+    ? fixed
+    : s.style.font?.size
+      ? DEFAULTS.topicMaxTextW
+      : (opts.maxWidth ?? DEFAULTS.topicMaxTextW);
   const text = shapeText(s) || " ";
   const lines = wrapText(text, fontSize, maxWidth - DEFAULTS.topicPadX * 2);
   const widest = Math.max(...lines.map((l) => textWidth(l, fontSize)));
   const lineH = fontSize * (s.style.font?.lineSpacing ? s.style.font.lineSpacing / 100 : 1.35);
-  let w = Math.min(maxWidth, Math.max(DEFAULTS.topicMinW, widest + DEFAULTS.topicPadX * 2));
+  let w = fixed
+    ? Math.max(DEFAULTS.topicMinW, fixed)
+    : Math.min(maxWidth, Math.max(DEFAULTS.topicMinW, widest + DEFAULTS.topicPadX * 2));
   let h = Math.max(DEFAULTS.topicMinH, lines.length * lineH + DEFAULTS.topicPadY * 2);
 
   const extras = s.extras;
@@ -142,8 +154,30 @@ export function measureShape(s: Shape, opts: MeasureOptions = {}): { w: number; 
  * 布局自己固定用 DEFAULTS.fontSize 的话，框是按 12 px 撑的、字是按 14 px 画的，
  * 折行会多出几行溢到框外 —— 同一个主题不能有两套字号（P-2）。
  */
-function measureOf(page: Page, shape: Shape, palette: ThemePalette): { w: number; h: number; lines: string[] } {
-  return measureShape(shape, { fontSize: styleFor(page, shape, palette).font.size });
+function measureOf(
+  page: Page,
+  shape: Shape,
+  palette: ThemePalette,
+  fixedWidth?: number
+): { w: number; h: number; lines: string[] } {
+  return measureShape(shape, {
+    fontSize: styleFor(page, shape, palette).font.size,
+    fixedWidth,
+  });
+}
+
+/**
+ * "固定框宽"取本页最宽那个主题的宽度：整页对齐到它，比它更长的文字换行。
+ * 取本页而不是取常量上限，是因为常量（400）会把两个字的主题也拉成一米宽，
+ * 一屏放不下三条分支；本页最宽者至少还是从内容里来的数。
+ */
+function uniformWidth(page: Page, palette: ThemePalette): number {
+  let w: number = DEFAULTS.topicMinW;
+  for (const s of Object.values(page.shapes)) {
+    if (!isTopic(s.type)) continue;
+    w = Math.max(w, measureOf(page, s, palette).w);
+  }
+  return Math.min(DEFAULTS.topicMaxTextW, w);
 }
 
 interface TreeNode {
@@ -168,7 +202,8 @@ function buildTree(
   branchIx: number,
   displayLevel: number,
   skip: Set<string>,
-  palette: ThemePalette
+  palette: ThemePalette,
+  fixedWidth?: number
 ): TreeNode | null {
   const shape = page.shapes[id];
   if (!shape || skip.has(id)) return null;
@@ -182,14 +217,23 @@ function buildTree(
     ...{ w: 0, h: 0, lines: [] as string[] },
     side: 0,
   };
-  const m = measureOf(page, shape, palette);
+  const m = measureOf(page, shape, palette, fixedWidth);
   node.w = m.w;
   node.h = m.h;
   node.lines = m.lines;
   const kids = level + 1 <= displayLevel && !shape.extras.collapsed ? shape.childIds : [];
   let i = 0;
   for (const c of kids) {
-    const child = buildTree(page, c, level + 1, level === 0 ? i : branchIx, displayLevel, skip, palette);
+    const child = buildTree(
+      page,
+      c,
+      level + 1,
+      level === 0 ? i : branchIx,
+      displayLevel,
+      skip,
+      palette,
+      fixedWidth
+    );
     if (child) {
       child.side = level === 0 ? child.side : node.side;
       node.children.push(child);
@@ -296,7 +340,8 @@ function layoutRadial(root: TreeNode, spacing: number): void {
   const fill = (node: TreeNode, a0: number, a1: number) => {
     if (!node.children.length) return;
     // 权重 = 子树叶子数，保证密集分支拿到更大的扇区，节点不会挤在一起。
-    const leaves = (n: TreeNode): number => (n.children.length ? n.children.reduce((s, c) => s + leaves(c), 0) : 1);
+    const leaves = (n: TreeNode): number =>
+      n.children.length ? n.children.reduce((s, c) => s + leaves(c), 0) : 1;
     const weights = node.children.map(leaves);
     const sum = weights.reduce((s, w) => s + w, 0) || 1;
     let a = a0;
@@ -331,7 +376,10 @@ function layoutSpine(
   });
   let cursor = 0;
   kids.forEach((k, i) => {
-    const step = opts.axis === "h" ? estimateWidth(k, spacing) + spacing : estimateHeight(k, spacing) + spacing;
+    const step =
+      opts.axis === "h"
+        ? estimateWidth(k, spacing) + spacing
+        : estimateHeight(k, spacing) + spacing;
     const center = cursor + step / 2;
     cursor += step;
     if (opts.axis === "h") {
@@ -506,16 +554,27 @@ export interface LayoutInput {
   only?: string[];
   /** 字号来自主题样式，布局要和绘制用同一份色板，否则盒子量得比画出来的字小。 */
   palette?: ThemePalette;
+  /** 主题框宽：fixed 把整页对齐到同一个宽度。 */
+  topicWidthMode?: "auto" | "fixed";
 }
 
 export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult {
   const displayLevel = input.displayLevel ?? 9;
   const palette = input.palette ?? defaultPalette();
   const skip = new Set(input.only ? collectOutside(page, input.only) : []);
-  const root = buildTree(page, page.rootId, 0, -1, displayLevel, skip, palette);
+  const fixedW = input.topicWidthMode === "fixed" ? uniformWidth(page, palette) : undefined;
+  const root = buildTree(page, page.rootId, 0, -1, displayLevel, skip, palette, fixedW);
   const boxes: Record<string, NodeBox> = {};
   const order: string[] = [];
-  if (!root) return { boxes, order, connectors: [], bounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 }, width: 0, height: 0 };
+  if (!root)
+    return {
+      boxes,
+      order,
+      connectors: [],
+      bounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 },
+      width: 0,
+      height: 0,
+    };
 
   const s = page.layout;
   const hs = s.hSpacing || DEFAULTS.hSpacing;
@@ -631,13 +690,13 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
     kids.forEach((c, i) => {
       sum += extentOf(c, level + 1) + (i > 0 ? vs : 0);
     });
-    const e = Math.max(measureOf(page, page.shapes[id], palette).h, sum);
+    const e = Math.max(measureOf(page, page.shapes[id], palette, fixedW).h, sum);
     slotH.set(id, e);
     return e;
   };
   const placeFloat = (id: string, level: number, leftX: number, topY: number): void => {
     const sh = page.shapes[id];
-    const m = measureOf(page, sh, palette);
+    const m = measureOf(page, sh, palette, fixedW);
     const kids = floatKids(id, level);
     let group = 0;
     kids.forEach((c, i) => {
@@ -665,7 +724,7 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
   };
   for (const sh of Object.values(page.shapes)) {
     if (!sh.floating || boxes[sh.id] || skip.has(sh.id)) continue;
-    const m = measureOf(page, sh, palette);
+    const m = measureOf(page, sh, palette, fixedW);
     const w = m.w || sh.transform.w;
     const h = m.h || sh.transform.h;
     boxes[sh.id] = {
@@ -759,9 +818,14 @@ function splitSides(root: TreeNode, code: LayoutCode): { right: TreeNode[]; left
   return { right: kids.slice(0, rightCount), left: kids.slice(rightCount) };
 }
 
-function layoutHorizontalTreeWith(root: TreeNode, spacing: number, halves: { right: TreeNode[]; left: TreeNode[] }): void {
+function layoutHorizontalTreeWith(
+  root: TreeNode,
+  spacing: number,
+  halves: { right: TreeNode[]; left: TreeNode[] }
+): void {
   const stackHeights = (nodes: TreeNode[]): number =>
-    nodes.reduce((s, n) => s + estimateHeight(n, spacing) + spacing, 0) - (nodes.length ? spacing : 0);
+    nodes.reduce((s, n) => s + estimateHeight(n, spacing) + spacing, 0) -
+    (nodes.length ? spacing : 0);
 
   const runSide = (nodes: TreeNode[], dir: 1 | -1, cursorY: number) => {
     let y = cursorY;
@@ -817,7 +881,12 @@ function placeSubtree(node: TreeNode, cursorY: number, spacing: number, dir: 1 |
 }
 
 /** 组织结构图（上下双向）：主分支分上下两列，各自水平树展开。 */
-function layoutTreeFamilySide(root: TreeNode, down: TreeNode[], up: TreeNode[], spacing: number): void {
+function layoutTreeFamilySide(
+  root: TreeNode,
+  down: TreeNode[],
+  up: TreeNode[],
+  spacing: number
+): void {
   root.x = 0;
   root.y = 0;
   const row = (nodes: TreeNode[], dir: 1 | -1) => {
@@ -876,7 +945,11 @@ function layoutWinding(root: TreeNode, hs: number, vs: number): void {
  * page 参数用不上（父子关系已经进了 NodeBox.parentId），但它是本模块导出的签名，
  * 下划线保留形参位而不是删掉，免得外部调用方跟着改。
  */
-export function buildConnectors(_page: Page, boxes: Record<string, NodeBox>, code: LayoutCode): ConnectorPath[] {
+export function buildConnectors(
+  _page: Page,
+  boxes: Record<string, NodeBox>,
+  code: LayoutCode
+): ConnectorPath[] {
   const out: ConnectorPath[] = [];
   const elbow = code.startsWith("tree") || code.startsWith("org") || code === "matrix";
   for (const b of Object.values(boxes)) {
@@ -914,7 +987,7 @@ function elbowPath(p: NodeBox, c: NodeBox, vertical: boolean): string {
     return `M ${round(p.x)} ${round(y1)} L ${round(p.x)} ${round(my)} L ${round(c.x)} ${round(my)} L ${round(c.x)} ${round(y2)}`;
   }
   const dir = Math.sign(c.y - p.y) || 1;
-  const x1 = p.x + (Math.sign(c.x - p.x) || 1) * p.w / 2;
+  const x1 = p.x + ((Math.sign(c.x - p.x) || 1) * p.w) / 2;
   const y1 = p.y;
   const x2 = c.x;
   const y2 = c.y - (dir * c.h) / 2;
