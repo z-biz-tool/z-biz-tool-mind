@@ -6,7 +6,16 @@
  * 一定是因为有人绕过 paint 自己算了一遍 —— 所以 paint 只在这里出现一次。
  */
 import type { Page } from "../../types/model.ts";
-import { computeLayout, textWidth, type ConnectorPath, type LayoutResult } from "../layout.ts";
+import {
+  BADGE_STEP,
+  chipHeight,
+  chipWidth,
+  computeLayout,
+  labelInsets,
+  labelRows,
+  type ConnectorPath,
+  type LayoutResult,
+} from "../layout.ts";
 import { descendants } from "../tree.ts";
 import {
   contrastText,
@@ -185,14 +194,6 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
  * 几何只写这一处：SVG 导出与画布各自 map 同一批 path，
  * 两份坐标各算一遍就会出现"导出的图上有、屏幕上没有"这种事（P-2 只有一条绘制路径）。
  */
-/** 一枚角标在底边带上占掉的宽度：图形本身宽 8 / 7，各留一点呼吸。 */
-const BADGE_STEP = { note: 11, link: 8 };
-
-/** 角标从 x+6 起排，占掉的横向总宽度；标签条接在它右边。 */
-export function badgeExtent(b: Pick<ShapePaint, "note" | "link">): number {
-  return 6 + (b.note ? BADGE_STEP.note : 0) + (b.link ? BADGE_STEP.link : 0);
-}
-
 export function cornerBadgePaths(
   b: Pick<ShapePaint, "x" | "y" | "w" | "h" | "note" | "link">
 ): string[] {
@@ -217,11 +218,10 @@ export interface LabelChip {
 }
 
 /**
- * 标签条：主题框底部那条预留带里的几个小方框。
+ * 标签条：布局为 labels 预留的那几条带子，最后一行贴着框底、前面的往上叠。
  *
- * layout.measureShape 遇到 labels 就把高度加了 fontSize*0.9，但一直没人脸上的空白
- * 比没留空白更糟 —— 这里就是把那条带子画上。放不下的标签直接不画（不折行、不溢出），
- * 因为框宽是布局量出来的，硬塞会把子主题的间距也算歪。
+ * 换行规则、chip 尺寸、左右让位（第一行让给角标、行尾让给折叠计数）全问 layout 要，
+ * 这里只把"行"翻译成坐标 —— 布局按一行预留、绘制排出两行的话，字就压到框外了。
  */
 export function labelChips(
   b: Pick<
@@ -230,20 +230,21 @@ export function labelChips(
   >
 ): LabelChip[] {
   if (!b.labels.length) return [];
-  const fs = b.fontSize;
-  const h = Math.max(9, Math.round(fs * 0.62));
-  const y = Math.round(b.y + b.h - h - fs * 0.18);
-  const textFs = fs * 0.68;
-  const gap = 4;
-  let x = Math.round(b.x + badgeExtent(b) + 2);
-  const right = b.x + b.w - (b.hiddenCount > 0 ? 15 : 5);
+  const insets = labelInsets({ note: b.note, link: b.link, hideRight: b.hiddenCount > 0 });
+  const rows = labelRows(b.labels, b.fontSize, b.w, insets);
+  const h = chipHeight(b.fontSize);
   const out: LabelChip[] = [];
-  for (const text of b.labels) {
-    const w = Math.round(textWidth(text, textFs) + 8);
-    if (x + w > right) break;
-    out.push({ x, y, w, h, text });
-    x += w + gap;
-  }
+  rows.forEach((row, i) => {
+    const y = Math.round(
+      b.y + b.h - b.fontSize * 0.18 - h * (rows.length - i) - 2 * (rows.length - i - 1)
+    );
+    let x = Math.round(b.x + (i === 0 ? insets.left : 6));
+    for (const text of row) {
+      const w = chipWidth(text, b.fontSize);
+      out.push({ x, y, w, h, text });
+      x += w + 4;
+    }
+  });
   return out;
 }
 

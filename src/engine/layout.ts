@@ -137,8 +137,21 @@ export function measureShape(
     h = Math.max(h, s.transform.h || 0);
   }
   const marks = (extras.marks?.length ?? 0) > 0;
-  const labels = (extras.labels?.length ?? 0) > 0;
-  if (marks || labels) h += fontSize * 0.9;
+  const labels = extras.labels ?? [];
+  if (labels.length) {
+    const insets = labelInsets({
+      note: Boolean(extras.note),
+      link: Boolean(extras.hyperlink),
+      hideRight: Boolean(extras.collapsed && s.childIds.length),
+    });
+    const widest = Math.max(...labels.map((t) => chipWidth(t, fontSize)));
+    // 单条标签比框还宽时把框撑到能装下它，否则那条标签永远画不出来 —— 上限沿用主题的文本宽度上限。
+    if (!fixed)
+      w = Math.max(w, Math.min(DEFAULTS.topicMaxTextW, insets.left + widest + insets.right));
+    h += labelStripHeight(labelRows(labels, fontSize, w, insets).length, fontSize);
+  } else if (marks) {
+    h += fontSize * 0.9;
+  }
   if (extras.image) {
     w = Math.max(w, (extras.image.width ?? 64) + DEFAULTS.topicPadX * 2);
     h += (extras.image.height ?? 64) + 6;
@@ -147,6 +160,68 @@ export function measureShape(
   if (extras.attachments?.length) h += fontSize * 0.9;
   if (extras.note) w += 6;
   return { w: Math.round(w), h: Math.round(h), lines };
+}
+
+/** 标签条：一条 chip 的字号比例、内边距与行距。布局预留的高和绘制用的坐标都从这里出（P-2）。 */
+const CHIP_PAD_X = 4;
+const CHIP_GAP_X = 4;
+const CHIP_GAP_Y = 2;
+const CHIP_BOTTOM = 0.18;
+const CHIP_H_RATIO = 0.62;
+const CHIP_TEXT_RATIO = 0.68;
+
+/** 一枚角标在底边带上占掉的宽度：图形本身宽 8 / 7，各留一点呼吸。 */
+export const BADGE_STEP = { note: 11, link: 8 };
+
+export function badgeExtent(b: { note?: boolean; link?: boolean }): number {
+  return 6 + (b.note ? BADGE_STEP.note : 0) + (b.link ? BADGE_STEP.link : 0);
+}
+
+/** 标签条左让给角标、右让给折叠计数；布局与绘制必须用同一个算法。 */
+export function labelInsets(b: { note?: boolean; link?: boolean; hideRight?: boolean }): {
+  left: number;
+  right: number;
+} {
+  return { left: badgeExtent(b) + 2, right: b.hideRight ? 15 : 5 };
+}
+
+export function chipHeight(fontSize: number): number {
+  return Math.max(9, Math.round(fontSize * CHIP_H_RATIO));
+}
+
+export function chipWidth(text: string, fontSize: number): number {
+  return Math.round(textWidth(text, fontSize * CHIP_TEXT_RATIO) + CHIP_PAD_X * 2);
+}
+
+/** 一行能放几条就放几条，剩下的换行。返回渲染行。 */
+export function labelRows(
+  labels: string[],
+  fontSize: number,
+  boxW: number,
+  insets: { left: number; right: number }
+): string[][] {
+  const rows: string[][] = [];
+  let cur: string[] = [];
+  let used = insets.left;
+  const limit = Math.max(insets.left, boxW - insets.right);
+  for (const t of labels) {
+    const w = chipWidth(t, fontSize);
+    if (cur.length && used + CHIP_GAP_X + w > limit) {
+      rows.push(cur);
+      cur = [];
+      used = 6;
+    }
+    cur.push(t);
+    used += (cur.length > 1 ? CHIP_GAP_X : 0) + w;
+  }
+  if (cur.length) rows.push(cur);
+  return rows;
+}
+
+export function labelStripHeight(rows: number, fontSize: number): number {
+  if (!rows) return 0;
+  const h = chipHeight(fontSize);
+  return Math.round(rows * h + (rows - 1) * CHIP_GAP_Y + fontSize * CHIP_BOTTOM);
 }
 
 /**
