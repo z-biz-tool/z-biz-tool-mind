@@ -177,30 +177,6 @@ pub fn file_remove(path: String) -> Result<String, String> {
     backup::to_trash(p.to_str().ok_or_else(|| "路径不是合法 UTF-8".to_string())?)
 }
 
-// ---------- 路径 ----------
-
-#[tauri::command]
-pub fn path_validate(path: String, for_write: bool) -> Result<String, String> {
-    let p = paths::validate(&path, for_write)?;
-    Ok(p.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-pub fn path_prepare_write(path: String) -> Result<String, String> {
-    let (p, _) = paths::prepare_write(&path)?;
-    Ok(p.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-pub fn path_temp_dir() -> String {
-    std::env::temp_dir().to_string_lossy().to_string()
-}
-
-#[tauri::command]
-pub fn path_config_dir() -> String {
-    config::get_config_dir().to_string_lossy().to_string()
-}
-
 // ---------- 自动保存 ----------
 
 #[tauri::command]
