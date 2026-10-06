@@ -288,7 +288,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
               </Field>
               <Field
                 label="默认主题 ID"
-                hint="对应主题库里的 Edraw 主题编号；填一个不存在的编号会退到内置默认色板。"
+                hint="这个编号现在只落进配置文件：色板只有一套内置的 Edraw 默认值，没有主题库可挑，所以改它还不影响画面。导入的文档自带自己的配色，与这里无关。"
               >
                 <Input
                   size="small"
