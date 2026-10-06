@@ -286,7 +286,9 @@ export function relationshipPaths(page: Page, boxes: Record<string, NodeBox>): R
       nx = -nx;
       ny = -ny;
     }
-    const bow = Math.min(REL_BOW_MAX, len * REL_BOW_RATIO);
+    // 下限 24：两个相邻主题之间的弦只有几十像素，按比例弯就只剩一条直直的线，
+    // 看着像连线画歪了而不是画在框上（真机截图上就是这么露馅的）。
+    const bow = Math.max(24, Math.min(REL_BOW_MAX, len * REL_BOW_RATIO));
     const cx = (p0.x + p1.x) / 2 + nx * bow;
     const cy = (p0.y + p1.y) / 2 + ny * bow;
     out.push({

@@ -785,23 +785,6 @@ export function MindCanvas({ page }: MindCanvasProps) {
                 strokeWidth={1.6}
               />
             ))}
-            {/* 关系线：几何来自 paint.rels（layout.relationshipPaths），与导出同源 */}
-            {paint.rels.map((r) => (
-              <g key={`rel-${r.id}`} pointerEvents="none">
-                <path
-                  d={r.d}
-                  stroke={r.line}
-                  strokeWidth={r.lineWidth}
-                  strokeDasharray={r.dash}
-                  fill="none"
-                />
-                {r.text ? (
-                  <text x={r.lx} y={r.ly} fontSize={r.fontSize} textAnchor="middle" fill={r.line}>
-                    {r.text}
-                  </text>
-                ) : null}
-              </g>
-            ))}
           </g>
 
           {paint.boxes.map((b) => (
@@ -882,6 +865,25 @@ export function MindCanvas({ page }: MindCanvasProps) {
                   </text>
                 </g>
               )}
+            </g>
+          ))}
+
+          {/* 关系线压在主题之上（几何来自 paint.rels，与导出同源）：
+              它常要从别的主题身上跨过去，画在框底下等于没画 */}
+          {paint.rels.map((r) => (
+            <g key={`rel-${r.id}`} pointerEvents="none">
+              <path
+                d={r.d}
+                stroke={r.line}
+                strokeWidth={r.lineWidth}
+                strokeDasharray={r.dash}
+                fill="none"
+              />
+              {r.text ? (
+                <text x={r.lx} y={r.ly} fontSize={r.fontSize} textAnchor="middle" fill={r.line}>
+                  {r.text}
+                </text>
+              ) : null}
             </g>
           ))}
 

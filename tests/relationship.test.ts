@@ -124,6 +124,17 @@ eq("线上写着说明文字", relStyled.text, "依赖");
 const svg = buildSvg(styled);
 ok("导出的 SVG 里就是同一条路径", svg.includes(`d="${relStyled.d}"`), relStyled.d);
 ok("导出的 SVG 里有线上那四个字", svg.includes(">依赖</text>"));
+// 关系线常从别的主题身上跨过去：画在框底下，那段弧就被填色盖得一个字都不露
+ok(
+  "关系线画在所有矩形之后",
+  svg.indexOf(`d="${relStyled.d}"`) > svg.lastIndexOf("<rect"),
+  `rel@${svg.indexOf(`d="${relStyled.d}"`)} lastRect@${svg.lastIndexOf("<rect")}`
+);
+ok(
+  "相邻主题之间也弯得出来（不是贴着框的一条直线）",
+  Math.abs(p[3] - (p[1] + p[5]) / 2) >= 12,
+  rel[0].d
+);
 const paintRel = paintPage(styled).rels;
 eq("画布与导出共用一份关系线几何", paintRel[0].d, relStyled.d);
 

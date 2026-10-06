@@ -160,18 +160,6 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
     out.push(`<path d="${esc(c.d)}" stroke="${strokeOf(p, c)}" stroke-width="1.6"/>`);
   }
   out.push(`</g>`);
-  for (const r of p.rels) {
-    out.push(
-      `<path d="${esc(r.d)}" stroke="${r.line}" stroke-width="${round(r.lineWidth)}"${
-        r.dash ? ` stroke-dasharray="${r.dash}"` : ""
-      } fill="none"/>`
-    );
-    if (r.text) {
-      out.push(
-        `<text x="${round(r.lx)}" y="${round(r.ly)}" font-size="${round(r.fontSize)}" text-anchor="middle" fill="${r.line}">${esc(r.text)}</text>`
-      );
-    }
-  }
   for (const b of p.boxes) {
     const rx = Math.min(b.rounding, b.w / 2, b.h / 2);
     out.push(
@@ -201,6 +189,20 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
           `fill="none" stroke="${b.line}" stroke-width="1"/>` +
           `<text x="${round(c.x + c.w / 2)}" y="${round(c.y + c.h / 2 + b.fontSize * 0.24)}" ` +
           `font-size="${round(b.fontSize * 0.68)}" text-anchor="middle" fill="${b.textColor}">${esc(c.text)}</text>`
+      );
+    }
+  }
+  // 关系线压在主题之上：它本来就常从别的主题身上跨过去，画在框底下等于没画
+  // （第一版就是这样，DOM 里数得出那条 path，屏幕上却一个字都没露）。
+  for (const r of p.rels) {
+    out.push(
+      `<path d="${esc(r.d)}" stroke="${r.line}" stroke-width="${round(r.lineWidth)}"${
+        r.dash ? ` stroke-dasharray="${r.dash}"` : ""
+      } fill="none"/>`
+    );
+    if (r.text) {
+      out.push(
+        `<text x="${round(r.lx)}" y="${round(r.ly)}" font-size="${round(r.fontSize)}" text-anchor="middle" fill="${r.line}">${esc(r.text)}</text>`
       );
     }
   }
