@@ -20,7 +20,7 @@ export const PROJECTIONS: { id: Projection; label: string }[] = [
   { id: "traverse", label: "浏览" },
 ];
 
-export type DialogKind = "export" | "options" | "search" | "history" | "share" | null;
+export type DialogKind = "export" | "options" | "search" | "history" | "share" | "topicInfo" | null;
 
 interface UiState {
   projection: Projection;
@@ -48,7 +48,9 @@ interface UiState {
   openDialog: (d: DialogKind) => void;
   closeDialog: () => void;
   setExportFormat: (f: ExportFormat) => void;
-  setSearch: (patch: Partial<Pick<UiState, "searchQuery" | "inNote" | "caseSensitive" | "wholeWord">>) => void;
+  setSearch: (
+    patch: Partial<Pick<UiState, "searchQuery" | "inNote" | "caseSensitive" | "wholeWord">>
+  ) => void;
   setActiveMatch: (i: number) => void;
   setStartPage: (v: boolean) => void;
   toggleSidebar: () => void;
@@ -78,7 +80,10 @@ export const useUi = create<UiState>((set, get) => ({
     // 档位对齐实测的 8 档缩放菜单：不在档位上时先跳到最近的一档。
     let ix = steps.indexOf(z as (typeof steps)[number]);
     if (ix < 0) {
-      ix = steps.reduce((best, s, i) => (Math.abs(s - z) < Math.abs(steps[best] - z) ? i : best), 0);
+      ix = steps.reduce(
+        (best, s, i) => (Math.abs(s - z) < Math.abs(steps[best] - z) ? i : best),
+        0
+      );
     } else {
       ix = Math.min(steps.length - 1, Math.max(0, ix + dir));
     }
@@ -90,7 +95,8 @@ export const useUi = create<UiState>((set, get) => ({
    * 无论开关都没有区别，按钮上的百分比也只是骗自己。）
    */
   fitZoom: () => set((s) => ({ fitNonce: s.fitNonce + 1 })),
-  setDisplayLevels: (n) => set({ displayLevels: DISPLAY_LEVELS.includes(n) ? n : get().displayLevels }),
+  setDisplayLevels: (n) =>
+    set({ displayLevels: DISPLAY_LEVELS.includes(n) ? n : get().displayLevels }),
   openDialog: (dialog) => set({ dialog, searchOpen: dialog === "search" }),
   closeDialog: () => set({ dialog: null, searchOpen: false }),
   setExportFormat: (exportFormat) => set({ exportFormat }),

@@ -691,6 +691,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
         run: () => removeTopics([id]),
       });
     barBtns.push({
+      k: "note",
+      label: "附注",
+      tip: "备注与超链接",
+      run: () => useUi.getState().openDialog("topicInfo"),
+    });
+    barBtns.push({
       k: "edit",
       label: "改名",
       tip: "编辑文字（F2 或双击）",

@@ -7,18 +7,31 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App as AntdApp, Button, Input, Modal, Segmented, Tabs, Tooltip } from "antd";
-import { AppErrorBoundary, AppShell, PanelErrorBoundary, ThemeProvider, ToolGroup, useTheme } from "./_shared/index.ts";
+import {
+  AppErrorBoundary,
+  AppShell,
+  PanelErrorBoundary,
+  ThemeProvider,
+  ToolGroup,
+  useTheme,
+} from "./_shared/index.ts";
 import { PROJECTION_VIEWS } from "./views/index.ts";
 import { StartView } from "./views/StartView.tsx";
 import { SearchPanel } from "./views/SearchPanel.tsx";
 import { HistoryPanel } from "./views/HistoryPanel.tsx";
 import { ExportDialog } from "./views/ExportDialog.tsx";
+import { TopicInfoDialog } from "./views/TopicInfoDialog.tsx";
 import { OptionsView } from "./views/OptionsView.tsx";
 import { activeDoc, activePage, depthOf, dirtyOf, useDoc } from "./stores/docStore.ts";
 import { PROJECTIONS, useUi, type Projection } from "./stores/uiStore.ts";
 import { startRecentListeners, useRecent } from "./stores/recentStore.ts";
 import { useSettings } from "./stores/settingsStore.ts";
-import { registerShortcuts, shortcutLabel, useGlobalShortcuts, type ShortcutHandlers } from "./utils/shortcuts.ts";
+import {
+  registerShortcuts,
+  shortcutLabel,
+  useGlobalShortcuts,
+  type ShortcutHandlers,
+} from "./utils/shortcuts.ts";
 import { canSave } from "./utils/entitlement.ts";
 import { humanSize, timestampName } from "./utils/id.ts";
 import { autosaveNote, newestPendingAutosave, startAutosave } from "./services/autosave.ts";
@@ -39,7 +52,11 @@ import type { DocumentModel } from "./types/model.ts";
 const EMMX_FILTER = [{ name: "亿图脑图文件", extensions: ["emmx"] }];
 
 const THEME_ORDER = ["light", "dark", "system"] as const;
-const THEME_LABEL: Record<(typeof THEME_ORDER)[number], string> = { light: "浅色", dark: "深色", system: "跟随系统" };
+const THEME_LABEL: Record<(typeof THEME_ORDER)[number], string> = {
+  light: "浅色",
+  dark: "深色",
+  system: "跟随系统",
+};
 
 function stemOf(p: string): string {
   return (p.split(/[\\/]/).pop() ?? p).replace(/\.[^.]+$/, "") || p;
@@ -108,7 +125,11 @@ function Shell() {
     }
     let target = s.path;
     if (!target) {
-      target = await pickSavePath({ title: "保存脑图", defaultPath: `${s.title}.emmx`, filters: EMMX_FILTER });
+      target = await pickSavePath({
+        title: "保存脑图",
+        defaultPath: `${s.title}.emmx`,
+        filters: EMMX_FILTER,
+      });
       if (!target) return false;
       if (!/\.[^.]+$/.test(target)) target += ".emmx";
     }
@@ -132,7 +153,7 @@ function Shell() {
       if (ok) message.success(`已另存为：${useDoc.getState().path}`);
       else message.error(useDoc.getState().error ?? "另存为失败");
     },
-    [message],
+    [message]
   );
 
   /* ---------------- 换文档 ---------------- */
@@ -154,14 +175,14 @@ function Shell() {
       if (how === "save" && !(await saveNow())) return;
       next.run();
     },
-    [pendingSwitch, saveNow],
+    [pendingSwitch, saveNow]
   );
 
   const show = useCallback(
     (ok: boolean) => {
       if (ok) setStartPage(false);
     },
-    [setStartPage],
+    [setStartPage]
   );
 
   const doNew = useCallback(() => {
@@ -185,7 +206,7 @@ function Shell() {
           });
       });
     },
-    [guard, message, show],
+    [guard, message, show]
   );
 
   const doOpen = useCallback(async () => {
@@ -207,7 +228,9 @@ function Shell() {
       return;
     }
     if (kind === "xmind") {
-      message.error("暂不支持导入 .xmind：它的主题关系写在自己的 content.json 里，还没有对应的解析器。");
+      message.error(
+        "暂不支持导入 .xmind：它的主题关系写在自己的 content.json 里，还没有对应的解析器。"
+      );
       return;
     }
     guard("导入", () => {
@@ -223,12 +246,16 @@ function Shell() {
           else built = docFromOutline(text, stem, kind === "markdown");
           const shapes = Object.keys(built.pages[0]?.shapes ?? {}).length;
           if (!shapes) {
-            message.error("没有解析出任何主题：请确认文件是缩进文本 / Markdown / FreeMind / OPML / CSV 之一。");
+            message.error(
+              "没有解析出任何主题：请确认文件是缩进文本 / Markdown / FreeMind / OPML / CSV 之一。"
+            );
             return;
           }
           if (useDoc.getState().applyDoc(built, null, stem)) {
             setStartPage(false);
-            message.success(`已导入 ${shapes} 个主题（${kind}），还没有写进 .emmx，用「保存」落盘。`);
+            message.success(
+              `已导入 ${shapes} 个主题（${kind}），还没有写进 .emmx，用「保存」落盘。`
+            );
           }
         } catch (e) {
           message.error(e instanceof Error ? e.message : String(e));
@@ -240,7 +267,11 @@ function Shell() {
   const doSaveAs = useCallback(async () => {
     const s = useDoc.getState();
     if (!s.hist) return;
-    const target = await pickSavePath({ title: "另存为", defaultPath: `${s.title}.emmx`, filters: EMMX_FILTER });
+    const target = await pickSavePath({
+      title: "另存为",
+      defaultPath: `${s.title}.emmx`,
+      filters: EMMX_FILTER,
+    });
     if (target) await saveTo(target);
   }, [saveTo]);
 
@@ -364,10 +395,15 @@ function Shell() {
           </span>
         ),
       })),
-    [pages],
+    [pages]
   );
 
-  const aside = !sidebar || !page ? null : dialog === "search" ? <SearchPanel page={page} /> : dialog === "history" ? <HistoryPanel page={page} /> : null;
+  const aside =
+    !sidebar || !page ? null : dialog === "search" ? (
+      <SearchPanel page={page} />
+    ) : dialog === "history" ? (
+      <HistoryPanel page={page} />
+    ) : null;
   const Projection = PROJECTION_VIEWS[projection];
   const label = PROJECTIONS.find((p) => p.id === projection)?.label ?? "思维导图";
 
@@ -382,15 +418,27 @@ function Shell() {
         <Button size="small" onClick={() => void doOpen()} title={shortcutLabel("open")}>
           打开
         </Button>
-        <Tooltip title={`导入缩进文本 / Markdown / FreeMind / OPML / CSV（${IMPORT_EXTENSIONS.join("、")}）`}>
+        <Tooltip
+          title={`导入缩进文本 / Markdown / FreeMind / OPML / CSV（${IMPORT_EXTENSIONS.join("、")}）`}
+        >
           <Button size="small" onClick={() => void doImport()}>
             导入
           </Button>
         </Tooltip>
-        <Button size="small" disabled={!hasDoc} onClick={() => void saveNow()} title={shortcutLabel("save")}>
+        <Button
+          size="small"
+          disabled={!hasDoc}
+          onClick={() => void saveNow()}
+          title={shortcutLabel("save")}
+        >
           保存
         </Button>
-        <Button size="small" disabled={!hasDoc} onClick={() => void doSaveAs()} title={shortcutLabel("saveAs")}>
+        <Button
+          size="small"
+          disabled={!hasDoc}
+          onClick={() => void doSaveAs()}
+          title={shortcutLabel("saveAs")}
+        >
           另存为
         </Button>
       </ToolGroup>
@@ -436,13 +484,27 @@ function Shell() {
       </ToolGroup>
 
       <ToolGroup>
-        <Button size="small" disabled={!hasDoc} onClick={() => (dialog === "search" ? closeDialog() : openDialog("search"))} title={shortcutLabel("search")}>
+        <Button
+          size="small"
+          disabled={!hasDoc}
+          onClick={() => (dialog === "search" ? closeDialog() : openDialog("search"))}
+          title={shortcutLabel("search")}
+        >
           查找
         </Button>
-        <Button size="small" disabled={!hasDoc} onClick={() => (dialog === "history" ? closeDialog() : openDialog("history"))}>
+        <Button
+          size="small"
+          disabled={!hasDoc}
+          onClick={() => (dialog === "history" ? closeDialog() : openDialog("history"))}
+        >
           历史版本
         </Button>
-        <Button size="small" disabled={!hasDoc} onClick={() => openDialog("export")} title={shortcutLabel("export")}>
+        <Button
+          size="small"
+          disabled={!hasDoc}
+          onClick={() => openDialog("export")}
+          title={shortcutLabel("export")}
+        >
           导出
         </Button>
         <Button size="small" onClick={() => openDialog("options")} title={shortcutLabel("options")}>
@@ -454,12 +516,21 @@ function Shell() {
         <Tooltip title={`界面主题：${THEME_LABEL[mode]}，点击切换下一个`}>
           <Button
             size="small"
-            onClick={() => void patchSettings("general", { theme: THEME_ORDER[(THEME_ORDER.indexOf(mode) + 1) % THEME_ORDER.length] })}
+            onClick={() =>
+              void patchSettings("general", {
+                theme: THEME_ORDER[(THEME_ORDER.indexOf(mode) + 1) % THEME_ORDER.length],
+              })
+            }
           >
             主题
           </Button>
         </Tooltip>
-        <Button size="small" type={sidebar ? "primary" : "default"} disabled={!hasDoc} onClick={toggleSidebar}>
+        <Button
+          size="small"
+          type={sidebar ? "primary" : "default"}
+          disabled={!hasDoc}
+          onClick={toggleSidebar}
+        >
           侧栏
         </Button>
       </ToolGroup>
@@ -476,9 +547,13 @@ function Shell() {
       {page && <span>{Object.keys(page.shapes).length} 个主题</span>}
       {page && selection.length > 1 && <span>选中 {selection.length} 个</span>}
       <span>{warnings.length ? `解析告警 ${warnings.length} 条` : "无解析告警"}</span>
-      <span>撤销栈 {undoDepth}/{undoDepth + redoDepth}</span>
+      <span>
+        撤销栈 {undoDepth}/{undoDepth + redoDepth}
+      </span>
       <span className="zm-bar-spacer" />
-      <span>{busy ? "处理中…" : native.available ? "桌面模式" : "浏览器模式（文件与备份受限）"}</span>
+      <span>
+        {busy ? "处理中…" : native.available ? "桌面模式" : "浏览器模式（文件与备份受限）"}
+      </span>
     </>
   );
 
@@ -502,7 +577,8 @@ function Shell() {
                   return;
                 }
                 if (typeof target !== "string") return;
-                if (!useDoc.getState().removePage(target)) message.warning("至少需要保留一张画布。");
+                if (!useDoc.getState().removePage(target))
+                  message.warning("至少需要保留一张画布。");
               }}
               tabBarExtraContent={
                 <Button size="small" type="text" onClick={() => setStartPage(true)}>
@@ -526,6 +602,7 @@ function Shell() {
 
       <ExportDialog open={dialog === "export"} onClose={closeDialog} />
       <OptionsView open={dialog === "options"} onClose={closeDialog} />
+      <TopicInfoDialog page={page} onClose={closeDialog} />
 
       <Modal
         open={Boolean(pendingSwitch)}
@@ -557,7 +634,8 @@ function Shell() {
         okText="重命名"
         onCancel={() => setRenaming(null)}
         onOk={() => {
-          if (renaming?.name.trim()) useDoc.getState().renamePage(renaming.id, renaming.name.trim());
+          if (renaming?.name.trim())
+            useDoc.getState().renamePage(renaming.id, renaming.name.trim());
           setRenaming(null);
         }}
       >
@@ -565,7 +643,8 @@ function Shell() {
           value={renaming?.name ?? ""}
           onChange={(e) => setRenaming((r) => (r ? { ...r, name: e.target.value } : r))}
           onPressEnter={() => {
-            if (renaming?.name.trim()) useDoc.getState().renamePage(renaming.id, renaming.name.trim());
+            if (renaming?.name.trim())
+              useDoc.getState().renamePage(renaming.id, renaming.name.trim());
             setRenaming(null);
           }}
           placeholder="画布名称"
@@ -582,7 +661,9 @@ function Shell() {
       >
         <p>{snapshot ? autosaveNote(snapshot) : ""}</p>
         <p>
-          {snapshot ? `位置：${snapshot.path} · ${humanSize(snapshot.size)} · ${timestampName(new Date(snapshot.modifiedAt))}` : ""}
+          {snapshot
+            ? `位置：${snapshot.path} · ${humanSize(snapshot.size)} · ${timestampName(new Date(snapshot.modifiedAt))}`
+            : ""}
         </p>
         <p>恢复后这些改动算"还没落盘"，请用「另存为」写成文件。</p>
       </Modal>
