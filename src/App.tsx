@@ -16,7 +16,7 @@ import { ExportDialog } from "./views/ExportDialog.tsx";
 import { OptionsView } from "./views/OptionsView.tsx";
 import { activeDoc, activePage, depthOf, dirtyOf, useDoc } from "./stores/docStore.ts";
 import { PROJECTIONS, useUi, type Projection } from "./stores/uiStore.ts";
-import { useRecent } from "./stores/recentStore.ts";
+import { startRecentListeners, useRecent } from "./stores/recentStore.ts";
 import { useSettings } from "./stores/settingsStore.ts";
 import { registerShortcuts, shortcutLabel, useGlobalShortcuts, type ShortcutHandlers } from "./utils/shortcuts.ts";
 import { canSave } from "./utils/entitlement.ts";
@@ -258,6 +258,7 @@ function Shell() {
   }, []);
 
   useEffect(() => startAutosave(), []);
+  useEffect(() => startRecentListeners(), []);
 
   /** 启动时问一句"有没有没存下来的东西"；判定与格式化都在 services/autosave，这里只负责打断。 */
   useEffect(() => {
@@ -269,6 +270,32 @@ function Shell() {
       alive = false;
     };
   }, []);
+
+  /**
+   * 启动时恢复上次会话：选项开着，冷启动就直接回到"上次打开的那一份"。
+   *
+   * 三条退让：崩溃快照的恢复询问优先（那是没存下来的东西，压着它开文件等于把改动藏起来）；
+   * 已经有文档就不插手（用户可能是自己挑的文件）；整个进程只做一次，之后他回起始页是自愿的，
+   * 不能每次回起始页都被一份"上次会话"顶回去。
+   */
+  const settingsLoaded = useSettings((s) => s.loaded);
+  const recentItems = useRecent((s) => s.recent);
+  const recentLoading = useRecent((s) => s.loading);
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (autoOpened.current) return;
+    const restore = useSettings.getState().settings.general.restoreLastSession;
+    if (!settingsLoaded || !restore || recentLoading || snapshot) return;
+    if (!useDoc.getState().hist) {
+      const last = [...recentItems].sort((a, b) => b.openedAt - a.openedAt)[0];
+      if (last) {
+        autoOpened.current = true;
+        openPicked(last.path);
+        return;
+      }
+    }
+    autoOpened.current = true;
+  }, [settingsLoaded, recentLoading, recentItems, snapshot, openPicked]);
 
   const restoreSnapshot = useCallback(async () => {
     const item = snapshot;
@@ -400,7 +427,7 @@ function Shell() {
         <Button size="small" disabled={!hasDoc} onClick={() => stepZoom(-1)} title="缩小">
           －
         </Button>
-        <Button size="small" disabled={!hasDoc} onClick={fitZoom} title="恢复 100%">
+        <Button size="small" disabled={!hasDoc} onClick={() => fitZoom()} title="适应画布">
           {Math.round(zoom * 100)}%
         </Button>
         <Button size="small" disabled={!hasDoc} onClick={() => stepZoom(1)} title="放大">

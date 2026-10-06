@@ -23,6 +23,7 @@ import type { LayoutCode, Page } from "../types/model.ts";
 import { plainText } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
 import { paintPage, type Paint, type ShapePaint } from "../engine/export/svg.ts";
+import { fitView } from "../engine/view.ts";
 import type { NodeBox } from "../engine/layout.ts";
 import {
   descendants,
@@ -224,6 +225,8 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const zoom = useUi((s) => s.zoom);
+  const setZoom = useUi((s) => s.setZoom);
+  const fitNonce = useUi((s) => s.fitNonce);
   const displayLevels = useUi((s) => s.displayLevels);
   const selection = useDoc((s) => s.selection);
   const editingId = useDoc((s) => s.editingId);
@@ -288,15 +291,36 @@ export function MindCanvas({ page }: MindCanvasProps) {
   // 屏幕中心那个世界点不动，否则画面会越缩越偏。
   const zoomAnchor = useRef<{ sx: number; sy: number } | null>(null);
   const prevZoom = useRef(zoom);
+  // 适应画布自己已经把 pan 算到位了，这一次 zoom 变化不能再按中心重算，否则会被拽偏。
+  const fitted = useRef(false);
   useEffect(() => {
     const z0 = prevZoom.current;
     prevZoom.current = zoom;
     if (z0 === zoom) return;
+    if (fitted.current) {
+      fitted.current = false;
+      return;
+    }
     const { pan: p, size: s } = live.current;
     const a = zoomAnchor.current ?? { sx: s.w / 2, sy: s.h / 2 };
     zoomAnchor.current = null;
     setPan({ x: a.sx - ((a.sx - p.x) / z0) * zoom, y: a.sy - ((a.sy - p.y) / z0) * zoom });
   }, [zoom]);
+
+  // ------------------------------------------------------------ 适应画布
+  // 请求可能早于首次量到视口尺寸（打开文档时画布还没挂载），所以先记下"还欠一次适应"，
+  // 等 size 到位再补上，否则这次请求会被静默丢掉。
+  const fitWanted = useRef(false);
+  useEffect(() => {
+    if (fitNonce > 0) fitWanted.current = true;
+    const { size: s, paint: p } = live.current;
+    const fit = fitView({ w: s.w, h: s.h }, p);
+    if (!fitWanted.current || !fit) return;
+    fitWanted.current = false;
+    fitted.current = true;
+    setZoom(fit.zoom);
+    setPan(fit.pan);
+  }, [fitNonce, size.w, size.h, setZoom]);
 
   useEffect(() => {
     const el = wrapRef.current;

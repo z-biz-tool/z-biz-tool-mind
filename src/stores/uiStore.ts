@@ -42,6 +42,8 @@ interface UiState {
   setZoom: (z: number) => void;
   stepZoom: (dir: 1 | -1) => void;
   fitZoom: () => void;
+  /** 每 +1 就让画布重新求一次"整张图装进视口"的缩放与位移。 */
+  fitNonce: number;
   setDisplayLevels: (n: number) => void;
   openDialog: (d: DialogKind) => void;
   closeDialog: () => void;
@@ -66,6 +68,7 @@ export const useUi = create<UiState>((set, get) => ({
   activeMatch: -1,
   startPage: true,
   sidebar: true,
+  fitNonce: 0,
 
   setProjection: (projection) => set({ projection, startPage: false }),
   setZoom: (zoom) => set({ zoom: Math.min(4, Math.max(0.25, zoom)) }),
@@ -81,7 +84,12 @@ export const useUi = create<UiState>((set, get) => ({
     }
     set({ zoom: steps[ix] });
   },
-  fitZoom: () => set({ zoom: 1 }),
+  /**
+   * "适应画布"是一次请求，不是一次计算：视口尺寸和布局外框都只在 MindCanvas 手里，
+   * 这里能做的只有按一下铃。（以前它直接写 zoom=1，于是"打开时自动适应画布"这个选项
+   * 无论开关都没有区别，按钮上的百分比也只是骗自己。）
+   */
+  fitZoom: () => set((s) => ({ fitNonce: s.fitNonce + 1 })),
   setDisplayLevels: (n) => set({ displayLevels: DISPLAY_LEVELS.includes(n) ? n : get().displayLevels }),
   openDialog: (dialog) => set({ dialog, searchOpen: dialog === "search" }),
   closeDialog: () => set({ dialog: null, searchOpen: false }),

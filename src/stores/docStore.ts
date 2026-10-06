@@ -18,6 +18,7 @@ import { normalize } from "../engine/tree.ts";
 import { parseEmmx, writeEmmx } from "../engine/emmx/codec.ts";
 import { native } from "../services/native.ts";
 import { useSettings } from "./settingsStore.ts";
+import { useUi } from "./uiStore.ts";
 
 /**
  * 选项页的"默认布局"：新建文档和新建画布都必须真的读它，否则那个下拉框就是个摆设。
@@ -140,6 +141,8 @@ export const useDoc = create<DocStore>((set, get) => ({
       error: null,
       warnings: [],
     });
+    // 新建是一张干净的画布：上一份文档留下的 30% 不该跟着过来。
+    useUi.getState().setZoom(1);
   },
 
   async openBytes(bytes, path, title) {
@@ -181,6 +184,10 @@ export const useDoc = create<DocStore>((set, get) => ({
       error: null,
     }));
     if (path) void native.recentTouch(path, deriveTitle(path, first, "未命名脑图"), "local").catch(() => undefined);
+    // 打开文档总要让视口归位，但归哪儿由选项决定：勾了"打开时自动适应画布"就把整张图装进窗口，
+    // 没勾就照文件自己记的缩放（亿图把它写在 <Page Zoom>，我们一直在读，却从来没用上）。
+    if (useSettings.getState().settings.format.autoFitOnOpen) useUi.getState().fitZoom();
+    else useUi.getState().setZoom(first.props.zoom);
     return true;
   },
 

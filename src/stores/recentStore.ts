@@ -4,7 +4,8 @@
  * 每一项都单独 refreshX，因为它们的失效时机不同（保存只影响历史版本，删除只影响回收站）。
  */
 import { create } from "zustand";
-import { native, type AutosaveItem, type BackupEntry, type RecentItem } from "../services/native.ts";
+import { native, listen, type AutosaveItem, type BackupEntry, type RecentItem } from "../services/native.ts";
+import { useDoc } from "./docStore.ts";
 
 interface RecentStore {
   recent: RecentItem[];
@@ -180,3 +181,39 @@ export const useRecent = create<RecentStore>((set, get) => ({
     }
   },
 }));
+
+/**
+ * 订阅 Rust 侧的两条落盘事件，把列表顶新。
+ *
+ * 面板只在挂载和换文档时查一次：Ctrl+S 之后"历史版本"的条数不动，自动保存页签更是一个字都不变，
+ * 用户只能靠关掉再打开面板来确认自己没白存。订阅放在 store 而不是面板里，
+ * 这样面板没打开时列表也已经是新的，再进去就直接是准的。
+ * 浏览器模式没有事件源，listen 返回空退订，这里等于什么都不做。
+ */
+export function startRecentListeners(): () => void {
+  const unsubs: (() => void)[] = [];
+  let stopped = false;
+  const pairs: [string, () => Promise<void>][] = [
+    ["autosave-fired", () => useRecent.getState().refreshAutosave()],
+    // 存盘事件跟着当前文档走：面板上显示的就是这一份文件的历史，别把它刷成全部。
+    [
+      "emmx-saved",
+      () => useRecent.getState().refreshBackups(useDoc.getState().path ?? undefined),
+    ],
+  ];
+  void (async () => {
+    for (const [name, handler] of pairs) {
+      const un = await listen(name, () => void handler());
+      if (stopped) {
+        un();
+        continue;
+      }
+      unsubs.push(un);
+    }
+  })();
+  return () => {
+    stopped = true;
+    for (const un of unsubs) un();
+    unsubs.length = 0;
+  };
+}
