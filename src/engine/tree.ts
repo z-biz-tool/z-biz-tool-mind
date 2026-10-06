@@ -13,8 +13,8 @@
  * 4. 主题类型 = f(层级, 是否浮动)。
  */
 
-import type { Page, Shape } from "../types/model.ts";
-import { isTopic } from "../types/model.ts";
+import type { Page, RelationshipShape, Shape } from "../types/model.ts";
+import { isTopic, makeText } from "../types/model.ts";
 import { createShape, nextShapeId, topicTypeFor } from "../model/factory.ts";
 
 export function getShape(page: Page, id: string): Shape | undefined {
@@ -138,7 +138,11 @@ export function insertChild(page: Page, parentId: string, text = "", at?: number
   const level = levelOf(page, parentId) + 1;
   const shape = createShape(id, topicTypeFor(level, false), text, parentId);
   const childIds = [...parent.childIds];
-  childIds.splice(at === undefined ? childIds.length : Math.max(0, Math.min(at, childIds.length)), 0, id);
+  childIds.splice(
+    at === undefined ? childIds.length : Math.max(0, Math.min(at, childIds.length)),
+    0,
+    id
+  );
   let next: Page = { ...page, shapes: { ...page.shapes, [id]: shape } };
   next = setChildren(next, parentId, childIds);
   return { page: next, id };
@@ -168,7 +172,11 @@ export function insertParent(page: Page, id: string): InsertResult {
   const parentShape = createShape(newId, s.type, "", grandfather);
   let next: Page = { ...page, shapes: { ...page.shapes, [newId]: parentShape } };
   // 先把 s 从 grandfather 摘掉，接到 newId 下
-  next = setChildren(next, grandfather, gpChildren.filter((c) => c !== id));
+  next = setChildren(
+    next,
+    grandfather,
+    gpChildren.filter((c) => c !== id)
+  );
   next = setChildren(next, newId, [id]);
   const gpAfter = [...gpChildren];
   gpAfter.splice(ix, 1, newId);
@@ -195,9 +203,7 @@ export function removeShape(page: Page, id: string): Page {
   next = {
     ...next,
     shapes,
-    relationships: next.relationships.filter(
-      (r) => !doomed.has(r.beginId) && !doomed.has(r.endId)
-    ),
+    relationships: next.relationships.filter((r) => !doomed.has(r.beginId) && !doomed.has(r.endId)),
   };
   for (const key of Object.keys(next.shapes)) {
     const sh = next.shapes[key];
@@ -326,13 +332,58 @@ export function setFloating(page: Page, id: string, x: number, y: number, floati
 export function updateText(page: Page, id: string, text: string): Page {
   const s = page.shapes[id];
   if (!s) return page;
-  return patch(page, id, { ...s, text: { ...s.text, paragraphs: [{ runs: [{ text, charIx: 0 }], align: 1 }] } });
+  return patch(page, id, {
+    ...s,
+    text: { ...s.text, paragraphs: [{ runs: [{ text, charIx: 0 }], align: 1 }] },
+  });
 }
 
 export function updateExtras(page: Page, id: string, extras: Partial<Shape["extras"]>): Page {
   const s = page.shapes[id];
   if (!s) return page;
   return patch(page, id, { ...s, extras: { ...s.extras, ...extras } });
+}
+
+/** 两端无序地找同一条关系线：反向再点一次不该多出一条。 */
+export function relationshipBetween(
+  page: Page,
+  aId: string,
+  bId: string
+): RelationshipShape | undefined {
+  return page.relationships.find(
+    (r) => (r.beginId === aId && r.endId === bId) || (r.beginId === bId && r.endId === aId)
+  );
+}
+
+/**
+ * 连线 / 取消连线。亿图把关系线做成独立 Shape，但语义是"两点之间"，
+ * 所以端点必须都还在页面上：选中的主题被删掉后由 prune 摘掉整条线（见 removeShape）。
+ */
+export function toggleRelationship(page: Page, aId: string, bId: string): Page {
+  if (!aId || !bId || aId === bId) return page;
+  if (!page.shapes[aId] || !page.shapes[bId]) return page;
+  const hit = relationshipBetween(page, aId, bId);
+  if (hit) return { ...page, relationships: page.relationships.filter((r) => r.id !== hit.id) };
+  const rel: RelationshipShape = {
+    id: nextShapeId(page),
+    beginId: aId,
+    endId: bId,
+    text: makeText(""),
+    style: {},
+  };
+  return { ...page, relationships: [...page.relationships, rel] };
+}
+
+/** 关系线上的说明文字；画布、SVG 导出和 emmx 写侧都读这一个字段。 */
+export function setRelationshipText(page: Page, id: string, text: string): Page {
+  const rel = page.relationships.find((r) => r.id === id);
+  if (!rel) return page;
+  return {
+    ...page,
+    relationships: page.relationships.map((r) =>
+      r.id === id ? { ...r, text: makeText(text) } : r
+    ),
+  };
 }
 
 export function updateStyle(page: Page, id: string, style: Partial<Shape["style"]>): Page {
@@ -368,9 +419,14 @@ export function normalize(page: Page): Page {
   }
   // 2) 根：优先原有 rootId，其次唯一的 MainIdea，最后任意一个无父主题。
   const mainIdea = roots.find((id) => shapes[id].type === "MainIdea");
-  const rootId = shapes[page.rootId] && roots.includes(page.rootId) ? page.rootId : mainIdea ?? roots[0];
+  const rootId =
+    shapes[page.rootId] && roots.includes(page.rootId) ? page.rootId : (mainIdea ?? roots[0]);
   if (rootId) {
-    shapes[rootId] = { ...shapes[rootId], parentId: null, type: shapes[rootId].floating ? shapes[rootId].type : "MainIdea" };
+    shapes[rootId] = {
+      ...shapes[rootId],
+      parentId: null,
+      type: shapes[rootId].floating ? shapes[rootId].type : "MainIdea",
+    };
     for (const other of roots.filter((r) => r !== rootId && !shapes[r].floating)) {
       // 多出来的"无父主题"挂到根下：删掉它等于删用户的稿子，太危险。
       shapes[rootId].childIds.push(other);

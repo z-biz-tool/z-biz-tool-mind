@@ -13,8 +13,10 @@ import {
   computeLayout,
   labelInsets,
   labelRows,
+  relationshipPaths,
   type ConnectorPath,
   type LayoutResult,
+  type RelationshipPaint,
 } from "../layout.ts";
 import { descendants } from "../tree.ts";
 import {
@@ -67,6 +69,8 @@ export interface Paint {
   layout: LayoutResult;
   boxes: ShapePaint[];
   connectors: ConnectorPath[];
+  /** 关系线：几何来自 layout.relationshipPaths，画布和导出共用同一份。 */
+  rels: RelationshipPaint[];
   width: number;
   height: number;
   minX: number;
@@ -117,6 +121,7 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
     layout,
     boxes,
     connectors: layout.connectors,
+    rels: relationshipPaths(page, layout.boxes),
     width: layout.width + pad * 2,
     height: layout.height + pad * 2,
     minX: layout.bounds.minX - pad,
@@ -155,6 +160,18 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
     out.push(`<path d="${esc(c.d)}" stroke="${strokeOf(p, c)}" stroke-width="1.6"/>`);
   }
   out.push(`</g>`);
+  for (const r of p.rels) {
+    out.push(
+      `<path d="${esc(r.d)}" stroke="${r.line}" stroke-width="${round(r.lineWidth)}"${
+        r.dash ? ` stroke-dasharray="${r.dash}"` : ""
+      } fill="none"/>`
+    );
+    if (r.text) {
+      out.push(
+        `<text x="${round(r.lx)}" y="${round(r.ly)}" font-size="${round(r.fontSize)}" text-anchor="middle" fill="${r.line}">${esc(r.text)}</text>`
+      );
+    }
+  }
   for (const b of p.boxes) {
     const rx = Math.min(b.rounding, b.w / 2, b.h / 2);
     out.push(

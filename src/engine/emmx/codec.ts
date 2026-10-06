@@ -1010,6 +1010,13 @@ function buildRelationship(r: RelationshipShape, ctx: WriteCtx): XmlNode {
   n.children.push(el("BeginPt", { ID: r.beginId }));
   n.children.push(el("EndPt", { ID: r.endId }));
   n.children.push(buildTextNode(r.text));
+  // 线色、线宽、虚线都挂在 style 上：漏掉 ShapeFormat 的话，签名一变整份节点重生成，
+  // 用户挑过的线色就静默回到默认（和标签那条是同一类"读得到写不回"的 bug）。
+  const sf = el("ShapeFormat");
+  if (r.style.fill) sf.children.push(buildFill(r.style.fill));
+  if (r.style.line) sf.children.push(buildLine(r.style.line));
+  if (sf.children.length) n.children.push(sf);
+  if (r.style.mask !== undefined) n.children.push(el("StyleMask", { V: r.style.mask }));
   n.children.push(el("Geometries"));
   return n;
 }
@@ -1024,8 +1031,8 @@ function buildColor(c: ColorValue): XmlNode {
   });
 }
 
-function buildFill(f: FillFormat): XmlNode {
-  const n = el("FillFormat", { Type: f.type });
+function buildFill(f: FillFormat, tag = "FillFormat"): XmlNode {
+  const n = el(tag, { Type: f.type });
   if (f.type === "Gradient") {
     const g = el("GradFill", { Angle: f.angle ?? 0 });
     for (const s of f.stops ?? []) {
@@ -1041,11 +1048,15 @@ function buildFill(f: FillFormat): XmlNode {
 }
 
 function buildLine(l: NonNullable<ShapeStyle["line"]>): XmlNode {
-  const n = el("LineFormat");
+  // 线型写在属性上（读侧 attr(n,"LineStyle")），线色写在 <LineFill> 里：
+  // 写成 <FillFormat> 或漏掉 LineStyle，重开时解析不到，改一次线色就等于把颜色丢掉。
+  const n = el("LineFormat", { LineStyle: l.style ?? "Solid" });
   if (l.weight !== undefined) n.children.push(vNode("LineWeight", l.weight));
   if (l.rounding !== undefined) n.children.push(vNode("Rounding", l.rounding));
   if (l.cap) n.children.push(vNode("LineCap", l.cap));
-  if (l.fill) n.children.push(buildFill(l.fill));
+  if (l.beginArrow) n.children.push(vNode("BeginArrow", l.beginArrow));
+  if (l.endArrow) n.children.push(vNode("EndArrow", l.endArrow));
+  if (l.fill) n.children.push(buildFill(l.fill, "LineFill"));
   return n;
 }
 

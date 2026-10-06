@@ -12,9 +12,9 @@
  */
 
 import type { LayoutCode, Page, Shape } from "../types/model.ts";
-import { isTopic } from "../types/model.ts";
+import { isTopic, plainText } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
-import { defaultPalette, styleFor, type ThemePalette } from "./style.ts";
+import { defaultPalette, resolveColor, styleFor, type ThemePalette } from "./style.ts";
 
 export interface NodeBox {
   id: string;
@@ -226,6 +226,85 @@ export function labelStripHeight(rows: number, fontSize: number): number {
   if (!rows) return 0;
   const h = chipHeight(fontSize);
   return Math.round(rows * h + (rows - 1) * CHIP_GAP_Y + fontSize * CHIP_BOTTOM);
+}
+
+/**
+ * 关系线：两端锚在主题框边上，中间弯一道弧。画布与 SVG/PNG/PDF 共用这一份几何（P-2），
+ * 否则导出图上的弧和屏幕上不是同一条线。
+ */
+export interface RelationshipPaint {
+  id: string;
+  fromId: string;
+  toId: string;
+  d: string;
+  dash?: string;
+  /** 弧中点：关系线自带的文字画在这里。 */
+  lx: number;
+  ly: number;
+  text: string;
+  line: string;
+  lineWidth: number;
+  fontSize: number;
+}
+
+/** 弧高：固定上限 + 按弦长比例，免得两个远处主题之间的关系线弯得离谱。 */
+const REL_BOW_MAX = 60;
+const REL_BOW_RATIO = 0.22;
+
+/**
+ * 从盒子中心朝目标点发一条射线，取它穿出矩形边界的交点：
+ * 两个系数各自算"要走多少倍才撞到这条边"，取先撞到的那个，锚点因此一定落在框上。
+ */
+function edgePoint(b: NodeBox, tx: number, ty: number): { x: number; y: number } {
+  const dx = tx - b.x;
+  const dy = ty - b.y;
+  if (dx === 0 && dy === 0) return { x: b.x, y: b.y - b.h / 2 };
+  const k = Math.min(
+    dx === 0 ? Infinity : b.w / 2 / Math.abs(dx),
+    dy === 0 ? Infinity : b.h / 2 / Math.abs(dy)
+  );
+  return { x: b.x + dx * k, y: b.y + dy * k };
+}
+
+export function relationshipPaths(page: Page, boxes: Record<string, NodeBox>): RelationshipPaint[] {
+  const out: RelationshipPaint[] = [];
+  for (const r of page.relationships) {
+    // 端点在布局里不存在（折叠了、或主题被删了）就不画：半条关系线没有意义
+    const a = boxes[r.beginId];
+    const b = boxes[r.endId];
+    if (!a || !b) continue;
+    const p0 = edgePoint(a, b.x, b.y);
+    const p1 = edgePoint(b, a.x, a.y);
+    const vx = p1.x - p0.x;
+    const vy = p1.y - p0.y;
+    const len = Math.hypot(vx, vy) || 1;
+    let nx = -vy / len;
+    let ny = vx / len;
+    // 统一朝上弯；弦竖直时没有"上"可弯，就固定朝右。两个端点谁在前都只是让法向反一下，
+    // 这套挑选规则把它翻回来 —— 同一条关系线换存储顺序也不该弯到另一边去。
+    if (ny > 0 || (ny === 0 && nx < 0)) {
+      nx = -nx;
+      ny = -ny;
+    }
+    const bow = Math.min(REL_BOW_MAX, len * REL_BOW_RATIO);
+    const cx = (p0.x + p1.x) / 2 + nx * bow;
+    const cy = (p0.y + p1.y) / 2 + ny * bow;
+    out.push({
+      id: r.id,
+      fromId: r.beginId,
+      toId: r.endId,
+      d: `M ${round(p0.x)} ${round(p0.y)} Q ${round(cx)} ${round(cy)} ${round(p1.x)} ${round(p1.y)}`,
+      dash: r.style.line?.style === "Dashes" ? "6 4" : undefined,
+      // 二次曲线 t=0.5 处：(P0 + 2C + P1) / 4
+      lx: round((p0.x + 2 * cx + p1.x) / 4),
+      ly: round((p0.y + 2 * cy + p1.y) / 4),
+      text: plainText(r.text),
+      line: resolveColor(r.style.line?.fill?.color) ?? DEFAULTS.lineColor,
+      lineWidth: r.style.line?.weight && r.style.line.weight > 0 ? r.style.line.weight : 1.6,
+      fontSize: r.style.font?.size ?? DEFAULTS.fontSize,
+    });
+  }
+  return out;
 }
 
 /**

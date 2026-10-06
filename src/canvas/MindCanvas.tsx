@@ -45,7 +45,9 @@ import {
   setCollapsed,
   swapSibling,
   siblingIndex,
+  relationshipBetween,
   toggleCollapsed,
+  toggleRelationship,
   updateText,
 } from "../engine/tree.ts";
 import { useDoc } from "../stores/docStore.ts";
@@ -662,15 +664,17 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const rxOf = (b: ShapePaint) => Math.min(b.rounding, b.w / 2, b.h / 2);
 
   // ---------------------------------------------------------- 快捷操作条（§3.1）
-  // 只在"单选、没在打字、没在拖"时出现：多选时这五个动作会一次作用在几十个主题上，
-  // 太容易失手；编辑中让位给输入框。
-  const barTarget =
-    showQuickBar && !editingId && !drop && picked.length === 1
-      ? paint.boxes.find((b) => b.id === picked[0])
-      : undefined;
-  const barShape = barTarget ? page.shapes[barTarget.id] : undefined;
+  // 单选给主题动作；多选只给两个：一次作用在几十个主题上的按钮太容易失手，
+  // 而"连一条关系线"恰好只在两点之间有意义。编辑中让位给输入框。
+  const barBoxes =
+    showQuickBar && !editingId && !drop && (picked.length === 1 || picked.length === 2)
+      ? picked
+          .map((id) => paint.boxes.find((b) => b.id === id))
+          .filter((b): b is ShapePaint => Boolean(b))
+      : [];
+  const barShape = picked.length === 1 ? page.shapes[picked[0]] : undefined;
   const barBtns: { k: string; label: string; tip: string; run: () => void }[] = [];
-  if (barShape) {
+  if (barShape && barBoxes.length === 1) {
     const id = barShape.id;
     barBtns.push({
       k: "child",
@@ -711,20 +715,40 @@ export function MindCanvas({ page }: MindCanvasProps) {
       run: () => useDoc.getState().setEditing(id),
     });
   }
+  if (picked.length === 2 && barBoxes.length === 2) {
+    const [a, b] = picked;
+    const linked = Boolean(relationshipBetween(page, a, b));
+    barBtns.push({
+      k: "rel",
+      label: linked ? "取消连线" : "连线",
+      tip: linked ? "删掉这两个主题之间的关系线" : "在选中的两个主题之间连一条关系线",
+      run: () =>
+        useDoc
+          .getState()
+          .mutate(linked ? "取消关系线" : "新建关系线", (p) => toggleRelationship(p, a, b)),
+    });
+  }
   // 宽度按"中文字 12px + 左右内边距"估：条子居中偏几个像素不要紧，滑出视口才要紧。
   const barW = barBtns.reduce((n, b) => n + b.label.length * 12 + 16, 4) + (barBtns.length - 1) * 4;
-  const barAt = barTarget
-    ? quickBarAnchor(
-        {
-          left: pan.x + barTarget.x * zoom,
-          top: pan.y + barTarget.y * zoom,
-          width: barTarget.w * zoom,
-          height: barTarget.h * zoom,
-        },
-        size,
-        { w: barW, h: 28 }
-      )
-    : null;
+  // 多选时条子贴着"两个框的外接矩形"上方，正好压在关系线弧顶那一带。
+  // 注意 ShapePaint 的 x/y 已经是左上角（paintPage 里减过一半），不能再减一次。
+  const barAt = (() => {
+    if (!barBoxes.length) return null;
+    const l = Math.min(...barBoxes.map((b) => b.x));
+    const t = Math.min(...barBoxes.map((b) => b.y));
+    const r = Math.max(...barBoxes.map((b) => b.x + b.w));
+    const bot = Math.max(...barBoxes.map((b) => b.y + b.h));
+    return quickBarAnchor(
+      {
+        left: pan.x + l * zoom,
+        top: pan.y + t * zoom,
+        width: (r - l) * zoom,
+        height: (bot - t) * zoom,
+      },
+      size,
+      { w: barW, h: 28 }
+    );
+  })();
 
   return (
     <div
@@ -760,6 +784,23 @@ export function MindCanvas({ page }: MindCanvasProps) {
                 stroke={lineOf.get(c.toId) ?? DEFAULTS.lineColor}
                 strokeWidth={1.6}
               />
+            ))}
+            {/* 关系线：几何来自 paint.rels（layout.relationshipPaths），与导出同源 */}
+            {paint.rels.map((r) => (
+              <g key={`rel-${r.id}`} pointerEvents="none">
+                <path
+                  d={r.d}
+                  stroke={r.line}
+                  strokeWidth={r.lineWidth}
+                  strokeDasharray={r.dash}
+                  fill="none"
+                />
+                {r.text ? (
+                  <text x={r.lx} y={r.ly} fontSize={r.fontSize} textAnchor="middle" fill={r.line}>
+                    {r.text}
+                  </text>
+                ) : null}
+              </g>
             ))}
           </g>
 

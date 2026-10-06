@@ -18,10 +18,20 @@ export function nextShapeId(page: Page): string {
     const n = Number(id);
     if (Number.isFinite(n) && n > max) max = n;
   }
+  // 关系线在 .emmx 里同样是 Shape，占同一个号段：只看 shapes 会给新主题发出和关系线重复的 ID。
+  for (const r of page.relationships) {
+    const n = Number(r.id);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
   return String(max + 1);
 }
 
-export function createShape(id: string, type: ShapeType, text: string, parentId: string | null): Shape {
+export function createShape(
+  id: string,
+  type: ShapeType,
+  text: string,
+  parentId: string | null
+): Shape {
   return {
     id,
     type,
