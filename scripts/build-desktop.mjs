@@ -100,6 +100,8 @@ let bundles = "";
 const extra = [];
 
 if (os === "win32") {
+  // WiX 的 Product 默认码页是 1252：tauri.conf.json 里 fileAssociations.description 一写中文，
+  // light.exe 就报 LGHT0311 并且 .msi 根本产不出来（.exe 不受影响，NSIS 本身是 Unicode 的）。
   bundles = "nsis,msi"; // .exe（NSIS）+ .msi（WiX）
 } else if (os === "darwin") {
   bundles = "app,dmg";

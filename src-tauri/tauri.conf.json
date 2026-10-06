@@ -54,7 +54,7 @@
       {
         "ext": ["emmx"],
         "name": "emmx",
-        "description": "亿图脑图文档",
+        "description": "EMMX Mind Map Document",
         "mimeType": "application/zip",
         "role": "Editor"
       }
