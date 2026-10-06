@@ -36,8 +36,15 @@ if (!existsSync(FIXTURE)) {
   const entries = await readZip(bytes);
   ok("ZIP 读到 5 类条目", entries.length >= 10, `实际 ${entries.length}`);
   const names = entries.map((e) => e.name);
-  ok("ZIP 里有 page/page.xml", names.some((n) => /page\/page\.xml$/.test(n)), names.join(","));
-  ok("ZIP 里保住了中文文件名", names.some((n) => /media\/.*\.(png|jpg)/i.test(n) && /[^\x00-\x7f]/.test(n)));
+  ok(
+    "ZIP 里有 page/page.xml",
+    names.some((n) => /page\/page\.xml$/.test(n)),
+    names.join(",")
+  );
+  ok(
+    "ZIP 里保住了中文文件名",
+    names.some((n) => /media\/.*\.(png|jpg)/i.test(n) && /[^\x00-\x7f]/.test(n))
+  );
   const pageSrc = decodeBytes(entries.find((e) => /page\/page\.xml$/.test(e.name)).data);
   ok("page.xml 体积合理", pageSrc.length > 100_000, String(pageSrc.length));
 
@@ -83,7 +90,13 @@ if (!existsSync(FIXTURE)) {
   const a = parseXml(pageSrc);
   const b = parseXml(decodeBytes(rePage.data));
   ok("保存后的 page.xml 与原文件结构等价", nodeEquals(a, b));
-  ok("document.xml 也结构等价", nodeEquals(parseXml(decodeBytes(entries.find((e) => e.name === "document.xml").data)), parseXml(decodeBytes(reEntries.find((e) => e.name === "document.xml").data))));
+  ok(
+    "document.xml 也结构等价",
+    nodeEquals(
+      parseXml(decodeBytes(entries.find((e) => e.name === "document.xml").data)),
+      parseXml(decodeBytes(reEntries.find((e) => e.name === "document.xml").data))
+    )
+  );
 
   // --- 再解析一次，模型语义等价
   const again = await parseEmmx(saved);
@@ -91,13 +104,19 @@ if (!existsSync(FIXTURE)) {
 
   // --- 编辑后只有被改的节点重新生成
   const editedPage = updateText(page, page.shapes[page.rootId].childIds[0], "改过的分支");
-  const editedDoc = { ...doc, pages: doc.pages.map((p) => (p.id === editedPage.id ? editedPage : p)) };
+  const editedDoc = {
+    ...doc,
+    pages: doc.pages.map((p) => (p.id === editedPage.id ? editedPage : p)),
+  };
   const saved2 = await writeEmmx(editedDoc);
   const re2 = await readZip(saved2);
   const p2 = parseXml(decodeBytes(re2.find((e) => /page\/page\.xml$/.test(e.name)).data));
   const shapes2 = findAll(p2, "Shape");
   eq("编辑后 Shape 数量不变", shapes2.length, 163);
-  ok("编辑命中的那个分支文本已更新", decodeBytes(re2.find((e) => /page\/page\.xml$/.test(e.name)).data).includes("改过的分支"));
+  ok(
+    "编辑命中的那个分支文本已更新",
+    decodeBytes(re2.find((e) => /page\/page\.xml$/.test(e.name)).data).includes("改过的分支")
+  );
   const roundEdited = await parseEmmx(saved2);
   const rp = roundEdited.doc.pages[0];
   eq("编辑结果可再读回", rp.shapes[rp.rootId].childIds[0], page.shapes[page.rootId].childIds[0]);
@@ -125,12 +144,27 @@ if (!existsSync(FIXTURE)) {
     layout: { ...page.layout, rawCode: 7, hSpacing: page.layout.hSpacing + 1 },
   };
   const withPages = (p: Page) => ({ ...doc, pages: doc.pages.map((x) => (x.id === p.id ? p : x)) });
-  const foreignXml = decodeBytes((await readZip(await writeEmmx(withPages(foreignPage)))).find((e) => /page\/page\.xml$/.test(e.name)).data);
+  const foreignXml = decodeBytes(
+    (await readZip(await writeEmmx(withPages(foreignPage)))).find((e) =>
+      /page\/page\.xml$/.test(e.name)
+    ).data
+  );
   eq("陌生码 V=7 原样写回，不降级成 6", vOf(foreignXml), "7");
-  eq("重读时仍记得这个陌生码", (await parseEmmx(await writeEmmx(withPages(foreignPage)))).doc.pages[0].layout.rawCode, 7);
+  eq(
+    "重读时仍记得这个陌生码",
+    (await parseEmmx(await writeEmmx(withPages(foreignPage)))).doc.pages[0].layout.rawCode,
+    7
+  );
   // 反过来：用户在界面上真的换过布局，就不能再抱着旧码不放。
-  const switchedPage = { ...foreignPage, layout: { ...foreignPage.layout, code: "logicRight" as const } };
-  const switchedXml = decodeBytes((await readZip(await writeEmmx(withPages(switchedPage)))).find((e) => /page\/page\.xml$/.test(e.name)).data);
+  const switchedPage = {
+    ...foreignPage,
+    layout: { ...foreignPage.layout, code: "logicRight" as const },
+  };
+  const switchedXml = decodeBytes(
+    (await readZip(await writeEmmx(withPages(switchedPage)))).find((e) =>
+      /page\/page\.xml$/.test(e.name)
+    ).data
+  );
   eq("改过布局后按新码写回", vOf(switchedXml), "8");
 
   // --- StyleMask：实测 doc1 的 82 个主题**每一个**都带 <StyleMask V>（43 个 V=2、39 个 V=3）。
@@ -141,7 +175,12 @@ if (!existsSync(FIXTURE)) {
     maskInFile.set(attr(n, "ID"), numVnode(n, "StyleMask", 0));
   }
   eq("样本主题数", maskInFile.size, 82);
-  eq("文件里的 <StyleMask> 全部读进模型", Object.values(page.shapes).filter((s) => (s.style.mask ?? 0) !== (maskInFile.get(s.id) ?? 0)).length, 0);
+  eq(
+    "文件里的 <StyleMask> 全部读进模型",
+    Object.values(page.shapes).filter((s) => (s.style.mask ?? 0) !== (maskInFile.get(s.id) ?? 0))
+      .length,
+    0
+  );
 
   const pinnedId = page.shapes[page.rootId].childIds[0];
   const colored = updateStyle(page, pinnedId, {
@@ -150,18 +189,28 @@ if (!existsSync(FIXTURE)) {
   });
   const rt = (await parseEmmx(await writeEmmx(withPages(colored)))).doc.pages[0];
   eq("自定义配色存住了", rt.shapes[pinnedId].style.fill?.color?.v, "#c00000");
-  ok("独立配色那一位存住了", ((rt.shapes[pinnedId].style.mask ?? 0) & 1) !== 0, String(rt.shapes[pinnedId].style.mask));
+  ok(
+    "独立配色那一位存住了",
+    ((rt.shapes[pinnedId].style.mask ?? 0) & 1) !== 0,
+    String(rt.shapes[pinnedId].style.mask)
+  );
   const after = applyPalette(rt);
   eq("换主题盖不掉用户自己挑的颜色", after.shapes[pinnedId].style.fill?.color?.v, "#c00000");
   const recolor = Object.keys(after.shapes).filter(
-    (id) => ((rt.shapes[id].style.mask ?? 0) & 1) === 0 && after.shapes[id].style.fill?.color?.v !== rt.shapes[id].style.fill?.color?.v,
+    (id) =>
+      ((rt.shapes[id].style.mask ?? 0) & 1) === 0 &&
+      after.shapes[id].style.fill?.color?.v !== rt.shapes[id].style.fill?.color?.v
   ).length;
   ok("换主题会重算未独立配色的主题", recolor > 0, String(recolor));
 
   // --- Shape 上我们不重建的子元素。改一个主题的正文会让整份节点重新生成，
   //     这时批注 / 超链接 / 任何还没建模的标签都不能被顺手抹掉。
   //     真实语料里这三样一个都没有（5 份文档 0 个 Shape 带 Comment），所以按读侧认得的写法造。
-  const node = (tag: string, attrs: Record<string, string> = {}, children: XmlNode[] = []): XmlNode => ({
+  const node = (
+    tag: string,
+    attrs: Record<string, string> = {},
+    children: XmlNode[] = []
+  ): XmlNode => ({
     tag,
     attrs,
     children,
@@ -171,6 +220,7 @@ if (!existsSync(FIXTURE)) {
   const keyOf = (id: string) => Object.keys(rawNodes(page)).find((k) => k.endsWith(`:${id}`)) ?? "";
   const noteId = page.shapes[page.rootId].childIds[0];
   const linkId = page.shapes[page.rootId].childIds[1];
+  const labelId = page.shapes[page.rootId].childIds[2];
   ok("样本里能找到该主题的原节点", keyOf(noteId).length > 0, noteId);
   const withKids = (id: string, ...kids: XmlNode[]) => {
     const src = rawNodes(page)[keyOf(id)];
@@ -186,38 +236,77 @@ if (!existsSync(FIXTURE)) {
         ...(page.rawUnknown as object),
         nodes: {
           ...rawNodes(page),
-          [keyOf(noteId)]: withKids(noteId, node("Comment", {}, [node("Text", { V: "原批注" })]), node("FutureTag", { V: "9" })),
-          [keyOf(linkId)]: withKids(linkId, node("HyperLink", {}, [node("Address", { V: "https://example.com/a?b=1" })])),
+          [keyOf(noteId)]: withKids(
+            noteId,
+            node("Comment", {}, [node("Text", { V: "原批注" })]),
+            node("FutureTag", { V: "9" })
+          ),
+          [keyOf(linkId)]: withKids(
+            linkId,
+            node("HyperLink", {}, [node("Address", { V: "https://example.com/a?b=1" })])
+          ),
+          // 亿图自己写成 "A;B;"（带尾分号），模型读成 ["A","B"]。值没改过时必须原样带回它自己的写法。
+          [keyOf(labelId)]: withKids(labelId, node("Labels", {}, [node("V", { V: "原型;草稿;" })])),
         },
       },
     };
     return updateExtras(
-      updateExtras(withRaw, noteId, { note: "原批注" }),
-      linkId,
-      { hyperlink: { kind: "web", target: "https://example.com/a?b=1" } },
+      updateExtras(updateExtras(withRaw, noteId, { note: "原批注" }), linkId, {
+        hyperlink: { kind: "web", target: "https://example.com/a?b=1" },
+      }),
+      labelId,
+      { labels: ["原型", "草稿"] }
     );
   })();
   const edited = updateText(updateText(seeded, noteId, "改了正文"), linkId, "也改了正文");
   const editedXml = decodeBytes(
-    (await readZip(await writeEmmx(withPages(edited)))).find((e) => /page\/page\.xml$/.test(e.name)).data,
+    (await readZip(await writeEmmx(withPages(edited)))).find((e) => /page\/page\.xml$/.test(e.name))
+      .data
   );
   ok("没建模的元素原样带回", editedXml.includes("FutureTag"));
+  ok("没改过的标签保留亿图的尾分号写法", editedXml.includes('V="原型;草稿;"'));
   const back = (await parseEmmx(await writeEmmx(withPages(edited)))).doc.pages[0];
   eq("编辑正文不该抹掉批注", back.shapes[noteId].extras.note, "原批注");
-  eq("编辑正文不该抹掉超链接", back.shapes[linkId].extras.hyperlink?.target, "https://example.com/a?b=1");
+  eq(
+    "编辑正文不该抹掉超链接",
+    back.shapes[linkId].extras.hyperlink?.target,
+    "https://example.com/a?b=1"
+  );
+  eq("编辑正文不该抹掉标签", (back.shapes[labelId].extras.labels ?? []).join(";"), "原型;草稿");
 
-  const reNoteed = (await parseEmmx(await writeEmmx(withPages(updateExtras(back, noteId, { note: "新批注" }))))).doc.pages[0];
+  const reNoteed = (
+    await parseEmmx(await writeEmmx(withPages(updateExtras(back, noteId, { note: "新批注" }))))
+  ).doc.pages[0];
   eq("改过的批注按新值写回", reNoteed.shapes[noteId].extras.note, "新批注");
-  const dropped = (await parseEmmx(await writeEmmx(withPages(updateExtras(reNoteed, noteId, { note: undefined }))))).doc.pages[0];
+  const dropped = (
+    await parseEmmx(await writeEmmx(withPages(updateExtras(reNoteed, noteId, { note: undefined }))))
+  ).doc.pages[0];
   eq("界面里删掉的批注不再写回", dropped.shapes[noteId].extras.note, undefined);
 
+  const relabeled = (
+    await parseEmmx(await writeEmmx(withPages(updateExtras(back, labelId, { labels: ["已评审"] }))))
+  ).doc.pages[0];
+  eq("改过的标签按新值写回", (relabeled.shapes[labelId].extras.labels ?? []).join(";"), "已评审");
+  const delabeled = (
+    await parseEmmx(await writeEmmx(withPages(updateExtras(relabeled, labelId, { labels: [] }))))
+  ).doc.pages[0];
+  eq("界面里删掉的标签不再写回", delabeled.shapes[labelId].extras.labels, undefined);
+
   // --- 坏输入
-  await rejects("非 ZIP 报中文错误", parseEmmx(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])), "不是 ZIP 容器");
-  await rejects("ZIP 里缺 page.xml 报错", (async () => {
-    const { writeZip } = await import("../src/engine/emmx/zip.ts");
-    const fake = await writeZip([{ name: "document.xml", data: new Uint8Array([60, 63, 120]) }]);
-    return parseEmmx(fake);
-  })(), "page/");
+  await rejects(
+    "非 ZIP 报中文错误",
+    parseEmmx(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])),
+    "不是 ZIP 容器"
+  );
+  await rejects(
+    "ZIP 里缺 page.xml 报错",
+    (async () => {
+      const { writeZip } = await import("../src/engine/emmx/zip.ts");
+      const fake = await writeZip([{ name: "document.xml", data: new Uint8Array([60, 63, 120]) }]);
+      return parseEmmx(fake);
+    })(),
+    "page/"
+  );
 }
 
 done();

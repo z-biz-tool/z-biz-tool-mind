@@ -56,7 +56,13 @@ const RELS_XML = "rels/page_rels.xml";
 const DEFAULT_PAGE_NAME = "画布1";
 
 function freshPageAttrs(page: Page): Record<string, string> {
-  return { Type: "Page", QuickMask: "0", ID: page.id, Name: page.name, Zoom: round(page.props.zoom) };
+  return {
+    Type: "Page",
+    QuickMask: "0",
+    ID: page.id,
+    Name: page.name,
+    Zoom: round(page.props.zoom),
+  };
 }
 
 /** 一个 Page 里所有需要"原样回写"的东西。 */
@@ -148,7 +154,10 @@ function pageThemeRoot(entries: ZipEntry[]): XmlNode | undefined {
   }
 }
 
-function parseRels(entries: ZipEntry[]): { map: Record<string, string>; list: { id: string; target: string }[] } {
+function parseRels(entries: ZipEntry[]): {
+  map: Record<string, string>;
+  list: { id: string; target: string }[];
+} {
   const map: Record<string, string> = {};
   const list: { id: string; target: string }[] = [];
   for (const e of entries) {
@@ -160,7 +169,9 @@ function parseRels(entries: ZipEntry[]): { map: Record<string, string>; list: { 
       continue;
     }
     for (const r of findAll(root, "Relationship")) {
-      const target = attr(r, "Target").replace(/^\.\.\//, "").replace(/^\.\//, "");
+      const target = attr(r, "Target")
+        .replace(/^\.\.\//, "")
+        .replace(/^\.\//, "");
       const id = attr(r, "Id");
       if (!(id in map)) list.push({ id, target });
       map[id] = target;
@@ -218,7 +229,7 @@ function parseGantt(node: XmlNode | undefined): GanttOption {
   const g = newGanttOption();
   if (!node) return g;
   const read = (tag: string, dflt: number): number => {
-    const v = vnode(node, tag) ?? (find(node, tag)?.attrs.V ?? undefined);
+    const v = vnode(node, tag) ?? find(node, tag)?.attrs.V ?? undefined;
     const n = Number(v);
     return v !== undefined && Number.isFinite(n) ? n : dflt;
   };
@@ -237,7 +248,12 @@ function parseGantt(node: XmlNode | undefined): GanttOption {
 
 // ---------------------------------------------------------------- page.xml
 
-function parsePage(entryName: string, src: string, rels: Record<string, string>, warnings: string[]): Page {
+function parsePage(
+  entryName: string,
+  src: string,
+  rels: Record<string, string>,
+  warnings: string[]
+): Page {
   const root = parseXml(src);
   if (root.tag !== "Page") throw new EmmxError(`${entryName} 的根节点不是 Page`);
   const id = attr(root, "ID") || attr(root, "Id");
@@ -264,7 +280,8 @@ function parsePage(entryName: string, src: string, rels: Record<string, string>,
       if (type === "RelatConnector") {
         const rel: RelationshipShape = {
           id: sid,
-          beginId: vnode(find(child, "BeginPt"), "X") ?? attr(find(child, "BeginPt") ?? child, "ID"),
+          beginId:
+            vnode(find(child, "BeginPt"), "X") ?? attr(find(child, "BeginPt") ?? child, "ID"),
           endId: vnode(find(child, "EndPt"), "X") ?? attr(find(child, "EndPt") ?? child, "ID"),
           text: parseRichText(find(child, "Text")),
           style: parseShapeStyle(child),
@@ -398,7 +415,8 @@ function parseShape(n: XmlNode, rels: Record<string, string>, warnings: string[]
   const link = find(n, "HyperLink") ?? find(n, "Hyperlink");
   if (link) {
     const address = vnode(link, "Address") ?? attr(link, "Address");
-    if (address) extras.hyperlink = { kind: /^https?:/i.test(address) ? "web" : "file", target: address };
+    if (address)
+      extras.hyperlink = { kind: /^https?:/i.test(address) ? "web" : "file", target: address };
   }
   const attach = find(n, "Attachments");
   if (attach) {
@@ -549,7 +567,10 @@ function parseRichText(textNode: XmlNode | undefined): RichText {
   const ppNodes = inner ? findAll(inner, "pp") : [];
   const paragraphs: TextParagraph[] = ppNodes.map((pp, i) => {
     const p = paraNodes[Math.min(i, paraNodes.length - 1)];
-    const runs = findAll(pp, "tp").map((tp) => ({ text: valueOrText(tp), charIx: numAttr(tp, "CX", 0) }));
+    const runs = findAll(pp, "tp").map((tp) => ({
+      text: valueOrText(tp),
+      charIx: numAttr(tp, "CX", 0),
+    }));
     const out: TextParagraph = { runs: runs.length ? runs : [{ text: "", charIx: 0 }] };
     if (p) {
       const a = numAttr(p, "Align", 1);
@@ -560,7 +581,9 @@ function parseRichText(textNode: XmlNode | undefined): RichText {
   });
   return {
     paragraphs: paragraphs.length ? paragraphs : [{ runs: [{ text: "", charIx: 0 }], align: 1 }],
-    characters: characters.length ? characters : [{ family: DEFAULTS.fontFamily, size: DEFAULTS.fontSize }],
+    characters: characters.length
+      ? characters
+      : [{ family: DEFAULTS.fontFamily, size: DEFAULTS.fontSize }],
   };
 }
 
@@ -605,18 +628,21 @@ function buildTextNode(rt: RichText): XmlNode {
   const inner = el("Text");
   rt.paragraphs.forEach((p) => {
     const pp = el("pp", { CX: "0", PX: "1" });
-    p.runs.forEach((r) => pp.children.push({ tag: "tp", attrs: { CX: String(r.charIx) }, children: [], text: r.text }));
+    p.runs.forEach((r) =>
+      pp.children.push({ tag: "tp", attrs: { CX: String(r.charIx) }, children: [], text: r.text })
+    );
     inner.children.push(pp);
   });
   tb.children.push(inner);
   const tw = Math.max(1, Math.round(measureTextWidth(rt)));
   const th = Math.max(1, Math.round(rt.paragraphs.length * (font.size ?? DEFAULTS.fontSize) * 1.4));
   return el("Text", {}, [
-    el(
-      "Transform",
-      {},
-      [vNode("Width", tw), vNode("Height", th), vNode("CX", 0), attachP(vNode("CY", 0), "2")]
-    ),
+    el("Transform", {}, [
+      vNode("Width", tw),
+      vNode("Height", th),
+      vNode("CX", 0),
+      attachP(vNode("CY", 0), "2"),
+    ]),
     tb,
   ]);
 }
@@ -639,7 +665,11 @@ function attachP(n: XmlNode, b: string): XmlNode {
 function withAlpha(hex: string): string {
   const h = hex.replace("#", "");
   if (h.length === 6) return `#ff${h}`;
-  if (h.length === 3) return `#ff${h.split("").map((c) => c + c).join("")}`;
+  if (h.length === 3)
+    return `#ff${h
+      .split("")
+      .map((c) => c + c)
+      .join("")}`;
   return hex;
 }
 
@@ -706,14 +736,18 @@ export async function writeEmmx(doc: DocumentModel): Promise<Uint8Array> {
   entries.push({ name: DOC_XML, data: encodeText(serializeXml(docRoot)) });
 
   doc.pages.forEach((page, ix) => {
-    entries.push({ name: pageEntryName(ix), data: encodeText(serializeXml(buildPageXml(page, ctx))) });
+    entries.push({
+      name: pageEntryName(ix),
+      data: encodeText(serializeXml(buildPageXml(page, ctx))),
+    });
   });
 
   const themeRaw = doc.rawUnknown?.themeRoot as XmlNode | undefined;
   if (themeRaw) entries.push({ name: THEME_XML, data: encodeText(serializeXml(themeRaw)) });
   if (ctx.rels.length) {
     const r = el("Relationships");
-    for (const x of ctx.rels) r.children.push(el("Relationship", { Id: x.id, Target: `../${x.target}` }));
+    for (const x of ctx.rels)
+      r.children.push(el("Relationship", { Id: x.id, Target: `../${x.target}` }));
     entries.push({ name: RELS_XML, data: encodeText(serializeXml(r)) });
   }
   for (const [name, data] of Object.entries(doc.media)) entries.push({ name, data });
@@ -748,23 +782,20 @@ function buildDocumentXml(doc: DocumentModel): XmlNode {
   root.children.push(props);
   const g = doc.gantt;
   root.children.push(
-    el(
-      "GanttOption",
-      {},
-      [
-        vNode("WorkDay", g.workDay.join(";")),
-        vNode("MajorTick", g.majorTick),
-        vNode("MinorTick", g.minorTick),
-        vNode("StartDate", g.startDate),
-        vNode("FinishDate", g.finishDate),
-        vNode("StartTime", g.startTime),
-        vNode("FinishTime", g.finishTime),
-        vNode("UnitWidth", g.unitWidth),
-      ]
-    )
+    el("GanttOption", {}, [
+      vNode("WorkDay", g.workDay.join(";")),
+      vNode("MajorTick", g.majorTick),
+      vNode("MinorTick", g.minorTick),
+      vNode("StartDate", g.startDate),
+      vNode("FinishDate", g.finishDate),
+      vNode("StartTime", g.startTime),
+      vNode("FinishTime", g.finishTime),
+      vNode("UnitWidth", g.unitWidth),
+    ])
   );
   const ms = el("MarkSheet");
-  for (const m of doc.markSheet) ms.children.push(el("Mark", { Name: m.name, Label: m.label, Group: m.group }));
+  for (const m of doc.markSheet)
+    ms.children.push(el("Mark", { Name: m.name, Label: m.label, Group: m.group }));
   root.children.push(ms);
   return root;
 }
@@ -848,7 +879,12 @@ function defaultOrder(page: Page): string[] {
   return [...Array.from(PAGE_TAGS), ...ids.map((id) => shapeKey(id, page.shapes[id].type))];
 }
 
-function rebuildShape(key: string, page: Page, ctx: WriteCtx, raw: RawContainer): XmlNode | undefined {
+function rebuildShape(
+  key: string,
+  page: Page,
+  ctx: WriteCtx,
+  raw: RawContainer
+): XmlNode | undefined {
   const { type, id } = splitShapeKey(key);
   if (type === "MMConnector") return raw.nodes[key];
   if (type === "RelatConnector") {
@@ -917,15 +953,20 @@ const SHAPE_OWN_TAGS = new Set([
 /**
  * 改一个主题不该顺手抹掉它身上我们不重建的字段。
  *
- * 批注与超链接是"模型里有、写侧一直没落笔"的两个：签名一变整份节点重生成，
+ * 批注、超链接与标签是"模型里有、写侧一直没落笔"的三个：签名一变整份节点重生成，
  * 原文件里的这两块就没了。规则是 —— 值没动过就原样带回亿图自己的写法（我们不猜它的
  * 元素布局），值改过才按读侧认得的写法重建；用户在界面里删掉的，这里就真的不再写。
  * 其余没建模的元素一律带回：宁可保留我们看不懂的字节，也不要"打开一次再保存就少一块"。
  */
 function carryUntouched(s: Shape, n: XmlNode, from?: XmlNode): void {
-  const rawNote = from ? vnode(find(from, "Comment"), "Text") ?? vnode(find(from, "Note"), "V") : undefined;
-  const linkNode = from ? find(from, "HyperLink") ?? find(from, "Hyperlink") : undefined;
+  const rawNote = from
+    ? (vnode(find(from, "Comment"), "Text") ?? vnode(find(from, "Note"), "V"))
+    : undefined;
+  const linkNode = from ? (find(from, "HyperLink") ?? find(from, "Hyperlink")) : undefined;
   const rawLink = linkNode ? (vnode(linkNode, "Address") ?? attr(linkNode, "Address")) : undefined;
+  // 读侧按 split(";").filter(Boolean) 理解标签，比较前先按同一规则归一化，否则 "A;A;" 会被当成改过。
+  const rawLabels = from ? normLabels(vnode(find(from, "Labels"), "V")) : undefined;
+  const modelLabels = normLabels((s.extras.labels ?? []).join(";"));
   for (const c of from?.children ?? []) {
     if (SHAPE_OWN_TAGS.has(c.tag)) continue;
     if (c.tag === "Comment" || c.tag === "Note") {
@@ -936,6 +977,10 @@ function carryUntouched(s: Shape, n: XmlNode, from?: XmlNode): void {
       if (s.extras.hyperlink?.target === rawLink) n.children.push(c);
       continue;
     }
+    if (c.tag === "Labels") {
+      if (rawLabels === modelLabels) n.children.push(c);
+      continue;
+    }
     n.children.push(c);
   }
   if (s.extras.note !== undefined && s.extras.note !== rawNote) {
@@ -944,6 +989,13 @@ function carryUntouched(s: Shape, n: XmlNode, from?: XmlNode): void {
   if (s.extras.hyperlink && s.extras.hyperlink.target !== rawLink) {
     n.children.push(el("HyperLink", {}, [vNode("Address", s.extras.hyperlink.target)]));
   }
+  if (modelLabels && modelLabels !== rawLabels) {
+    n.children.push(el("Labels", {}, [vNode("V", modelLabels)]));
+  }
+}
+
+function normLabels(raw?: string): string {
+  return (raw ?? "").split(";").filter(Boolean).join(";");
 }
 /** 附件名 → media/ 里的真实路径；找不到就按原名挂到 media/ 下。 */
 function mediaTarget(name: string, media: Record<string, Uint8Array>): string {
@@ -977,7 +1029,9 @@ function buildFill(f: FillFormat): XmlNode {
   if (f.type === "Gradient") {
     const g = el("GradFill", { Angle: f.angle ?? 0 });
     for (const s of f.stops ?? []) {
-      g.children.push(el("Stop", { Pos: s.pos, V: s.color.v, Shade: s.color.shade, Tint: s.color.tint }));
+      g.children.push(
+        el("Stop", { Pos: s.pos, V: s.color.v, Shade: s.color.shade, Tint: s.color.tint })
+      );
     }
     n.children.push(g);
     return n;
@@ -996,11 +1050,12 @@ function buildLine(l: NonNullable<ShapeStyle["line"]>): XmlNode {
 }
 
 function buildPageProps(p: Page): XmlNode {
-  return el(
-    "PageProps",
-    {},
-    [vNode("Width", p.props.width), vNode("Height", p.props.height), vNode("ScrollX", p.props.scrollX), vNode("ScrollY", p.props.scrollY)]
-  );
+  return el("PageProps", {}, [
+    vNode("Width", p.props.width),
+    vNode("Height", p.props.height),
+    vNode("ScrollX", p.props.scrollX),
+    vNode("ScrollY", p.props.scrollY),
+  ]);
 }
 
 /**
@@ -1009,23 +1064,22 @@ function buildPageProps(p: Page): XmlNode {
  */
 function layoutCodeOfPage(p: Page): string {
   const raw = p.layout.rawCode;
-  if (raw !== undefined && (LAYOUT_CODE_TO_NAME[raw] ?? "balanced") === p.layout.code) return String(raw);
+  if (raw !== undefined && (LAYOUT_CODE_TO_NAME[raw] ?? "balanced") === p.layout.code)
+    return String(raw);
   return Object.entries(LAYOUT_CODE_TO_NAME).find(([, v]) => v === p.layout.code)?.[0] ?? "6";
 }
 
 function buildLayout(p: Page): XmlNode {
   const code = layoutCodeOfPage(p);
-  const n = el(
-    "Layout",
-    {},
-    [
-      vNode("Layout", code),
-      vNode("HSpacing", p.layout.hSpacing),
-      vNode("VSpacing", p.layout.vSpacing),
-    ]
-  );
-  if (p.layout.levelLength.length) n.children.push(vNode("LevelLength", p.layout.levelLength.join(";")));
-  if (p.layout.branchCount.length) n.children.push(vNode("BranchCount", p.layout.branchCount.join(";")));
+  const n = el("Layout", {}, [
+    vNode("Layout", code),
+    vNode("HSpacing", p.layout.hSpacing),
+    vNode("VSpacing", p.layout.vSpacing),
+  ]);
+  if (p.layout.levelLength.length)
+    n.children.push(vNode("LevelLength", p.layout.levelLength.join(";")));
+  if (p.layout.branchCount.length)
+    n.children.push(vNode("BranchCount", p.layout.branchCount.join(";")));
   if (p.layout.rainbow) n.children.push(vNode("Rainbow", 1));
   return n;
 }
@@ -1056,7 +1110,10 @@ function buildTheme(t: Page["theme"]): XmlNode {
 
 /** 语义比较：忽略 rawUnknown（那是缓存），media 只比名字。 */
 export function modelEquals(a: DocumentModel, b: DocumentModel): boolean {
-  return stable(a) === stable(b) && Object.keys(a.media).sort().join() === Object.keys(b.media).sort().join();
+  return (
+    stable(a) === stable(b) &&
+    Object.keys(a.media).sort().join() === Object.keys(b.media).sort().join()
+  );
 }
 
 /**
