@@ -3,7 +3,7 @@
  *
  * 两条约束决定了这里的形状：
  * 1) 只走 OpenAI 兼容的 chat/completions。复刻不绑某一家供应商，端点与模型名来自「选项 → 高级」，
- *    密钥走钥匙串（native.secretReveal），因此这里绝不打日志 —— 崩溃上报会把 console 带走。
+ *    密钥走本机加密库（native.secretReveal），因此这里绝不打日志 —— 崩溃上报会把 console 带走。
  * 2) 生成结果入树必须复用 engine/outline.ts（P-3）。批量录入、Markdown 粘贴、OCR、AI
  *    共用同一条缩进协议；再写一套解析，就会出现"AI 插进来的节点删不掉/升不了级"这种第二份数据结构的病。
  */
@@ -40,7 +40,7 @@ export async function generateOutline(req: AiRequest): Promise<string> {
   }
   const apiKey = req.apiKey?.trim() ?? "";
   if (!apiKey) {
-    throw new Error("尚未配置 AI API Key，请在「选项 → 高级」里填写密钥；密钥只存在系统钥匙串，不会写进配置文件。");
+    throw new Error("尚未配置 AI API Key，请在「选项 → 高级」里填写密钥；密钥只存在本机加密库，不会写进配置文件。");
   }
 
   // 有人填baseUrl 有人填完整路径，两种都收，省一次"为什么 404"的客服问题。
@@ -158,7 +158,7 @@ export async function runAiInsert(label: string): Promise<{ ok: boolean; message
   try {
     apiKey = await native.secretReveal(SECRET_KEY);
   } catch {
-    apiKey = null; // 浏览器模式没有钥匙串：和"没配过"同样处理，别把原生错误抛给用户
+    apiKey = null; // 浏览器模式没有本机加密库：和"没配过"同样处理，别把原生错误抛给用户
   }
   if (!apiKey) {
     return { ok: false, message: "尚未配置 AI API Key，请在「选项 → 高级」里填写密钥。" };

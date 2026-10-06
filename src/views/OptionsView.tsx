@@ -31,7 +31,7 @@ import type { AppInfo } from "../services/native.ts";
 import { useRecent } from "../stores/recentStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 
-/** 密钥在钥匙串里的条目名：只在这一个文件出现，改它等于换一份用户凭据，别散落。 */
+/** 密钥在加密库里的条目名：只在这一个文件出现，改它等于换一份用户凭据，别散落。 */
 const AI_KEY_NAME = "ai-api-key";
 
 type SectionKey = "general" | "format" | "save" | "network" | "advanced" | "recent" | "quota";
@@ -100,14 +100,14 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
   const resetSection = useSettings((s) => s.resetSection);
   const clearRecent = useRecent((s) => s.clearRecent);
 
-  // API Key 是唯一不能进 settings 的输入：它只活在下面这份临时态里，按"保存密钥"才进钥匙串。
+  // API Key 是唯一不能进 settings 的输入：它只活在下面这份临时态里，按"保存密钥"才进本机加密库。
   const [apiKey, setApiKey] = useState("");
   const [secretTip, setSecretTip] = useState<string | null>(null);
   const [hasKey, setHasKey] = useState(false);
   const [info, setInfo] = useState<AppInfo | null>(null);
 
   useEffect(() => {
-    // 开框先探一次"钥匙串里到底有没有"：secretReveal 会把明文读进输入框，
+    // 开框先探一次"加密库里到底有没有"：secretReveal 会把明文读进输入框，
     // 而用户多数只想知道自己配没配过 —— 不该为了看一个布尔值就看到密钥本身。
     void native
       .secretExists(AI_KEY_NAME)
@@ -127,13 +127,13 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
   async function saveKey() {
     const v = apiKey.trim();
     if (!v) {
-      setSecretTip("密钥是空值，没有写入钥匙串。");
+      setSecretTip("密钥是空值，没有写入加密库。");
       return;
     }
     try {
       await native.secretStore(AI_KEY_NAME, v);
       setHasKey(true);
-      setSecretTip("已写入系统钥匙串。");
+      setSecretTip("已写入本机加密库。");
     } catch (e) {
       setSecretTip(e instanceof Error ? e.message : String(e));
     }
@@ -144,7 +144,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
       const v = await native.secretReveal(AI_KEY_NAME);
       setApiKey(v ?? "");
       setHasKey(!!v);
-      setSecretTip(v ? "已从钥匙串载入。" : "这台机器上没有存过密钥。");
+      setSecretTip(v ? "已从本机加密库载入。" : "这台机器上没有存过密钥。");
     } catch (e) {
       setSecretTip(e instanceof Error ? e.message : String(e));
     }
@@ -155,7 +155,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
       await native.secretDrop(AI_KEY_NAME);
       setApiKey("");
       setHasKey(false);
-      setSecretTip("已从钥匙串删除。");
+      setSecretTip("已从本机加密库删除。");
     } catch (e) {
       setSecretTip(e instanceof Error ? e.message : String(e));
     }
@@ -517,7 +517,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                 label="API Key"
                 hint={
                   <>
-                    密钥只进系统钥匙串（native.secretStore），绝不写 settings：这一节会被整份存成
+                    密钥只进本机加密库（native.secretStore AES-256-GCM，主密钥 master.key 与密文同目录、0600），绝不写 settings：这一节会被整份存成
                     config.json， 而 config.json
                     躺在应用数据目录里，同步盘和备份目录都会把它一起带走 ——
                     明文密钥跟着走一遍就等于泄露一次。
@@ -540,7 +540,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                     onChange={(e) => setApiKey(e.target.value)}
                   />
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <Tooltip title="本页只把密钥放进钥匙串，不发任何请求：连通性测试要读端点、带凭据，那是 services/ai.ts 的职责。">
+                    <Tooltip title="本页只把密钥放进加密库，不发任何请求：连通性测试要读端点、带凭据，那是 services/ai.ts 的职责。">
                       <Button size="small" type="primary" onClick={() => void saveKey()}>
                         保存密钥
                       </Button>
@@ -554,7 +554,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                     {hasKey ? (
                       <Tooltip title="只问“有没有”，不读出内容。输入框里现在是空的，点“载入已有密钥”才会把明文取回来。">
                         <Tag style={{ margin: 0, alignSelf: "center" }} color="green">
-                          钥匙串里已存有一份
+                          加密库里已存有一份
                         </Tag>
                       </Tooltip>
                     ) : null}
