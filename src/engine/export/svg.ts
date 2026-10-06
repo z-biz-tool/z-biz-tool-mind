@@ -59,6 +59,8 @@ export interface ShapePaint {
   link: boolean;
   /** 标签条的文字，宽度已由 labelChips 按本框算好。 */
   labels: string[];
+  /** 标签条占掉的高度：正文按 h - stripH 居中。 */
+  stripH: number;
 }
 
 export interface Paint {
@@ -107,6 +109,7 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
       note: Boolean(s.extras.note),
       link: Boolean(s.extras.hyperlink),
       labels: s.extras.labels ?? [],
+      stripH: b.stripH,
     });
   }
   const pad = opts.padding ?? 40;
@@ -158,8 +161,8 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
       `<rect x="${round(b.x)}" y="${round(b.y)}" width="${round(b.w)}" height="${round(b.h)}" rx="${round(rx)}" ` +
         `fill="${b.fill}" stroke="${b.line}" stroke-width="${b.lineWidth}"/>`
     );
-    const lh = b.fontSize * 1.35;
-    const startY = b.y + b.h / 2 - ((b.lines.length - 1) * lh) / 2 + b.fontSize * 0.35;
+    const lh = lineGap(b.fontSize);
+    const startY = textStartY(b);
     b.lines.forEach((line, ix) => {
       out.push(
         `<text x="${round(b.x + b.w / 2)}" y="${round(startY + ix * lh)}" font-size="${round(b.fontSize)}" ` +
@@ -207,6 +210,26 @@ export function cornerBadgePaths(
   }
   if (b.link) out.push(`M${x} ${base - 1} l6 -6 M${x + 2} ${base - 7} h5 v5`);
   return out;
+}
+
+/** 行距：画布与导出共用一个数。 */
+export function lineGap(fontSize: number): number {
+  return fontSize * 1.35;
+}
+
+/**
+ * 正文第一行的基线。按"去掉标签条之后的高度"居中 ——
+ * 整框居中的话，标签一换行正文就被挤到标签那一行上（真机截图里两者叠在一起）。
+ */
+export function textStartY(
+  b: Pick<ShapePaint, "y" | "h" | "stripH" | "fontSize" | "lines">
+): number {
+  return (
+    b.y +
+    (b.h - b.stripH) / 2 -
+    ((b.lines.length - 1) * lineGap(b.fontSize)) / 2 +
+    b.fontSize * 0.35
+  );
 }
 
 export interface LabelChip {

@@ -25,7 +25,9 @@ import { DEFAULTS } from "../model/constants.ts";
 import {
   cornerBadgePaths,
   labelChips,
+  lineGap,
   paintPage,
+  textStartY,
   type Paint,
   type ShapePaint,
 } from "../engine/export/svg.ts";
@@ -99,8 +101,8 @@ function isVertical(code: LayoutCode): boolean {
 
 /** 与 buildSvg 同一条基线公式：屏上文字和导出文字错开一个像素都算 bug。 */
 function topicLines(b: ShapePaint) {
-  const lh = b.fontSize * 1.35;
-  const startY = b.y + b.h / 2 - ((b.lines.length - 1) * lh) / 2 + b.fontSize * 0.35;
+  const lh = lineGap(b.fontSize);
+  const startY = textStartY(b);
   return b.lines.map((line, ix) => (
     <text
       key={ix}

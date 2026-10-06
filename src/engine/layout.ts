@@ -30,6 +30,8 @@ export interface NodeBox {
   /** 相对父节点在哪一侧，连线和鱼骨方向都要用它。 */
   side: -1 | 0 | 1;
   lines: string[];
+  /** 标签条在框底占掉的高度；正文要在剩下那部分里居中，否则会压到标签上。 */
+  stripH: number;
 }
 
 export interface ConnectorPath {
@@ -113,7 +115,7 @@ function shapeText(s: Shape): string {
 export function measureShape(
   s: Shape,
   opts: MeasureOptions = {}
-): { w: number; h: number; lines: string[] } {
+): { w: number; h: number; lines: string[]; stripH: number } {
   const fontSize = s.style.font?.size ?? opts.fontSize ?? DEFAULTS.fontSize;
   const fixed = opts.fixedWidth;
   const maxWidth = fixed
@@ -136,6 +138,7 @@ export function measureShape(
     w = Math.max(w, s.transform.w || 0);
     h = Math.max(h, s.transform.h || 0);
   }
+  let stripH = 0;
   const marks = (extras.marks?.length ?? 0) > 0;
   const labels = extras.labels ?? [];
   if (labels.length) {
@@ -148,7 +151,8 @@ export function measureShape(
     // 单条标签比框还宽时把框撑到能装下它，否则那条标签永远画不出来 —— 上限沿用主题的文本宽度上限。
     if (!fixed)
       w = Math.max(w, Math.min(DEFAULTS.topicMaxTextW, insets.left + widest + insets.right));
-    h += labelStripHeight(labelRows(labels, fontSize, w, insets).length, fontSize);
+    stripH = labelStripHeight(labelRows(labels, fontSize, w, insets).length, fontSize);
+    h += stripH;
   } else if (marks) {
     h += fontSize * 0.9;
   }
@@ -159,7 +163,7 @@ export function measureShape(
   if (extras.table) h += extras.table.rows * fontSize * 1.6;
   if (extras.attachments?.length) h += fontSize * 0.9;
   if (extras.note) w += 6;
-  return { w: Math.round(w), h: Math.round(h), lines };
+  return { w: Math.round(w), h: Math.round(h), lines, stripH };
 }
 
 /** 标签条：一条 chip 的字号比例、内边距与行距。布局预留的高和绘制用的坐标都从这里出（P-2）。 */
@@ -234,7 +238,7 @@ function measureOf(
   shape: Shape,
   palette: ThemePalette,
   fixedWidth?: number
-): { w: number; h: number; lines: string[] } {
+): { w: number; h: number; lines: string[]; stripH: number } {
   return measureShape(shape, {
     fontSize: styleFor(page, shape, palette).font.size,
     fixedWidth,
@@ -264,6 +268,7 @@ interface TreeNode {
   w: number;
   h: number;
   lines: string[];
+  stripH: number;
   x: number;
   y: number;
   side: -1 | 0 | 1;
@@ -289,13 +294,14 @@ function buildTree(
     branchIx,
     children: [],
     ...{ x: shape.transform.x, y: shape.transform.y },
-    ...{ w: 0, h: 0, lines: [] as string[] },
+    ...{ w: 0, h: 0, lines: [] as string[], stripH: 0 },
     side: 0,
   };
   const m = measureOf(page, shape, palette, fixedWidth);
   node.w = m.w;
   node.h = m.h;
   node.lines = m.lines;
+  node.stripH = m.stripH;
   const kids = level + 1 <= displayLevel && !shape.extras.collapsed ? shape.childIds : [];
   let i = 0;
   for (const c of kids) {
@@ -745,6 +751,7 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
       branchIx: n.branchIx,
       side: n.side,
       lines: n.lines,
+      stripH: n.stripH,
     };
     order.push(n.id);
   };
@@ -789,6 +796,7 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
       branchIx: -1,
       side: 1,
       lines: m.lines,
+      stripH: m.stripH,
     };
     order.push(id);
     let cursor = topY + (slot - group) / 2;
@@ -813,6 +821,7 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
       branchIx: -1,
       side: 0,
       lines: m.lines,
+      stripH: m.stripH,
     };
     order.push(sh.id);
     // 浮动根的组顶在自己的下沿外侧：先把每枝的占位高度算好，placeFloat 只查表。

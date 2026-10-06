@@ -6,7 +6,14 @@
 import { done, eq, ok } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
 import { insertChild, updateExtras } from "../src/engine/tree.ts";
-import { buildSvg, cornerBadgePaths, labelChips, paintPage } from "../src/engine/export/svg.ts";
+import {
+  buildSvg,
+  cornerBadgePaths,
+  labelChips,
+  lineGap,
+  paintPage,
+  textStartY,
+} from "../src/engine/export/svg.ts";
 import {
   badgeExtent,
   chipHeight,
@@ -86,6 +93,20 @@ ok(
   "行与行之间不叠",
   ys.every((y, i) => i === 0 || y >= ys[i - 1] + chipHeight(bMany.fontSize)),
   JSON.stringify(ys)
+);
+
+// 正文必须在标签条之上：整框居中的话，标签一换行字就压到标签上（真机截图里正是这样）。
+const textBottom =
+  textStartY(bMany) + (bMany.lines.length - 1) * lineGap(bMany.fontSize) + bMany.fontSize * 0.25;
+ok(
+  "正文不压标签",
+  textBottom <= Math.min(...manyChips.map((c) => c.y)),
+  `text≈${Math.round(textBottom)} chipsTop=${Math.min(...manyChips.map((c) => c.y))}`
+);
+ok(
+  "正文也没顶出框",
+  textStartY(bMany) - bMany.fontSize >= bMany.y,
+  `textTop≈${Math.round(textStartY(bMany) - bMany.fontSize)} boxTop=${bMany.y}`
 );
 
 // 布局预留的高必须正好等于绘制排出的行数所需的高：一边按 1 行留、一边画 2 行就是压到框外。
