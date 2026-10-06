@@ -10,14 +10,17 @@
  *    布局属性不该发生变化。
  * 6) <StyleMask V> 必须原样读进来再写回去 —— 它记的是"这个主题的颜色是用户自己挑的"，
  *    丢了一位，保存重开之后换主题就会把用户挑的颜色盖掉。
+ * 7) 编辑正文会让整份 Shape 节点重新生成 —— 批注、超链接，以及任何我们还没建模的标签，
+ *    都不能跟着一起没了。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { done, eq, ok, rejects, skip } from "./_harness.ts";
 import { readZip, decodeBytes } from "../src/engine/emmx/zip.ts";
 import { nodeEquals, parseXml, findAll, attr, numVnode } from "../src/engine/emmx/xparse.ts";
+import type { XmlNode } from "../src/engine/emmx/xparse.ts";
 import { modelEquals, parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
-import { insertChild, updateStyle, updateText } from "../src/engine/tree.ts";
+import { insertChild, updateExtras, updateStyle, updateText } from "../src/engine/tree.ts";
 import { applyPalette } from "../src/engine/style.ts";
 import { plainText } from "../src/types/model.ts";
 import type { Page } from "../src/types/model.ts";
@@ -154,6 +157,59 @@ if (!existsSync(FIXTURE)) {
     (id) => ((rt.shapes[id].style.mask ?? 0) & 1) === 0 && after.shapes[id].style.fill?.color?.v !== rt.shapes[id].style.fill?.color?.v,
   ).length;
   ok("换主题会重算未独立配色的主题", recolor > 0, String(recolor));
+
+  // --- Shape 上我们不重建的子元素。改一个主题的正文会让整份节点重新生成，
+  //     这时批注 / 超链接 / 任何还没建模的标签都不能被顺手抹掉。
+  //     真实语料里这三样一个都没有（5 份文档 0 个 Shape 带 Comment），所以按读侧认得的写法造。
+  const node = (tag: string, attrs: Record<string, string> = {}, children: XmlNode[] = []): XmlNode => ({
+    tag,
+    attrs,
+    children,
+    text: "",
+  });
+  const rawNodes = (p: Page) => (p.rawUnknown as { nodes: Record<string, XmlNode> }).nodes;
+  const keyOf = (id: string) => Object.keys(rawNodes(page)).find((k) => k.endsWith(`:${id}`)) ?? "";
+  const noteId = page.shapes[page.rootId].childIds[0];
+  const linkId = page.shapes[page.rootId].childIds[1];
+  ok("样本里能找到该主题的原节点", keyOf(noteId).length > 0, noteId);
+  const withKids = (id: string, ...kids: XmlNode[]) => {
+    const src = rawNodes(page)[keyOf(id)];
+    return { ...src, children: [...src.children, ...kids] };
+  };
+
+  // 模型侧要一起补上 extras：真实情况是"读文件时读侧就把批注/超链接填进了模型"，
+  // 只改 raw 不改模型等于凭空造出一个解析不出来的状态，回写时必然对不上值。
+  const seeded: Page = (() => {
+    const withRaw: Page = {
+      ...page,
+      rawUnknown: {
+        ...(page.rawUnknown as object),
+        nodes: {
+          ...rawNodes(page),
+          [keyOf(noteId)]: withKids(noteId, node("Comment", {}, [node("Text", { V: "原批注" })]), node("FutureTag", { V: "9" })),
+          [keyOf(linkId)]: withKids(linkId, node("HyperLink", {}, [node("Address", { V: "https://example.com/a?b=1" })])),
+        },
+      },
+    };
+    return updateExtras(
+      updateExtras(withRaw, noteId, { note: "原批注" }),
+      linkId,
+      { hyperlink: { kind: "web", target: "https://example.com/a?b=1" } },
+    );
+  })();
+  const edited = updateText(updateText(seeded, noteId, "改了正文"), linkId, "也改了正文");
+  const editedXml = decodeBytes(
+    (await readZip(await writeEmmx(withPages(edited)))).find((e) => /page\/page\.xml$/.test(e.name)).data,
+  );
+  ok("没建模的元素原样带回", editedXml.includes("FutureTag"));
+  const back = (await parseEmmx(await writeEmmx(withPages(edited)))).doc.pages[0];
+  eq("编辑正文不该抹掉批注", back.shapes[noteId].extras.note, "原批注");
+  eq("编辑正文不该抹掉超链接", back.shapes[linkId].extras.hyperlink?.target, "https://example.com/a?b=1");
+
+  const reNoteed = (await parseEmmx(await writeEmmx(withPages(updateExtras(back, noteId, { note: "新批注" }))))).doc.pages[0];
+  eq("改过的批注按新值写回", reNoteed.shapes[noteId].extras.note, "新批注");
+  const dropped = (await parseEmmx(await writeEmmx(withPages(updateExtras(reNoteed, noteId, { note: undefined }))))).doc.pages[0];
+  eq("界面里删掉的批注不再写回", dropped.shapes[noteId].extras.note, undefined);
 
   // --- 坏输入
   await rejects("非 ZIP 报中文错误", parseEmmx(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])), "不是 ZIP 容器");

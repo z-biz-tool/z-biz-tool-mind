@@ -859,10 +859,10 @@ function rebuildShape(key: string, page: Page, ctx: WriteCtx, raw: RawContainer)
   const shape = page.shapes[id];
   if (!shape) return undefined; // 用户删掉的 Shape：不再回写
   if (sigOfShape(shape) === raw.sig[key]) return raw.nodes[key];
-  return buildShape(shape, ctx);
+  return buildShape(shape, ctx, raw.nodes[key]);
 }
 
-function buildShape(s: Shape, ctx: WriteCtx): XmlNode | undefined {
+function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefined {
   if (!s.id) return undefined;
   const n = el("Shape", { Type: s.type, ID: s.id });
   n.children.push(
@@ -898,9 +898,53 @@ function buildShape(s: Shape, ctx: WriteCtx): XmlNode | undefined {
     }
     n.children.push(att);
   }
+  carryUntouched(s, n, from);
   return n;
 }
 
+/** buildShape 会自己重建的标签；Shape 上其余的子元素都要从原节点带回来。 */
+const SHAPE_OWN_TAGS = new Set([
+  "Transform",
+  "ShapeFormat",
+  "Text",
+  "LevelData",
+  "Geometries",
+  "ShapeStyle",
+  "StyleMask",
+  "Attachments",
+]);
+
+/**
+ * 改一个主题不该顺手抹掉它身上我们不重建的字段。
+ *
+ * 批注与超链接是"模型里有、写侧一直没落笔"的两个：签名一变整份节点重生成，
+ * 原文件里的这两块就没了。规则是 —— 值没动过就原样带回亿图自己的写法（我们不猜它的
+ * 元素布局），值改过才按读侧认得的写法重建；用户在界面里删掉的，这里就真的不再写。
+ * 其余没建模的元素一律带回：宁可保留我们看不懂的字节，也不要"打开一次再保存就少一块"。
+ */
+function carryUntouched(s: Shape, n: XmlNode, from?: XmlNode): void {
+  const rawNote = from ? vnode(find(from, "Comment"), "Text") ?? vnode(find(from, "Note"), "V") : undefined;
+  const linkNode = from ? find(from, "HyperLink") ?? find(from, "Hyperlink") : undefined;
+  const rawLink = linkNode ? (vnode(linkNode, "Address") ?? attr(linkNode, "Address")) : undefined;
+  for (const c of from?.children ?? []) {
+    if (SHAPE_OWN_TAGS.has(c.tag)) continue;
+    if (c.tag === "Comment" || c.tag === "Note") {
+      if (s.extras.note === rawNote) n.children.push(c);
+      continue;
+    }
+    if (c.tag === "HyperLink" || c.tag === "Hyperlink") {
+      if (s.extras.hyperlink?.target === rawLink) n.children.push(c);
+      continue;
+    }
+    n.children.push(c);
+  }
+  if (s.extras.note !== undefined && s.extras.note !== rawNote) {
+    n.children.push(el("Comment", {}, [vNode("Text", s.extras.note)]));
+  }
+  if (s.extras.hyperlink && s.extras.hyperlink.target !== rawLink) {
+    n.children.push(el("HyperLink", {}, [vNode("Address", s.extras.hyperlink.target)]));
+  }
+}
 /** 附件名 → media/ 里的真实路径；找不到就按原名挂到 media/ 下。 */
 function mediaTarget(name: string, media: Record<string, Uint8Array>): string {
   const hit = Object.keys(media).find((k) => k === name || k.endsWith(`/${name}`));
