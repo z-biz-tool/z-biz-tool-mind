@@ -23,7 +23,7 @@ import type { LayoutCode, Page } from "../types/model.ts";
 import { plainText } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
 import { paintPage, type Paint, type ShapePaint } from "../engine/export/svg.ts";
-import { fitView } from "../engine/view.ts";
+import { fitView, quickBarAnchor } from "../engine/view.ts";
 import type { NodeBox } from "../engine/layout.ts";
 import {
   descendants,
@@ -232,6 +232,7 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const editingId = useDoc((s) => s.editingId);
   const dragButton = useSettings((s) => s.settings.general.canvasDragButton);
   const wheelAt = useSettings((s) => s.settings.general.wheelZoom);
+  const showQuickBar = useSettings((s) => s.settings.general.showQuickBar);
 
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -496,6 +497,51 @@ export function MindCanvas({ page }: MindCanvasProps) {
     doc.mutate(label, (p) => toggleCollapsed(p, id));
   };
 
+  // 键盘和快捷操作条共用同一批操作。两条入口各写一份 mutate，
+  // 撤销栈里就会出现"新建子主题"和"添加子主题"两种标签，用户按一次撤销只退一半。
+  const addChild = (id: string) => {
+    const doc = useDoc.getState();
+    if (!doc.hist) return;
+    let newId = "";
+    doc.mutate("新建子主题", (p) => {
+      const r = insertChild(withOpenParent(p, id), id, NEW_TOPIC);
+      newId = r.id;
+      return r.page;
+    });
+    if (newId) doc.select([newId], newId);
+  };
+
+  const addSibling = (id: string, before: boolean) => {
+    const doc = useDoc.getState();
+    if (!doc.hist) return;
+    const parent = live.current.page.shapes[id]?.parentId ?? id;
+    let newId = "";
+    doc.mutate("新建同级主题", (p) => {
+      const r = insertSibling(
+        withOpenParent(p, parent),
+        id,
+        before ? "before" : "after",
+        NEW_TOPIC
+      );
+      newId = r.id;
+      return r.page;
+    });
+    if (newId) doc.select([newId], newId);
+  };
+
+  const removeTopics = (ids: string[]) => {
+    const doc = useDoc.getState();
+    const pg = live.current.page;
+    if (!doc.hist) return;
+    const doomed = ids.filter((id) => Boolean(pg.shapes[id]?.parentId));
+    if (!doomed.length) return; // 中心主题不可删（removeShape 也会拒）
+    const gone = new Set(doomed);
+    let back: string | null = pg.shapes[doomed[0]]?.parentId ?? null;
+    while (back && gone.has(back)) back = pg.shapes[back]?.parentId ?? null;
+    doc.mutate("删除主题", (p) => doomed.reduce((q, id) => removeShape(q, id), p));
+    doc.select([back ?? pg.rootId], back ?? pg.rootId);
+  };
+
   // ------------------------------------------------------------ 键盘（§3.1 第一公民）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -546,37 +592,18 @@ export function MindCanvas({ page }: MindCanvasProps) {
         e.key === "Insert" || (e.key === "Tab" && !ctrl) || (e.key === "Enter" && ctrl);
       if (wantChild) {
         e.preventDefault();
-        let newId = "";
-        doc.mutate("新建子主题", (p) => {
-          const r = insertChild(withOpenParent(p, anchor), anchor, NEW_TOPIC);
-          newId = r.id;
-          return r.page;
-        });
-        if (newId) doc.select([newId], newId);
+        addChild(anchor);
         return;
       }
       if (e.key === "Enter" && !ctrl) {
         e.preventDefault();
-        const parent = pg.shapes[anchor]?.parentId ?? anchor;
-        const side = e.shiftKey ? "before" : "after";
-        let newId = "";
-        doc.mutate("新建同级主题", (p) => {
-          const r = insertSibling(withOpenParent(p, parent), anchor, side, NEW_TOPIC);
-          newId = r.id;
-          return r.page;
-        });
-        if (newId) doc.select([newId], newId);
+        addSibling(anchor, e.shiftKey);
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
-        const doomed = sel.filter((id) => Boolean(pg.shapes[id]?.parentId));
-        if (!doomed.length) return; // 中心主题不可删（removeShape 也会拒）
+        if (!sel.some((id) => Boolean(pg.shapes[id]?.parentId))) return;
         e.preventDefault();
-        const gone = new Set(doomed);
-        let back: string | null = pg.shapes[doomed[0]]?.parentId ?? null;
-        while (back && gone.has(back)) back = pg.shapes[back]?.parentId ?? null;
-        doc.mutate("删除主题", (p) => doomed.reduce((q, id) => removeShape(q, id), p));
-        doc.select([back ?? pg.rootId], back ?? pg.rootId);
+        removeTopics(sel);
         return;
       }
       if (alt && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
@@ -623,6 +650,65 @@ export function MindCanvas({ page }: MindCanvasProps) {
   // ------------------------------------------------------------ 渲染
   const cursor = draggingCanvas ? "grabbing" : dragButton === "left" ? "grab" : "crosshair";
   const rxOf = (b: ShapePaint) => Math.min(b.rounding, b.w / 2, b.h / 2);
+
+  // ---------------------------------------------------------- 快捷操作条（§3.1）
+  // 只在"单选、没在打字、没在拖"时出现：多选时这五个动作会一次作用在几十个主题上，
+  // 太容易失手；编辑中让位给输入框。
+  const barTarget =
+    showQuickBar && !editingId && !drop && picked.length === 1
+      ? paint.boxes.find((b) => b.id === picked[0])
+      : undefined;
+  const barShape = barTarget ? page.shapes[barTarget.id] : undefined;
+  const barBtns: { k: string; label: string; tip: string; run: () => void }[] = [];
+  if (barShape) {
+    const id = barShape.id;
+    barBtns.push({
+      k: "child",
+      label: "子主题",
+      tip: "插入子主题（Tab）",
+      run: () => addChild(id),
+    });
+    barBtns.push({
+      k: "sibling",
+      label: "同级",
+      tip: "插入同级主题（Enter）",
+      run: () => addSibling(id, false),
+    });
+    if (barShape.childIds.length)
+      barBtns.push({
+        k: "fold",
+        label: barShape.extras.collapsed ? "展开" : "折叠",
+        tip: "折叠 / 展开这条分支（F4）",
+        run: () => toggleFold(id),
+      });
+    if (barShape.parentId)
+      barBtns.push({
+        k: "del",
+        label: "删除",
+        tip: "删除这个主题及其分支（Delete）",
+        run: () => removeTopics([id]),
+      });
+    barBtns.push({
+      k: "edit",
+      label: "改名",
+      tip: "编辑文字（F2 或双击）",
+      run: () => useDoc.getState().setEditing(id),
+    });
+  }
+  // 宽度按"中文字 12px + 左右内边距"估：条子居中偏几个像素不要紧，滑出视口才要紧。
+  const barW = barBtns.reduce((n, b) => n + b.label.length * 12 + 16, 4) + (barBtns.length - 1) * 4;
+  const barAt = barTarget
+    ? quickBarAnchor(
+        {
+          left: pan.x + barTarget.x * zoom,
+          top: pan.y + barTarget.y * zoom,
+          width: barTarget.w * zoom,
+          height: barTarget.h * zoom,
+        },
+        size,
+        { w: barW, h: 28 }
+      )
+    : null;
 
   return (
     <div
@@ -772,6 +858,51 @@ export function MindCanvas({ page }: MindCanvasProps) {
           )}
         </g>
       </svg>
+
+      {barAt && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            left: barAt.left,
+            top: barAt.top,
+            display: "flex",
+            gap: 4,
+            height: 28,
+            padding: "0 2px",
+            boxSizing: "border-box",
+            background: "#ffffff",
+            border: "1px solid #d9d9d9",
+            borderRadius: 6,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+            alignItems: "center",
+            cursor: "default",
+          }}
+        >
+          {barBtns.map((b) => (
+            <button
+              key={b.k}
+              type="button"
+              title={b.tip}
+              onClick={b.run}
+              style={{
+                border: 0,
+                background: "transparent",
+                padding: "0 8px",
+                height: 26,
+                fontSize: 12,
+                lineHeight: "26px",
+                color: "#333333",
+                borderRadius: 5,
+                whiteSpace: "nowrap",
+                cursor: "pointer",
+              }}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {editingId && editBox && (
         <textarea

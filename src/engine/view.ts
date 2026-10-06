@@ -46,3 +46,49 @@ export function fitView(
     },
   };
 }
+
+/** 屏幕坐标下的一个矩形（已经乘过 zoom、加过 pan）。 */
+export interface ScreenBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** 快捷操作条该贴在哪一侧。 */
+export type BarSide = "above" | "below";
+
+export interface BarAnchor {
+  left: number;
+  top: number;
+  side: BarSide;
+}
+
+const BAR_EDGE = 4;
+
+/**
+ * 给选中主题旁浮出来的那条操作求一个位置。
+ *
+ * 默认贴在节点上沿之上（亿图就是这个位置），上边放不下就翻到下边 —— 顶行主题、
+ * 或者画布被压得很扁时会翻。横向永远居中于节点，但被视口两边夹住，
+ * 免得半条工具条滑出窗口外点不到。
+ */
+export function quickBarAnchor(
+  node: ScreenBox,
+  view: Viewport,
+  bar: { w: number; h: number },
+  gap = 8
+): BarAnchor | null {
+  if (!(view.w > 0) || !(view.h > 0) || !(node.width > 0) || !(node.height > 0)) return null;
+  if (!(bar.w > 0) || !(bar.h > 0)) return null;
+
+  const above = node.top - gap - bar.h;
+  const below = node.top + node.height + gap;
+  const side: BarSide = above >= BAR_EDGE ? "above" : "below";
+  const rawTop = side === "above" ? above : below;
+  const top = Math.min(rawTop, Math.max(BAR_EDGE, view.h - bar.h - BAR_EDGE));
+
+  const maxLeft = Math.max(BAR_EDGE, view.w - bar.w - BAR_EDGE);
+  const left = Math.min(maxLeft, Math.max(BAR_EDGE, node.left + node.width / 2 - bar.w / 2));
+  return { left, top, side };
+}

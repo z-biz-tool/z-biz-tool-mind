@@ -217,7 +217,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
               </Field>
               <Field
                 label="启动恢复上次会话"
-                hint="关掉应用时停在哪个投影、哪一页，下次打开回到那里；关掉就固定从开始页起。"
+                hint="冷启动时自动打开最近列表里最后用过的那份文件；关掉就总是停在开始页。"
               >
                 <Switch
                   size="small"
@@ -227,7 +227,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
               </Field>
               <Field
                 label="显示快捷操作条"
-                hint="选中主题后在它旁边浮出来的那一条（加子主题、折叠、删除）。"
+                hint="单选一个主题时在它上方浮出的一条：子主题、同级、折叠、删除、改名。多选或正在打字时不出现。"
               >
                 <Switch
                   size="small"
@@ -517,9 +517,9 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                 label="API Key"
                 hint={
                   <>
-                    密钥只进本机加密库（native.secretStore AES-256-GCM，主密钥 master.key 与密文同目录、0600），绝不写 settings：这一节会被整份存成
-                    config.json， 而 config.json
-                    躺在应用数据目录里，同步盘和备份目录都会把它一起带走 ——
+                    密钥只进本机加密库（native.secretStore AES-256-GCM，主密钥 master.key
+                    与密文同目录、0600），绝不写 settings：这一节会被整份存成 config.json， 而
+                    config.json 躺在应用数据目录里，同步盘和备份目录都会把它一起带走 ——
                     明文密钥跟着走一遍就等于泄露一次。
                   </>
                 }
