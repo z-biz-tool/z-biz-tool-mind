@@ -137,4 +137,19 @@ ok(
   `chip=${chips[0].x},${chips[0].y}`
 );
 
+// 折叠计数那个白圆压在框右下角：标签条必须给它让出地方。
+const foldPaged = updateExtras(page, page.rootId, {
+  collapsed: true,
+  labels: ["甲", "乙", "丙", "丁"],
+});
+const folded = box(foldPaged, page.rootId);
+const foldChips = labelChips(folded);
+ok("折叠计数确实亮着", folded.hiddenCount > 0, String(folded.hiddenCount));
+ok("折叠的框也有标签条", foldChips.length > 0, JSON.stringify(folded.labels));
+ok(
+  "标签不撞到右下角的折叠计数",
+  foldChips.every((c) => c.x + c.w <= folded.x + folded.w - 13),
+  JSON.stringify(foldChips[foldChips.length - 1])
+);
+
 done();
