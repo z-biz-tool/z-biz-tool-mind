@@ -9,7 +9,7 @@ import { useMemo } from "react";
 import { Button, ColorPicker, Segmented, Select, Tooltip } from "antd";
 import { LAYOUT_LABELS } from "../model/constants.ts";
 import { maxDepth, updateStyle } from "../engine/tree.ts";
-import { styleFor } from "../engine/style.ts";
+import { applyPalette, styleFor } from "../engine/style.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { useUi } from "../stores/uiStore.ts";
 import type { LayoutCode, Page, Shape, ShapeStyle } from "../types/model.ts";
@@ -46,6 +46,34 @@ export function MindMapView({ page }: { page: Page }) {
       return out;
     });
   };
+
+  /** 有多少主题被用户单独配过色 —— 它决定"恢复主题配色"这一钮有没有事可做。 */
+  const pinnedCount = useMemo(
+    () => Object.values(page.shapes).filter((s) => ((s.style.mask ?? 0) & 1) !== 0).length,
+    [page],
+  );
+
+  /**
+   * 恢复主题配色：先把独立配色那一位清掉，再让 applyPalette 按色板整体重算。
+   * 只做后一半是空转 —— applyPalette 唯一跳过的就是被 pin 住的那些。
+   * 其余位照原样留着：那是文件里带来的信息（如 tint），不是用户在这儿按下的颜色。
+   */
+  const resetTheme = () =>
+    mutate("恢复主题配色", (p) => {
+      const cleared = {
+        ...p,
+        shapes: Object.fromEntries(
+          Object.entries(p.shapes).map(([id, s]) => {
+            const rest = (s.style.mask ?? 0) & ~1;
+            const style: ShapeStyle = { ...s.style, fill: undefined };
+            if (rest) style.mask = rest;
+            else delete style.mask;
+            return [id, { ...s, style }];
+          }),
+        ),
+      };
+      return applyPalette(cleared);
+    });
 
   /** 批量折叠只写 extras.collapsed，不动结构：撤销一步就能整套还原。 */
   const collapseBranches = (collapsed: boolean) => {
@@ -140,6 +168,13 @@ export function MindMapView({ page }: { page: Page }) {
             </Button>
           </Tooltip>
         )}
+        {pinnedCount ? (
+          <Tooltip title={`当前有 ${pinnedCount} 个主题被单独配过色；这一步把它们全部交还给主题。之后仍可用撤销恢复。`}>
+            <Button size="small" onClick={resetTheme}>
+              恢复主题配色（{pinnedCount}）
+            </Button>
+          </Tooltip>
+        ) : null}
         <button type="button" className="zm-btn zm-btn-ghost" onClick={() => collapseBranches(true)}>
           全部折叠
         </button>
