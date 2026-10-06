@@ -239,37 +239,16 @@ export type LayoutCode =
   | "timelineWinding" // S 型时间线
   | "free"; // 自由布局
 
-/** .emmx 的 `<Layout V="n">` 数字码。 */
+/** .emmx 的 `<Layout V="n">` 数字码。亿图自己的语料里只出现过 6 / 7 / 8，认不出的码由 codec 原样带回。 */
 export const LAYOUT_CODE_TO_NAME: Record<number, LayoutCode> = {
   6: "balanced",
   8: "logicRight",
 };
 
-export const LAYOUT_NAME_TO_CODE: Record<LayoutCode, number> = {
-  balanced: 6,
-  logicRight: 8,
-  logicLeft: 8,
-  rightOnly: 8,
-  treeRight: 9,
-  treeLeft: 9,
-  orgUp: 9,
-  orgDown: 9,
-  orgBoth: 9,
-  radial: 6,
-  fishboneLeft: 6,
-  fishboneRight: 6,
-  braceLeft: 6,
-  braceRight: 6,
-  matrix: 6,
-  circlePacking: 6,
-  timelineVertical: 6,
-  timelineHorizontal: 6,
-  timelineWinding: 6,
-  free: 6,
-};
-
 export interface LayoutSpec {
   code: LayoutCode;
+  /** 读到的 `<Layout V>` 原样数字码；写回时用它区分"这份文档本来就是那个码"。 */
+  rawCode?: number;
   hSpacing: number;
   vSpacing: number;
   /** 主分支长度阈值（"显示层级数/分支长度"）。 */

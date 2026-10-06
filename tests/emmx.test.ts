@@ -5,7 +5,9 @@
  * 1) 双向父子索引（SubLevel / Super）必须一致，否则删一个子节点会留下幽灵；
  * 2) MMConnector 是布局缓存，不能被当成用户数据；
  * 3) 中文文件名 + deflate 的 ZIP 条目必须能原读原写；
- * 4) 未识别属性不能被保存动作吃掉。
+ * 4) 未识别属性不能被保存动作吃掉；
+ * 5) 我们不认得的 <Layout V> 数字码不能被降级成认得的那个 —— 别人的文件开一次再存，
+ *    布局属性不该发生变化。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,6 +17,7 @@ import { nodeEquals, parseXml, findAll, attr } from "../src/engine/emmx/xparse.t
 import { modelEquals, parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
 import { insertChild, updateText } from "../src/engine/tree.ts";
 import { plainText } from "../src/types/model.ts";
+import type { Page } from "../src/types/model.ts";
 
 const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
 
@@ -102,6 +105,27 @@ if (!existsSync(FIXTURE)) {
   const fresh = Object.keys(added.shapes).filter((i) => !(i in page.shapes));
   eq("只新增一个 Shape", fresh.length, 1);
   ok("新 ID 未与文件里任何 Shape 重号", !usedIds.has(fresh[0]), fresh[0]);
+
+  // --- 布局码：亿图语料里 <Layout V> 出现过 6 / 7 / 8，我们只认 6 和 8。
+  //   认不出的码必须原样带回 —— 否则"打开别人的文件再保存一次"就把 7 悄悄改成 6。
+  //   只盯 <Layout V="n"/> 这一个元素：文件里另有 <LayoutMemory V="7">，整串 includes 会误判。
+  const vOf = (xml: string) => /<Layout V="(\d+)"/.exec(xml)?.[1];
+  const origV = vOf(pageSrc);
+  ok("样本里确实带 <Layout V>", Boolean(origV));
+  eq("未改布局时 <Layout V> 一字不动", vOf(decodeBytes(rePage.data)), origV);
+  // 改间距会触发整页重新生成，这时才看得出码有没有被降级。
+  const foreignPage = {
+    ...updateText(page, page.shapes[page.rootId].childIds[0], "布局码"),
+    layout: { ...page.layout, rawCode: 7, hSpacing: page.layout.hSpacing + 1 },
+  };
+  const withPages = (p: Page) => ({ ...doc, pages: doc.pages.map((x) => (x.id === p.id ? p : x)) });
+  const foreignXml = decodeBytes((await readZip(await writeEmmx(withPages(foreignPage)))).find((e) => /page\/page\.xml$/.test(e.name)).data);
+  eq("陌生码 V=7 原样写回，不降级成 6", vOf(foreignXml), "7");
+  eq("重读时仍记得这个陌生码", (await parseEmmx(await writeEmmx(withPages(foreignPage)))).doc.pages[0].layout.rawCode, 7);
+  // 反过来：用户在界面上真的换过布局，就不能再抱着旧码不放。
+  const switchedPage = { ...foreignPage, layout: { ...foreignPage.layout, code: "logicRight" as const } };
+  const switchedXml = decodeBytes((await readZip(await writeEmmx(withPages(switchedPage)))).find((e) => /page\/page\.xml$/.test(e.name)).data);
+  eq("改过布局后按新码写回", vOf(switchedXml), "8");
 
   // --- 坏输入
   await rejects("非 ZIP 报中文错误", parseEmmx(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])), "不是 ZIP 容器");

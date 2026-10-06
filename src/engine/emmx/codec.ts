@@ -298,6 +298,7 @@ function parsePage(entryName: string, src: string, rels: Record<string, string>,
     relationships,
     layout: {
       code: layoutCodeOf(layoutNode),
+      rawCode: rawLayoutCode(layoutNode),
       hSpacing: numVnode(layoutNode, "HSpacing", DEFAULTS.hSpacing),
       vSpacing: numVnode(layoutNode, "VSpacing", DEFAULTS.vSpacing),
       levelLength: splitNumbers(vnode(layoutNode, "LevelLength", "")),
@@ -331,6 +332,15 @@ function pickRoot(shapes: Record<string, Shape>): string {
 function layoutCodeOf(layoutNode: XmlNode | undefined): Page["layout"]["code"] {
   const n = numVnode(layoutNode, "Layout", 0);
   return LAYOUT_CODE_TO_NAME[n] ?? "balanced";
+}
+
+/**
+ * <Layout V> 的原样数字码，缺节点当"没有"。
+ * 亿图自己的文件里出现过 6 / 7 / 8 三种，我们只认 6 和 8 —— 认不出的码必须带回去，
+ * 否则"打开再保存"会把别人文件里的 7 悄悄改成 6，那是改坏用户的文档而不是 round-trip。
+ */
+function rawLayoutCode(layoutNode: XmlNode | undefined): number | undefined {
+  return numVnode(layoutNode, "Layout", 0) || undefined;
 }
 
 function splitNumbers(s: string | undefined): number[] {
@@ -943,8 +953,18 @@ function buildPageProps(p: Page): XmlNode {
   );
 }
 
+/**
+ * 写回 <Layout V>：码没被人在界面里改过时，原样带回读到的数字（含我们不认得的 7）；
+ * 改过或本来就是我们自己造的页，才按当前 code 反查。
+ */
+function layoutCodeOfPage(p: Page): string {
+  const raw = p.layout.rawCode;
+  if (raw !== undefined && (LAYOUT_CODE_TO_NAME[raw] ?? "balanced") === p.layout.code) return String(raw);
+  return Object.entries(LAYOUT_CODE_TO_NAME).find(([, v]) => v === p.layout.code)?.[0] ?? "6";
+}
+
 function buildLayout(p: Page): XmlNode {
-  const code = Object.entries(LAYOUT_CODE_TO_NAME).find(([, v]) => v === p.layout.code)?.[0] ?? "6";
+  const code = layoutCodeOfPage(p);
   const n = el(
     "Layout",
     {},
