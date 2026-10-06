@@ -5,7 +5,7 @@ name: desktop-build
 # 所以"可导出 Windows 与 macOS"必须由两台机器完成：
 #   windows-latest  → bundle/nsis/*.exe + bundle/msi/*.msi
 #   macos-latest    → 两份架构（arm64 给 Apple Silicon，x86_64 给 Intel）的 .dmg + .app
-# 两个闸门先跑完：前端（类型检查 + 464 例测试 + vite 构建）和 Rust 格式。
+# 两个闸门先跑完：前端（类型检查 + tests/run.mjs 的全部用例 + vite 构建）和 Rust 格式。
 # Rust 编译一趟三分钟，没必要为已经红了的前端或一个换行缩进再等一遍。
 #
 # cargo test 不在 ubuntu 那个闸门里跑，而是在 windows / macOS 两个 job 里各跑一遍：

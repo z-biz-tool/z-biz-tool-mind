@@ -21,11 +21,13 @@ import {
   Select,
   Switch,
   Tabs,
+  Tag,
   Tooltip,
 } from "antd";
 import { LoadingState } from "../_shared/index.ts";
 import { LAYOUT_LABELS, QUOTA } from "../model/constants.ts";
 import { native } from "../services/native.ts";
+import type { AppInfo } from "../services/native.ts";
 import { useRecent } from "../stores/recentStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 
@@ -101,6 +103,21 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
   // API Key 是唯一不能进 settings 的输入：它只活在下面这份临时态里，按"保存密钥"才进钥匙串。
   const [apiKey, setApiKey] = useState("");
   const [secretTip, setSecretTip] = useState<string | null>(null);
+  const [hasKey, setHasKey] = useState(false);
+  const [info, setInfo] = useState<AppInfo | null>(null);
+
+  useEffect(() => {
+    // 开框先探一次"钥匙串里到底有没有"：secretReveal 会把明文读进输入框，
+    // 而用户多数只想知道自己配没配过 —— 不该为了看一个布尔值就看到密钥本身。
+    void native
+      .secretExists(AI_KEY_NAME)
+      .then(setHasKey)
+      .catch(() => undefined);
+    void native
+      .appInfo()
+      .then(setInfo)
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     // 对话框可能被任何视图打开（工具栏、错误面板、F1），不保证有人替我们 load() 过。
@@ -115,6 +132,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
     }
     try {
       await native.secretStore(AI_KEY_NAME, v);
+      setHasKey(true);
       setSecretTip("已写入系统钥匙串。");
     } catch (e) {
       setSecretTip(e instanceof Error ? e.message : String(e));
@@ -125,6 +143,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
     try {
       const v = await native.secretReveal(AI_KEY_NAME);
       setApiKey(v ?? "");
+      setHasKey(!!v);
       setSecretTip(v ? "已从钥匙串载入。" : "这台机器上没有存过密钥。");
     } catch (e) {
       setSecretTip(e instanceof Error ? e.message : String(e));
@@ -135,6 +154,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
     try {
       await native.secretDrop(AI_KEY_NAME);
       setApiKey("");
+      setHasKey(false);
       setSecretTip("已从钥匙串删除。");
     } catch (e) {
       setSecretTip(e instanceof Error ? e.message : String(e));
@@ -531,6 +551,13 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                     <Button size="small" danger onClick={() => void dropKey()}>
                       清空密钥
                     </Button>
+                    {hasKey ? (
+                      <Tooltip title="只问“有没有”，不读出内容。输入框里现在是空的，点“载入已有密钥”才会把明文取回来。">
+                        <Tag style={{ margin: 0, alignSelf: "center" }} color="green">
+                          钥匙串里已存有一份
+                        </Tag>
+                      </Tooltip>
+                    ) : null}
                   </div>
                   {secretTip ? (
                     <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>{secretTip}</span>
@@ -623,6 +650,28 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                 点数按“约 {QUOTA.aiCharsPerPoint} 个汉字 1 点”向上取整扣，见
                 useSettings.spendAiPoints。
               </div>
+              {info ? (
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "var(--zm-text-2)",
+                    marginTop: 10,
+                    lineHeight: 1.8,
+                    borderTop: "1px solid var(--zm-border)",
+                    paddingTop: 8,
+                  }}
+                >
+                  <div>
+                    版本 <b style={{ color: "var(--zm-text)" }}>{info.version}</b> · {info.os}/
+                    {info.arch}
+                  </div>
+                  {/* 配置目录是"历史版本/备份到底在盘上哪儿"的答案：出问题让人翻日志时，
+                      只有应用内这一个地方能拿到真实路径（本机与 CI 的 AppData 前缀并不同）。 */}
+                  <div style={{ wordBreak: "break-all" }} title={info.configDir}>
+                    配置目录 {info.configDir}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ),
         },
