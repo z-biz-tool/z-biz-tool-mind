@@ -3,7 +3,7 @@
  * 桌面安装包的唯一入口：先体检，再调 tauri build。
  *
  * 为什么要多这一层：这台机器上 `tauri build` 的失败信息是 "cargo: command not found"，
- * 而真正缺的东西每个系统装法不同 —— Windows 要 MSVC 工具链（或换成 -gnu），
+ * 而真正缺的东西每个系统装法不同 —— Windows 要 MSVC 那套 C++ 工具链（-gnu 还得再补一套 MinGW），
  * macOS 要 Xcode 命令行工具；装错一次就白等一趟几分钟起步的编译。体检只花几毫秒。
  *
  *   node scripts/build-desktop.mjs                    # 按当前系统出安装包
@@ -49,8 +49,29 @@ function check(os) {
     }
   } else {
     const host = /host: (\S+)/.exec(spawnSync("rustc", ["-vV"], { encoding: "utf8" }).stdout ?? "")?.[1] ?? "";
-    if (os === "win32" && host.endsWith("-msvc") && !existsSync(join("C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe"))) {
-      problems.push(`Rust 是 ${host}，但系统里没有 Visual Studio 安装器 → 链接阶段会找不到 link.exe。要么装 “C++ 桌面开发” 工作负载，要么 rustup default stable-x86_64-pc-windows-gnu`);
+    if (os === "win32" && host.endsWith("-msvc")) {
+      // vswhere 在 ≠ 编得动：Build Tools 可能只装了 .NET 工作负载，link.exe 照样找不到。
+      // 所以直接问 vswhere "有没有带 C++ 生成工具的安装"，让它替我们判。
+      const vswhere = "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe";
+      const probe = existsSync(vswhere)
+        ? spawnSync(vswhere, ["-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"], { encoding: "utf8" })
+        : null;
+      const vsPath = probe?.stdout?.trim() ?? "";
+      if (!vsPath) {
+        problems.push(`Rust 是 ${host}，但没有装好“使用 C++ 的桌面开发”工作负载 → 链接阶段找不到 link.exe。补上：winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`);
+      } else if (!existsSync(join("C:\\Program Files (x86)", "Windows Kits", "10", "Lib"))) {
+        problems.push(`VS 装在 ${vsPath}，但系统里没有 Windows SDK 的 Lib 目录 → 链接会缺 libcmt/uuid 之类。重装时带 --includeRecommended（它会连 Windows11SDK 一起装）。`);
+      }
+    }
+    // -gnu 看着免管理员很省事，但 rustup 只发了 dlltool，没发它内部要调用的 as.exe；
+    // getrandom 的 raw-dylib 一编译就停在 "dlltool.exe: CreateProcess"，而这句话里完全没提 as。
+    if (os === "win32" && host.endsWith("-gnu")) {
+      const sysroot = spawnSync("rustc", ["--print", "sysroot"], { encoding: "utf8", shell: true }).stdout?.trim() ?? "";
+      const bin = join(sysroot, "lib", "rustlib", host, "bin");
+      const hasAs = [join(bin, "as.exe"), join(bin, "self-contained", "as.exe"), join(bin, "x86_64-w64-mingw32-as.exe")].some(existsSync);
+      if (!hasAs) {
+        problems.push(`Rust 是 ${host}，但工具链里没有 as.exe → getrandom 会报 "dlltool: CreateProcess" 后中断。补一套 MinGW-w64 GCC（MSYS2: pacman -S mingw-w64-ucrt-x86_64-gcc）并把它的 bin 加进 PATH，或者改用 MSVC：rustup default stable-x86_64-pc-windows-msvc`);
+      }
     }
   }
   if (!existsSync(join(ROOT, "node_modules", "@tauri-apps", "cli"))) {

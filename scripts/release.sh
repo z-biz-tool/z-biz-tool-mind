@@ -204,6 +204,12 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+# 版本号此刻已经写进工作区，所以不能再用"工作区必须干净"当门禁结论 —— 那样每条发布都会在这里中止。
+# 记下药丸，门禁之后比对：只允许"没多出改动"，不允许"没有任何改动"。
+# Cargo.lock 除外：cargo 在门禁里一跑就会把新版本号同步进去，这是预期改动，代码没动。
+workspace_fingerprint() { git status --porcelain --untracked-files=no | grep -v 'Cargo\.lock$' | sort; }
+SNAPSHOT="$(workspace_fingerprint)"
+
 echo ">> 门禁：typecheck"
 [[ -f package.json ]] && npm run typecheck
 
@@ -217,20 +223,20 @@ if [[ -x scripts/release-gate.sh ]]; then
   ./scripts/release-gate.sh
 fi
 
-git diff --quiet || { echo "门禁过程中工作区被改动，中止" >&2; exit 1; }
-# 版本号写入发生在门禁之后，这里只确认它仍然在位。
+[[ "$(workspace_fingerprint)" == "$SNAPSHOT" ]] || { echo "门禁过程中工作区被改动，中止" >&2; exit 1; }
+# 版本号写入发生在门禁之前，这里只确认它仍然在位。
 git diff --name-only | grep -q package.json || { echo "版本号未写入，中止" >&2; exit 1; }
 
 if [[ "$ASSUME_YES" -ne 1 ]]; then
-  printf "将提交并推送 v%s（会触发四平台构建），确认？[y/N] " "$NEW"
+  printf "将提交并推送 v%s（会触发 Windows + macOS 两个架构的安装包构建），确认？[y/N] " "$NEW"
   read -r REPLY
   [[ "$REPLY" == "y" || "$REPLY" == "Y" ]] || { echo "已取消，文件保持修改状态" >&2; exit 1; }
 fi
 
-git add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json
+git add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/Cargo.lock
 git commit -m "chore(release): bump version to ${NEW}"
 git push origin main
 git tag "v${NEW}"
 git push origin "v${NEW}"
 
-echo "已发布 v${NEW}，构建进度看 Actions 的 Build & Release"
+echo "已发布 v${NEW}，构建进度看 Actions 的 desktop-build"

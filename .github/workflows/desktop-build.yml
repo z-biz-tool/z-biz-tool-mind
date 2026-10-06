@@ -5,7 +5,8 @@ name: desktop-build
 # 所以"可导出 Windows 与 macOS"必须由两台机器完成：
 #   windows-latest  → bundle/nsis/*.exe + bundle/msi/*.msi
 #   macos-latest    → 两份架构（arm64 给 Apple Silicon，x86_64 给 Intel）的 .dmg + .app
-# web 这一关先把类型检查与 454 例测试跑完：Rust 编译三分钟，没必要为已经红了的前端再等一遍。
+# 两个闸门先跑完：前端（类型检查 + 464 例测试 + vite 构建）和 Rust 格式。
+# Rust 编译一趟三分钟，没必要为已经红了的前端或一个换行缩进再等一遍。
 
 on:
   push:
@@ -42,9 +43,22 @@ jobs:
       - run: node tests/run.mjs
       - run: npm run build
 
+  rust:
+    name: Rust 闸门（cargo fmt --check）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      # Runner 会往 ~/.cargo/config.toml 里塞凭证配置，cargo 认不得这个格式就直接报错退出。
+      - run: rm -f "$HOME/.cargo/config.toml"
+      - run: cargo fmt --check
+        working-directory: src-tauri
+
   windows:
     name: Windows 安装包（.exe + .msi）
-    needs: web
+    needs: [web, rust]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +84,7 @@ jobs:
 
   macos:
     name: macOS 安装包（${{ matrix.triple }}）
-    needs: web
+    needs: [web, rust]
     runs-on: macos-latest
     strategy:
       fail-fast: false
