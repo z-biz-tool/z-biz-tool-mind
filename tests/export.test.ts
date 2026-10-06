@@ -133,7 +133,8 @@ const total = 9;
 {
   const svg = buildSvg(page, {});
   const paint = paintPage(page, {});
-  eq("每个主题一个矩形", (svg.match(/<rect /g) ?? []).length - 1, paint.boxes.length); // 减去铺底那张
+  // 标签条的小框也是 <rect>，它 fill="none"；这里只数主题自己的那个实心框（外加一张铺底，减掉）。
+  eq("每个主题一个矩形", (svg.match(/<rect (?![^>]*fill="none")/g) ?? []).length - 1, paint.boxes.length);
   ok("根主题按第 0 档字号画", svg.includes('font-size="14"'), "");
   ok("线宽与圆角逐个盒子写", svg.includes('stroke-width="1"') && svg.includes("rx="), "");
   ok("& 被转义", svg.includes("&amp;"), "");

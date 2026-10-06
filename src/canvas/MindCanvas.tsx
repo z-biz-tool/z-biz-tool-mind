@@ -22,7 +22,13 @@ import {
 import type { LayoutCode, Page } from "../types/model.ts";
 import { plainText } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
-import { cornerBadgePaths, paintPage, type Paint, type ShapePaint } from "../engine/export/svg.ts";
+import {
+  cornerBadgePaths,
+  labelChips,
+  paintPage,
+  type Paint,
+  type ShapePaint,
+} from "../engine/export/svg.ts";
 import { fitView, quickBarAnchor } from "../engine/view.ts";
 import type { NodeBox } from "../engine/layout.ts";
 import {
@@ -782,6 +788,29 @@ export function MindCanvas({ page }: MindCanvasProps) {
                   strokeWidth={1}
                   pointerEvents="none"
                 />
+              ))}
+              {labelChips(b).map((c, i) => (
+                <g key={`label-${i}`} pointerEvents="none">
+                  <rect
+                    x={c.x}
+                    y={c.y}
+                    width={c.w}
+                    height={c.h}
+                    rx={2}
+                    fill="none"
+                    stroke={b.line}
+                    strokeWidth={1}
+                  />
+                  <text
+                    x={c.x + c.w / 2}
+                    y={c.y + c.h / 2 + b.fontSize * 0.24}
+                    fontSize={b.fontSize * 0.68}
+                    textAnchor="middle"
+                    fill={b.textColor}
+                  >
+                    {c.text}
+                  </text>
+                </g>
               ))}
               {b.hiddenCount > 0 && (
                 <g
