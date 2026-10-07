@@ -797,6 +797,24 @@ export function MindCanvas({ page }: MindCanvasProps) {
         onPointerDown={onCanvasPointerDown}
       >
         <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
+          {/* 外框画在最底下：它是给一组主题围的圈，盖在内容上就把整组糊掉了 */}
+          {paint.overlays.map((o) =>
+            o.kind === "boundary" ? (
+              <rect
+                key={`bd-${o.id}`}
+                x={o.x}
+                y={o.y}
+                width={o.w}
+                height={o.h}
+                rx={Math.min(o.rounding, o.w / 2, o.h / 2)}
+                fill={o.fill}
+                fillOpacity={0.35}
+                stroke={o.line}
+                strokeWidth={o.lineWidth}
+                pointerEvents="none"
+              />
+            ) : null
+          )}
           <g fill="none" strokeLinecap="round">
             {paint.connectors.map((c) => (
               <path
@@ -888,6 +906,54 @@ export function MindCanvas({ page }: MindCanvasProps) {
               )}
             </g>
           ))}
+
+          {/* 大括号与标注框压在主题之上（几何来自 paint.overlays，与导出同源） */}
+          {paint.overlays.map((o) =>
+            o.kind === "brace" ? (
+              <path
+                key={`brace-${o.id}`}
+                d={o.d}
+                fill="none"
+                stroke={o.line}
+                strokeWidth={o.lineWidth}
+                strokeLinecap="round"
+                pointerEvents="none"
+              />
+            ) : o.kind === "callout" ? (
+              <g key={`callout-${o.id}`} pointerEvents="none">
+                <path d={o.d} fill="none" stroke={o.line} strokeWidth={1} />
+                <rect
+                  x={o.x}
+                  y={o.y}
+                  width={o.w}
+                  height={o.h}
+                  rx={Math.min(o.rounding, o.w / 2, o.h / 2)}
+                  fill={o.fill}
+                  stroke={o.line}
+                  strokeWidth={o.lineWidth}
+                />
+                {o.lines.map((line, ix) => (
+                  <text
+                    key={ix}
+                    x={o.x + o.w / 2}
+                    y={
+                      o.y +
+                      o.h / 2 -
+                      ((o.lines.length - 1) * lineGap(o.fontSize)) / 2 +
+                      o.fontSize * 0.35 +
+                      ix * lineGap(o.fontSize)
+                    }
+                    fontSize={o.fontSize}
+                    textAnchor="middle"
+                    fontWeight={o.bold ? "bold" : undefined}
+                    fill={o.textColor}
+                  >
+                    {line}
+                  </text>
+                ))}
+              </g>
+            ) : null
+          )}
 
           {/* 关系线压在主题之上（几何来自 paint.rels，与导出同源）：
               它常要从别的主题身上跨过去，画在框底下等于没画 */}

@@ -431,8 +431,11 @@ function parseShape(n: XmlNode, rels: Record<string, string>, warnings: string[]
   if (labels) extras.labels = labels.split(";").filter(Boolean);
   const layoutNode = find(n, "Layout");
   if (vnode(layoutNode, "LayoutDirection", "") === "0") extras.collapsed = true;
-  const callout = find(n, "Callout");
-  if (callout) extras.callout = { forId: attr(callout, "ID") || vnode(callout, "Super", "") || "" };
+  // 外框/概要与标注框都是"分号分隔的 id 列表写在 V 上"：找错属性这两个字段就永远是空的。
+  const covered = vnode(find(n, "BoundaryData"), "Shapes", "");
+  if (covered) extras.covered = covered.split(";").filter(Boolean);
+  const callouts = attr(find(n, "Callout"), "V", "");
+  if (callouts) extras.calloutIds = callouts.split(";").filter(Boolean);
 
   return {
     id,
@@ -934,6 +937,10 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
     }
     n.children.push(att);
   }
+  if (s.extras.covered?.length)
+    n.children.push(el("BoundaryData", {}, [vNode("Shapes", s.extras.covered.join(";"))]));
+  if (s.extras.calloutIds?.length)
+    n.children.push(el("Callout", { V: s.extras.calloutIds.join(";") }));
   carryUntouched(s, n, from);
   return n;
 }
@@ -948,6 +955,8 @@ const SHAPE_OWN_TAGS = new Set([
   "ShapeStyle",
   "StyleMask",
   "Attachments",
+  "BoundaryData",
+  "Callout",
 ]);
 
 /**

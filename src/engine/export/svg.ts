@@ -13,9 +13,11 @@ import {
   computeLayout,
   labelInsets,
   labelRows,
+  overlayShapes,
   relationshipPaths,
   type ConnectorPath,
   type LayoutResult,
+  type OverlayPaint,
   type RelationshipPaint,
 } from "../layout.ts";
 import { descendants } from "../tree.ts";
@@ -71,6 +73,8 @@ export interface Paint {
   connectors: ConnectorPath[];
   /** 关系线：几何来自 layout.relationshipPaths，画布和导出共用同一份。 */
   rels: RelationshipPaint[];
+  /** 外框 / 概要大括号 / 标注框：几何来自 layout.overlayShapes，同样只有一份。 */
+  overlays: OverlayPaint[];
   width: number;
   height: number;
   minX: number;
@@ -117,11 +121,39 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
     });
   }
   const pad = opts.padding ?? 40;
+  // 概要主题（Summary 的 SummaryTopic 孩子）走 boxes 这条路：它本来就是个主题的样子，
+  // 进 boxes 就自动拿到同一套圆角矩形 + 折行 + 命中测试，不必再有第二条画法。
+  const overlays = overlayShapes(page, layout.boxes, palette);
+  for (const o of overlays) {
+    if (o.kind !== "label") continue;
+    boxes.push({
+      id: o.id,
+      x: o.x,
+      y: o.y,
+      w: o.w,
+      h: o.h,
+      fill: o.fill,
+      line: o.line,
+      lineWidth: o.lineWidth,
+      rounding: o.rounding,
+      textColor: o.textColor,
+      fontSize: o.fontSize,
+      fontFamily: o.fontFamily,
+      bold: o.bold,
+      lines: o.lines,
+      hiddenCount: 0,
+      note: false,
+      link: false,
+      labels: [],
+      stripH: 0,
+    });
+  }
   return {
     layout,
     boxes,
     connectors: layout.connectors,
     rels: relationshipPaths(page, layout.boxes),
+    overlays: overlays.filter((o) => o.kind !== "label"),
     width: layout.width + pad * 2,
     height: layout.height + pad * 2,
     minX: layout.bounds.minX - pad,
@@ -155,6 +187,14 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
   out.push(
     `<rect x="${round(p.minX)}" y="${round(p.minY)}" width="${round(p.width)}" height="${round(p.height)}" fill="${p.background}"/>`
   );
+  // 外框在连线和主题之下：它是给一组主题"围个圈"的底色，压在上面就会把内容糊掉。
+  for (const o of p.overlays) {
+    if (o.kind !== "boundary") continue;
+    out.push(
+      `<rect x="${round(o.x)}" y="${round(o.y)}" width="${round(o.w)}" height="${round(o.h)}" rx="${round(o.rounding)}" ` +
+        `fill="${o.fill}" fill-opacity="0.35" stroke="${o.line}" stroke-width="${round(o.lineWidth)}"/>`
+    );
+  }
   out.push(`<g fill="none" stroke-linecap="round">`);
   for (const c of p.connectors) {
     out.push(`<path d="${esc(c.d)}" stroke="${strokeOf(p, c)}" stroke-width="1.6"/>`);
@@ -189,6 +229,29 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
           `fill="none" stroke="${b.line}" stroke-width="1"/>` +
           `<text x="${round(c.x + c.w / 2)}" y="${round(c.y + c.h / 2 + b.fontSize * 0.24)}" ` +
           `font-size="${round(b.fontSize * 0.68)}" text-anchor="middle" fill="${b.textColor}">${esc(c.text)}</text>`
+      );
+    }
+  }
+  // 大括号与标注框压在主题之上：它们是"盖在分支外面"的一层，画在框底下就等于没画。
+  for (const o of p.overlays) {
+    if (o.kind === "brace") {
+      out.push(
+        `<path d="${esc(o.d ?? "")}" fill="none" stroke="${o.line}" stroke-width="${round(o.lineWidth)}" stroke-linecap="round"/>`
+      );
+      continue;
+    }
+    if (o.kind !== "callout") continue;
+    out.push(
+      `<path d="${esc(o.d ?? "")}" fill="none" stroke="${o.line}" stroke-width="1"/>`,
+      `<rect x="${round(o.x)}" y="${round(o.y)}" width="${round(o.w)}" height="${round(o.h)}" rx="${round(Math.min(o.rounding, o.w / 2, o.h / 2))}" ` +
+        `fill="${o.fill}" stroke="${o.line}" stroke-width="${round(o.lineWidth)}"/>`
+    );
+    const lh = lineGap(o.fontSize);
+    const startY = o.y + o.h / 2 - ((o.lines.length - 1) * lh) / 2 + o.fontSize * 0.35;
+    for (const [ix, line] of o.lines.entries()) {
+      out.push(
+        `<text x="${round(o.x + o.w / 2)}" y="${round(startY + ix * lh)}" font-size="${round(o.fontSize)}" ` +
+          `text-anchor="middle"${o.bold ? ' font-weight="bold"' : ""} fill="${o.textColor}">${esc(line)}</text>`
       );
     }
   }

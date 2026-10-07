@@ -20,7 +20,13 @@ export type ShapeType =
   | "MMConnector" // 分支连线（画布投影产物，不是用户数据）
   | "RelatConnector"; // 关系线（用户数据）
 
-export const TOPIC_TYPES: ShapeType[] = ["MainIdea", "MainTopic", "SubTopic", "Floating", "SummaryTopic"];
+export const TOPIC_TYPES: ShapeType[] = [
+  "MainIdea",
+  "MainTopic",
+  "SubTopic",
+  "Floating",
+  "SummaryTopic",
+];
 
 export function isTopic(t: ShapeType): boolean {
   return TOPIC_TYPES.includes(t);
@@ -192,13 +198,16 @@ export interface ShapeExtras {
   task?: TaskData;
   /** 双向链接目标主题 id（"@/" 或 "[[" 生成）。 */
   biLinks?: string[];
-  /** 概要：覆盖 childIds 的哪一段。 */
-  summary?: { fromIx: number; toIx: number; kind: "brace" | "bracket" | "line" };
-  /** 外框：覆盖兄弟主题的哪一段。 */
-  boundary?: { fromIx: number; toIx: number };
+  /**
+   * 覆盖层盖住的主题 id：外框（Type=Boundary）和概要大括号（Type=Summary）都用它。
+   * 线格式是 `<BoundaryData><Shapes V="104;111;113"/></BoundaryData>`，分号分隔的主题 id，
+   * 不是兄弟下标 —— 亿图里被盖住的主题可以跨分支、可以改顺序，下标模型表达不了。
+   */
+  covered?: string[];
   /** 编号（分支编号）。 */
   numbering?: string;
-  callout?: { forId: string };
+  /** 挂在这个主题上的标注框 id，按顺序编号（线格式 `<Callout V="182;183"/>`）。 */
+  calloutIds?: string[];
   /** 折叠：只显示到本层。 */
   collapsed?: boolean;
 }

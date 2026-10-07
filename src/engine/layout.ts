@@ -14,7 +14,13 @@
 import type { LayoutCode, Page, Shape } from "../types/model.ts";
 import { isTopic, plainText } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
-import { defaultPalette, resolveColor, styleFor, type ThemePalette } from "./style.ts";
+import {
+  contrastText,
+  defaultPalette,
+  resolveColor,
+  styleFor,
+  type ThemePalette,
+} from "./style.ts";
 
 export interface NodeBox {
   id: string;
@@ -250,6 +256,215 @@ export interface RelationshipPaint {
 /** 弧高：固定上限 + 按弦长比例，免得两个远处主题之间的关系线弯得离谱。 */
 const REL_BOW_MAX = 60;
 const REL_BOW_RATIO = 0.22;
+
+/**
+ * 页面级覆盖层：外框、概要大括号、概要主题、标注框。
+ *
+ * 亿图把这四类都写成独立的 Shape，但它们的 `<LevelData/>` 是空的（标注框另用 `<Data V>`
+ * 指回主题，主题用 `<Callout V="182;183"/>` 指过来），所以永远不在主题树里 ——
+ * computeLayout 的 boxes 自然没有它们。结果是"存得回、看不见"：
+ * 真实用户图 doc2/3/4/5 里共 29 个标注框，画布与导出一个都没露过脸。
+ *
+ * 几何一律从已经算好的 boxes 推出来，不读文件里的 Transform 缓存，也不新开第二条绘制路径（P-2）：
+ * 主题移动、分支折叠之后，覆盖层跟着布局走，这和亿图自己重算外框的行为一致。
+ */
+
+/** 外框留白 / 大括号与主题的间距 / 括号尖伸出 / 概要主题与括号尖的间距 / 标注框间距。 */
+const OVERLAY_PAD = 12;
+const BRACE_GAP = 6;
+const BRACE_TIP = 9;
+const SUMMARY_GAP = 6;
+const CALLOUT_GAP = 6;
+
+export interface OverlayPaint {
+  id: string;
+  /** 样式来源的那个模型形状。 */
+  shapeId: string;
+  kind: "boundary" | "brace" | "label" | "callout";
+  /** 左上角 + 尺寸（brace 的这几个字段只是包围盒）。 */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** brace 的括号路径、callout 的引导线。 */
+  d?: string;
+  fill: string;
+  line: string;
+  lineWidth: number;
+  rounding: number;
+  textColor: string;
+  fontSize: number;
+  fontFamily: string;
+  bold: boolean;
+  /** 已经按 measureShape 折好的行（P-2：折行只有一处）。 */
+  lines: string[];
+}
+
+interface Rect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/** 被盖住主题的并集矩形；布局里没有的 id（折叠了、删了）直接跳过。 */
+function coveredRect(ids: string[], boxes: Record<string, NodeBox>): Rect | null {
+  let r: Rect | null = null;
+  for (const id of ids) {
+    const b = boxes[id];
+    if (!b) continue;
+    const x0 = b.x - b.w / 2;
+    const y0 = b.y - b.h / 2;
+    const x1 = b.x + b.w / 2;
+    const y1 = b.y + b.h / 2;
+    r = r
+      ? {
+          x0: Math.min(r.x0, x0),
+          y0: Math.min(r.y0, y0),
+          x1: Math.max(r.x1, x1),
+          y1: Math.max(r.y1, y1),
+        }
+      : { x0, y0, x1, y1 };
+  }
+  return r;
+}
+
+/** 覆盖层朝哪一侧长：取被盖住主题里第一个不居中的 side，没有就默认右。 */
+function coveredSide(ids: string[], boxes: Record<string, NodeBox>): -1 | 1 {
+  for (const id of ids) {
+    const s = boxes[id]?.side;
+    if (s === 1 || s === -1) return s;
+  }
+  return 1;
+}
+
+export function overlayShapes(
+  page: Page,
+  boxes: Record<string, NodeBox>,
+  palette?: ThemePalette
+): OverlayPaint[] {
+  const pal = palette ?? defaultPalette();
+  const out: OverlayPaint[] = [];
+  const styleOf = (
+    s: Shape
+  ): Omit<OverlayPaint, "id" | "shapeId" | "kind" | "x" | "y" | "w" | "h" | "lines"> => {
+    const r = styleFor(page, s, pal);
+    return {
+      fill: r.fill,
+      line: r.line,
+      lineWidth: r.lineWidth,
+      rounding: r.rounding,
+      textColor: r.font.color ?? contrastText(r.fill),
+      fontSize: r.font.size ?? DEFAULTS.fontSize,
+      fontFamily: r.font.family ?? pal.fontFamily,
+      bold: Boolean(r.font.bold),
+    };
+  };
+
+  for (const s of Object.values(page.shapes)) {
+    if (s.type === "Boundary") {
+      const r = coveredRect(s.extras.covered ?? [], boxes);
+      if (!r) continue; // 盖住的主题全被折叠了：这时不画，比画一个空框对
+      out.push({
+        id: s.id,
+        shapeId: s.id,
+        kind: "boundary",
+        x: round(r.x0 - OVERLAY_PAD),
+        y: round(r.y0 - OVERLAY_PAD),
+        w: round(r.x1 - r.x0 + OVERLAY_PAD * 2),
+        h: round(r.y1 - r.y0 + OVERLAY_PAD * 2),
+        lines: [],
+        ...styleOf(s),
+      });
+      continue;
+    }
+    if (s.type === "Summary") {
+      const ids = s.extras.covered ?? [];
+      const r = coveredRect(ids, boxes);
+      if (!r) continue;
+      const side = coveredSide(ids, boxes);
+      const spine = side > 0 ? r.x1 + BRACE_GAP : r.x0 - BRACE_GAP;
+      const tip = spine + side * BRACE_TIP;
+      const my = round((r.y0 + r.y1) / 2);
+      const arm = side * 10;
+      const ry = Math.max(4, Math.min(12, (r.y1 - r.y0) / 4));
+      out.push({
+        id: s.id,
+        shapeId: s.id,
+        kind: "brace",
+        x: round(Math.min(spine, tip) - Math.abs(arm)),
+        y: round(r.y0),
+        w: round(Math.abs(tip - spine) + Math.abs(arm)),
+        h: round(r.y1 - r.y0),
+        lines: [],
+        // 亿图写的是真曲线括号；这里用两段二次曲线吻出同一个形状，不做几何近似成直线。
+        d: [
+          `M ${round(spine + arm)} ${round(r.y0)}`,
+          `Q ${round(spine)} ${round(r.y0)} ${round(spine)} ${round(r.y0 + ry)}`,
+          `L ${round(spine)} ${round(my - ry)}`,
+          `Q ${round(spine)} ${my} ${round(tip)} ${my}`,
+          `Q ${round(spine)} ${my} ${round(spine)} ${round(my + ry)}`,
+          `L ${round(spine)} ${round(r.y1 - ry)}`,
+          `Q ${round(spine)} ${round(r.y1)} ${round(spine + arm)} ${round(r.y1)}`,
+        ].join(" "),
+        ...styleOf(s),
+      });
+      // 概要主题是 Summary 的孩子（SubLevel/Super），它自己也不在树里，位置由括号尖推出来。
+      for (const childId of s.childIds) {
+        const label = page.shapes[childId];
+        if (!label || label.type !== "SummaryTopic") continue;
+        const m = measureShape(label);
+        const x = side > 0 ? tip + SUMMARY_GAP : tip - SUMMARY_GAP - m.w;
+        out.push({
+          id: label.id,
+          shapeId: label.id,
+          kind: "label",
+          x: round(x),
+          y: round((r.y0 + r.y1) / 2 - m.h / 2),
+          w: m.w,
+          h: m.h,
+          lines: m.lines,
+          ...styleOf(label),
+        });
+      }
+      continue;
+    }
+  }
+
+  // 标注框挂在主题身上：有文字就按文字量，没文字就是亿图那种序号小圆泡。
+  for (const t of Object.values(page.shapes)) {
+    const ids = t.extras.calloutIds;
+    if (!ids?.length) continue;
+    const host = boxes[t.id];
+    if (!host) continue;
+    const side = host.side === -1 ? -1 : 1;
+    ids.forEach((cid, ix) => {
+      const c = page.shapes[cid];
+      if (!c) return;
+      const text = plainText(c.text);
+      const m = measureShape(c);
+      const w = text ? m.w : Math.round((c.style.font?.size ?? DEFAULTS.fontSize) * 1.5);
+      const h = text ? m.h : w;
+      const x =
+        side > 0 ? host.x + host.w / 2 + CALLOUT_GAP : host.x - host.w / 2 - CALLOUT_GAP - w;
+      const y = host.y + host.h / 2 + CALLOUT_GAP;
+      out.push({
+        id: cid,
+        shapeId: cid,
+        kind: "callout",
+        x: round(x),
+        y: round(y),
+        w,
+        h,
+        // 引导线从主题的外下角走到泡的内边（亿图给每条标注都画了这根线）。
+        d: `M ${round(side > 0 ? host.x + host.w / 2 : host.x - host.w / 2)} ${round(host.y + host.h / 2)} L ${round(side > 0 ? x : x + w)} ${round(y + h / 2)}`,
+        lines: text ? m.lines : [String(ix + 1)],
+        ...styleOf(c),
+      });
+    });
+  }
+  return out;
+}
 
 /**
  * 从盒子中心朝目标点发一条射线，取它穿出矩形边界的交点：
