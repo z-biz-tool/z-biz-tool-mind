@@ -5,6 +5,9 @@ src-tauri/gen/
 *.log
 .DS_Store
 
+# 本机把编译产物指到 D:（见 .cargo/config.toml），CI 上跑不了这个路径。
+/.cargo/
+
 # 取证素材：亿图装机的解包样本与逐屏截图，不是我们能再分发的东西；
 # 本地留着继续查格式，仓库里不要它（doc/ 里自己写的分析文档照旧入库）。
 _research/

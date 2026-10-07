@@ -134,9 +134,18 @@ if (r.error) {
 }
 if (r.status !== 0) process.exit(r.status ?? 1);
 
-// 产物目录未必是 src-tauri/target：CARGO_TARGET_DIR 能把编译产物整体挪走（本机 D: 是机械盘，
-// 编译这类小文件密集的 IO 在 SSD 上快好几倍）。真实位置问 cargo，别拼字符串骗用户。
-const meta = spawnSync("cargo", ["metadata", "--format-version", "1", "--no-deps"], {
+// 产物目录未必是 src-tauri/target：CARGO_TARGET_DIR 和 .cargo/config.toml 的 [build] target-dir
+// 都能把编译产物整体挪走（本机挪到了 D:，按用户要求把 C: 系统盘让出来，代价是机械盘上编译慢一些）。
+// 真实位置问 cargo，别拼字符串骗用户。
+const probe = spawnSync("cargo", ["--version"], { encoding: "utf8", shell: os === "win32" });
+// cargo 常常不在 PATH 上（rustup --no-modify-path），那就按 check() 同样的顺序再找一遍。
+const cargoBin = probe.error
+  ? join(
+      process.env.CARGO_HOME || join(process.env.HOME || process.env.USERPROFILE || "", ".cargo", "bin"),
+      os === "win32" ? "cargo.exe" : "cargo"
+    )
+  : "cargo";
+const meta = spawnSync(cargoBin, ["metadata", "--format-version", "1", "--no-deps"], {
   encoding: "utf8",
   cwd: join(ROOT, "src-tauri"),
 });
@@ -145,7 +154,7 @@ try {
   const parsed = JSON.parse(meta.stdout).target_directory;
   if (parsed) targetDir = parsed;
 } catch {
-  // cargo 不在 PATH 上：按默认位置提示，至少不是空字符串。
+  // 问不到 cargo：按默认位置提示，至少不是空字符串。
 }
 const outDir = join(targetDir, ...((extra[1] ? [extra[1]] : []).concat("release", "bundle")));
 console.log(`\n安装包在：${outDir}`);
