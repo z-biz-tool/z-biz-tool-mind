@@ -30,6 +30,14 @@ function withRels(p: Page, rels: RelationshipShape[]): Page {
   return { ...p, relationships: rels };
 }
 
+/** 点 (px,py) 到直线 (ax,ay)-(bx,by) 的距离。 */
+function perpendicular(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
+  const vx = bx - ax;
+  const vy = by - ay;
+  const len = Math.hypot(vx, vy) || 1;
+  return Math.abs(vx * (py - ay) - vy * (px - ax)) / len;
+}
+
 let page = createPage("关系线");
 for (const t of ["左侧甲", "左侧乙", "另一头"]) page = insertChild(page, page.rootId, t).page;
 const [a, b, c] = page.shapes[page.rootId].childIds;
@@ -133,7 +141,8 @@ ok(
 );
 ok(
   "相邻主题之间也弯得出来（不是贴着框的一条直线）",
-  Math.abs(p[3] - (p[1] + p[5]) / 2) >= 12,
+  // 垂距而不是 y 分量差：同侧相邻主题的弦是竖直的，只量纵向会在该弯的时候读到 0。
+  perpendicular(p[2], p[3], p[0], p[1], p[4], p[5]) >= 12,
   rel[0].d
 );
 const paintRel = paintPage(styled).rels;
