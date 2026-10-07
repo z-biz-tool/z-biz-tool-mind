@@ -185,6 +185,16 @@ export const native = {
     return call<AppInfo>("app_info");
   },
 
+  /**
+   * 退出进程。只给"确认过可以退"的那条路用（菜单「退出」先过未保存检查），
+   * 所以这里不做二次确认，也不写日志 —— 脏检查是外壳的事，这一层只管把进程收掉。
+   */
+  async exit(): Promise<void> {
+    if (!isTauri) return;
+    const { exit } = await import("@tauri-apps/api/app");
+    await exit(0);
+  },
+
   async configGet(): Promise<Record<string, unknown>> {
     if (!isTauri) return lsGet<Record<string, unknown>>(LS_CONFIG, {});
     return call<Record<string, unknown>>("config_get");

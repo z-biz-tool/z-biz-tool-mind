@@ -822,7 +822,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                       <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         {alias.length ? (
                           <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>
-                            还认 {alias.map(chordLabel).join("、")}
+                            还认 {alias.map((c) => chordLabel(c)).join("、")}
                           </span>
                         ) : null}
                         <Button

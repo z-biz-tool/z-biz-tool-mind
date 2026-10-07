@@ -50,6 +50,19 @@ export const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4];
 /** "显示层级数" 1..9。 */
 export const DISPLAY_LEVELS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
+/**
+ * 界面主题的遍历顺序与中文名。
+ * 放在 model 层而不是 ThemeContext 里，是因为原生菜单（services/appMenu.ts）也要列这三项，
+ * 而菜单模块不该为了两个字符串去 import 一份带 antd 的 React 上下文。
+ */
+export const THEME_ORDER = ["light", "dark", "system"] as const;
+export type ThemeMode = (typeof THEME_ORDER)[number];
+export const THEME_LABEL: Record<ThemeMode, string> = {
+  light: "浅色",
+  dark: "深色",
+  system: "跟随系统",
+};
+
 export const QUOTA = {
   /** 免费版最多保存的文件数（提示文案原文）。 */
   freeMaxFiles: 10,
@@ -74,7 +87,23 @@ export const QUOTA = {
 } as const;
 
 /** 社区发布标题禁用字符，原文照抄自 UserPublishDialogTest 的校验提示。 */
-export const ILLEGAL_TITLE_CHARS = ['?', '*', ':', '"', "<", ">", "\\", "/", "|", "$", "%", "^", "#", "&", "+"];
+export const ILLEGAL_TITLE_CHARS = [
+  "?",
+  "*",
+  ":",
+  '"',
+  "<",
+  ">",
+  "\\",
+  "/",
+  "|",
+  "$",
+  "%",
+  "^",
+  "#",
+  "&",
+  "+",
+];
 
 /** 主题 ID：默认套用 Edraw 主色板（theme.xml 实测 Accent1..10 与 ID=31/3/8）。 */
 export const DEFAULT_THEME = {

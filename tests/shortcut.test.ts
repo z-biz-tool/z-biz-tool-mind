@@ -40,7 +40,7 @@ eq("空串不行", normalizeChord(""), null);
 eq("数字键可以", normalizeChord("ctrl+1"), "ctrl+1");
 
 // ---- 默认表
-eq("列出的命令条数", SHORTCUT_COMMANDS.length, 11);
+eq("列出的命令条数", SHORTCUT_COMMANDS.length, 12);
 eq("命令不重复", new Set(SHORTCUT_COMMANDS.map((c) => c.cmd)).size, SHORTCUT_COMMANDS.length);
 for (const c of SHORTCUT_COMMANDS) {
   ok(`${c.cmd} 的默认键合规`, normalizeChord(defaultChordOf(c.cmd)) === defaultChordOf(c.cmd));
@@ -48,6 +48,9 @@ for (const c of SHORTCUT_COMMANDS) {
 }
 eq("默认键位下 Ctrl+S 归保存", commandOfChord("ctrl+s"), "save");
 eq("默认键位下 Ctrl+Y 归重做", commandOfChord("ctrl+y"), "redo");
+// 原生菜单栏的「退出」是普通命令而不是系统预定义项（预定义项会跳过未保存检查），
+// 所以它的键位也归这张表管，mac 上同一个条目就是 ⌘Q。
+eq("默认键位下 Ctrl+Q 归退出", commandOfChord("ctrl+q"), "quit");
 eq("没占用的键返回 null", commandOfChord("ctrl+k"), null);
 
 // ---- 覆盖：改键

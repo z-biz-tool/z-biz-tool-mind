@@ -19,6 +19,7 @@ type ShortcutCommand =
   | "export"
   | "print"
   | "options"
+  | "quit"
   | "closeDialog";
 
 export type { ShortcutCommand };
@@ -36,6 +37,7 @@ export const SHORTCUT_COMMANDS: readonly { cmd: ShortcutCommand; label: string; 
     { cmd: "redo", label: "重做", group: "编辑" },
     { cmd: "search", label: "搜索", group: "视图" },
     { cmd: "options", label: "选项", group: "视图" },
+    { cmd: "quit", label: "退出应用", group: "文件" },
     { cmd: "closeDialog", label: "关闭对话框 / 菜单", group: "视图" },
   ];
 
@@ -51,6 +53,7 @@ export interface ShortcutHandlers {
   export?: () => void;
   print?: () => void;
   options?: () => void;
+  quit?: () => void;
   closeDialog?: () => void;
 }
 
@@ -72,6 +75,7 @@ const DEFAULT_CHORDS: Record<ShortcutCommand, string> = {
   export: "ctrl+e",
   print: "ctrl+p",
   options: "f1",
+  quit: "ctrl+q",
   closeDialog: "esc",
 };
 
@@ -105,8 +109,16 @@ const IGNORED_KEYS = new Set([
  * 判"在输入就不拦截"是为了 Ctrl+A 别把整张画布选上、Ctrl+Z 别把撤销打到画布上；
  * 但保存/导出这类动作针对的是文档而不是光标 —— 新建标注会立刻进入文字编辑态，
  * 那时按 Ctrl+S 存不下东西，用户只会以为软件没反应。
+ * quit 也在这张表里：改名改到一半按 ⌘Q 想走人，退不出去才是真奇怪（未保存会弹确认，不会丢东西）。
  */
-const TYPING_SAFE = new Set<ShortcutCommand>(["save", "saveAs", "export", "print", "options"]);
+const TYPING_SAFE = new Set<ShortcutCommand>([
+  "save",
+  "saveAs",
+  "export",
+  "print",
+  "options",
+  "quit",
+]);
 
 const registry: Partial<ShortcutHandlers>[] = [];
 
@@ -287,7 +299,8 @@ export function useGlobalShortcuts(): void {
   }, []);
 }
 
-function isMac(): boolean {
+/** 键名怎么显示、菜单第一项放哪儿，都按这个判 —— 原生菜单栏要拿它决定应用菜单。 */
+export function isMac(): boolean {
   // 只用 navigator.platform 决定"键名怎么显示"，不参与拦截判定：判错的后果是把 ⌘S 写成 Ctrl+S，
   // 而判对的代价是引入 UA 嗅探。无 navigator 的环境（测试、SSR）按 Windows 布局。
   if (typeof navigator === "undefined") return false;
@@ -295,7 +308,7 @@ function isMac(): boolean {
 }
 
 /** 一条键串的显示形式：mac 是 "⇧⌘S"，其它平台是 "Ctrl+Shift+S"。 */
-export function chordLabel(chord: string): string {
+export function chordLabel(chord: string, mac: boolean = isMac()): string {
   const parts = chord.split("+");
   const raw = parts[parts.length - 1];
   const key = raw === "esc" ? "Esc" : raw.toUpperCase();
@@ -303,15 +316,18 @@ export function chordLabel(chord: string): string {
     .slice(0, -1)
     .map((m) => MODS[m as keyof typeof MODS])
     .filter(Boolean);
-  if (!isMac()) return [...mods.map((m) => m.win), key].join("+");
+  if (!mac) return [...mods.map((m) => m.win), key].join("+");
   // mac 的书写顺序是 ⇧⌘⌥，与事件里的判定顺序无关，按 rank 排一次。
   const sorted = [...mods].sort((a, b) => a.rank - b.rank).map((m) => m.mac);
   return `${sorted.join("")}${key}`;
 }
 
-/** 菜单/提示里给用户的键名：mac 是 "⌘S"，其它平台是 "Ctrl+S"；被禁用的那条直说。 */
-export function shortcutLabel(cmd: string): string {
+/**
+ * 菜单/提示里给用户的键名：mac 是 "⌘S"，其它平台是 "Ctrl+S"；被禁用的那条直说。
+ * `mac` 让调用方能按自己要渲染的平台问（原生菜单栏的 spec 就靠它保持纯函数）。
+ */
+export function shortcutLabel(cmd: string, mac: boolean = isMac()): string {
   if (!(cmd in DEFAULT_CHORDS)) return cmd;
   const chord = chordOfCommand(cmd as ShortcutCommand);
-  return chord ? chordLabel(chord) : "（已禁用）";
+  return chord ? chordLabel(chord, mac) : "（已禁用）";
 }

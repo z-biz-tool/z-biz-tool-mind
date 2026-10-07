@@ -8,16 +8,21 @@ import zhCN from "antd/locale/zh_CN";
 import { useEffect, useState, type ReactNode } from "react";
 import { useSettings } from "../stores/settingsStore.ts";
 import { useUi } from "../stores/uiStore.ts";
+import type { ThemeMode } from "../model/constants.ts";
 
-export type ThemeMode = "light" | "dark" | "system";
+export type { ThemeMode };
 
 function prefersDark(): boolean {
-  return typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+  return (
+    typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches
+  );
 }
 
 /** 系统模式下订阅媒体查询，用户在 OS 里切主题时不需要重启应用；其它模式不挂监听。 */
 function useSystemDark(mode: ThemeMode): boolean | null {
-  const [dark, setDark] = useState<boolean | null>(mode === "system" ? (prefersDark() ? true : false) : null);
+  const [dark, setDark] = useState<boolean | null>(
+    mode === "system" ? (prefersDark() ? true : false) : null
+  );
   useEffect(() => {
     if (mode !== "system") {
       setDark(null);

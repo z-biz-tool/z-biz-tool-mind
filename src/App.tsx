@@ -27,6 +27,7 @@ import { OptionsView } from "./views/OptionsView.tsx";
 import { activeDoc, activePage, depthOf, dirtyOf, useDoc } from "./stores/docStore.ts";
 import { countTopics } from "./engine/tree.ts";
 import { PROJECTIONS, useUi, type Projection } from "./stores/uiStore.ts";
+import { THEME_LABEL, THEME_ORDER, type ThemeMode } from "./model/constants.ts";
 import { startRecentListeners, useRecent } from "./stores/recentStore.ts";
 import { useSettings } from "./stores/settingsStore.ts";
 import {
@@ -34,10 +35,12 @@ import {
   setShortcutOverrides,
   shortcutLabel,
   useGlobalShortcuts,
+  isMac,
   type ShortcutHandlers,
 } from "./utils/shortcuts.ts";
 import { canSave } from "./utils/entitlement.ts";
 import { humanSize, timestampName } from "./utils/id.ts";
+import { installAppMenu, syncAppMenu, type MenuState } from "./services/appMenu.ts";
 import { autosaveNote, newestPendingAutosave, startAutosave } from "./services/autosave.ts";
 import { installCrashWatch } from "./services/crash.ts";
 import { runAiInsert } from "./services/ai.ts";
@@ -53,12 +56,9 @@ import { IMPORT_EXTENSIONS, importBytes, importFilter, sniff } from "./engine/im
 /** 打开只收 .emmx，导入用 importFilter()：两条路径的报错文案不同，合成一个选择框就没法解释失败原因。 */
 const EMMX_FILTER = [{ name: "亿图脑图文件", extensions: ["emmx"] }];
 
-const THEME_ORDER = ["light", "dark", "system"] as const;
-const THEME_LABEL: Record<(typeof THEME_ORDER)[number], string> = {
-  light: "浅色",
-  dark: "深色",
-  system: "跟随系统",
-};
+/** 菜单项 id 前缀 → 动作的分发靠这两个前缀，写在一处免得两边拼字符串拼歪。 */
+const PROJ_ID = "view-proj-";
+const THEME_ID = "theme-";
 
 function stemOf(p: string): string {
   return (p.split(/[\\/]/).pop() ?? p).replace(/\.[^.]+$/, "") || p;
@@ -296,6 +296,15 @@ function Shell() {
     else message.warning(r.message);
   }, [message]);
 
+  /**
+   * 菜单「退出」：先过一遍未保存检查再收进程。
+   * 系统那边的 Quit / Alt+F4 不会问，所以这条必须是自己的命令 + native.exit()，
+   * 而不是原生预定义项 —— 用户丢掉未保存的改动比多按一次确认更糟。
+   */
+  const doQuit = useCallback(() => {
+    guard("退出", () => void native.exit());
+  }, [guard]);
+
   /* ---------------- 启动：设置 / 列表 / 自动保存兜命 ---------------- */
 
   useEffect(() => {
@@ -415,6 +424,9 @@ function Shell() {
       if (hasDoc) openDialog("print");
     },
     options: () => openDialog("options"),
+    // 浏览器模式没有"退进程"这件事可做（脚本关不掉标签页），所以这条只在桌面端注册：
+    // 注册成 undefined 就是不注册，Ctrl+Q 照常落回网页，而不是弹一道点了没用的确认。
+    quit: native.available ? doQuit : undefined,
     closeDialog,
   });
   useEffect(() => registerShortcuts(commands.current), []);
@@ -427,6 +439,102 @@ function Shell() {
   useEffect(() => {
     setShortcutOverrides(shortcutCustom);
   }, [shortcutCustom]);
+
+  /* ---------------- 原生菜单栏 ---------------- */
+
+  /**
+   * 菜单项 → 命令的转发。和 commands 那份注册表同一个套路：菜单只装一次，
+   * 而每个动作都得用当次渲染的闭包（hasDoc、dialog 这些都在变），所以用 ref 指过去。
+   */
+  const menuRun = useRef<(id: string) => void>(() => {});
+  menuRun.current = (id: string) => {
+    if (id.startsWith(PROJ_ID)) {
+      if (hasDoc) setProjection(id.slice(PROJ_ID.length) as Projection);
+      return;
+    }
+    if (id.startsWith(THEME_ID)) {
+      void patchSettings("general", { theme: id.slice(THEME_ID.length) as ThemeMode });
+      return;
+    }
+    switch (id) {
+      case "file-new":
+        doNew();
+        return;
+      case "file-open":
+        void doOpen();
+        return;
+      case "file-import":
+        void doImport();
+        return;
+      case "file-save":
+        void saveNow();
+        return;
+      case "file-save-as":
+        void doSaveAs();
+        return;
+      case "file-export":
+        if (hasDoc) openDialog("export");
+        return;
+      case "file-print":
+        if (hasDoc) openDialog("print");
+        return;
+      case "file-history":
+        dialog === "history" ? closeDialog() : openDialog("history");
+        return;
+      case "file-quit":
+        doQuit();
+        return;
+      case "edit-undo":
+        useDoc.getState().undoStep();
+        return;
+      case "edit-redo":
+        useDoc.getState().redoStep();
+        return;
+      case "edit-search":
+        dialog === "search" ? closeDialog() : openDialog("search");
+        return;
+      case "view-sidebar":
+        if (hasDoc) toggleSidebar();
+        return;
+      case "view-zoom-out":
+        stepZoom(-1);
+        return;
+      case "view-zoom-in":
+        stepZoom(1);
+        return;
+      case "view-zoom-fit":
+        fitZoom();
+        return;
+      case "help-options":
+        openDialog("options");
+        return;
+    }
+  };
+
+  // shortcutCustom 也在依赖里：键位一改，菜单文案里的 Ctrl+S 就得跟着改，
+  // 而 menuState 里那几项没有一个会变。
+  const menuState = useMemo<MenuState>(
+    () => ({ mac: isMac(), hasDoc, undoDepth, redoDepth, projection, sidebar, theme: mode }),
+    [hasDoc, undoDepth, redoDepth, projection, sidebar, mode, shortcutCustom]
+  );
+  // 菜单只装一次，但要拿到"此刻"的状态与"此刻"的动作，所以两处都走 ref。
+  const menuStateRef = useRef(menuState);
+  menuStateRef.current = menuState;
+
+  const [nativeMenu, setNativeMenu] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void installAppMenu((id) => menuRun.current(id), menuStateRef.current).then((ok) => {
+      if (alive) setNativeMenu(ok);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    syncAppMenu(menuState);
+  }, [menuState]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -468,7 +576,10 @@ function Shell() {
 
   /* 工具栏按"手上有没有一份能改的文档"分两套。开始页摆一整排灰按钮，读起来像是这些
      功能坏了，而不是"这里还没打开文档"；有文档时把低频项收进「更多」。
-     收进菜单只是换个地方点：每条命令的键盘入口一个都没动（见 utils/shortcuts）。 */
+     收进菜单只是换个地方点：每条命令的键盘入口一个都没动（见 utils/shortcuts）。
+     装了系统菜单栏之后，低频项就交给它 —— 标题栏下面那排"文件 编辑 视图 帮助"才是用户
+     找功能的地方，工具栏只留高频动作；此时不再渲染「⋯ 更多」，同一件事不该有两个入口。
+     浏览器模式没有原生菜单，「更多」必须留着，否则另存为/导出/打印就只剩键盘入口。 */
   const atStart = !hasDoc || startPage;
   const cycleTheme = () =>
     void patchSettings("general", {
@@ -528,14 +639,16 @@ function Shell() {
   const toolbar = atStart ? (
     <>
       <ToolGroup>{fileButtons}</ToolGroup>
-      <ToolGroup>
-        {optionsButton}
-        <Tooltip title={`界面主题：${THEME_LABEL[mode]}，点击切换下一个`}>
-          <Button size="small" onClick={cycleTheme}>
-            主题
-          </Button>
-        </Tooltip>
-      </ToolGroup>
+      {!nativeMenu && (
+        <ToolGroup>
+          {optionsButton}
+          <Tooltip title={`界面主题：${THEME_LABEL[mode]}，点击切换下一个`}>
+            <Button size="small" onClick={cycleTheme}>
+              主题
+            </Button>
+          </Tooltip>
+        </ToolGroup>
+      )}
     </>
   ) : (
     <>
@@ -586,17 +699,19 @@ function Shell() {
         </Button>
       </ToolGroup>
 
-      <ToolGroup>
-        {optionsButton}
-        <Button size="small" type={sidebar ? "primary" : "default"} onClick={toggleSidebar}>
-          侧栏
-        </Button>
-        <Dropdown menu={{ items: moreItems }} trigger={["click"]} placement="bottomRight">
-          <Button size="small" title="另存为 · 查找 · 历史版本 · 导出 · 打印 · 主题">
-            ⋯ 更多
+      {!nativeMenu && (
+        <ToolGroup>
+          {optionsButton}
+          <Button size="small" type={sidebar ? "primary" : "default"} onClick={toggleSidebar}>
+            侧栏
           </Button>
-        </Dropdown>
-      </ToolGroup>
+          <Dropdown menu={{ items: moreItems }} trigger={["click"]} placement="bottomRight">
+            <Button size="small" title="另存为 · 查找 · 历史版本 · 导出 · 打印 · 主题">
+              ⋯ 更多
+            </Button>
+          </Dropdown>
+        </ToolGroup>
+      )}
     </>
   );
 
