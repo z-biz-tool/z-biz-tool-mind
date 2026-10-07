@@ -43,6 +43,7 @@ import {
   promote,
   removeShape,
   setCollapsed,
+  setRelationshipText,
   swapSibling,
   siblingIndex,
   relationshipBetween,
@@ -251,6 +252,8 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const [drop, setDrop] = useState<DropTarget | null>(null);
   const [draggingCanvas, setDraggingCanvas] = useState(false);
   const [draft, setDraft] = useState<{ id: string; text: string } | null>(null);
+  // 关系线标注的临时草稿：只在回车或失焦时进撤销栈，边打字边改会把栈撑满
+  const [relDraft, setRelDraft] = useState<{ id: string; text: string } | null>(null);
 
   // P-2：布局是算出来的。page 是整页快照，换指向就是唯一的失效信号；
   // 框宽模式不在 page 里（它是应用级设置），所以换模式也得重算，否则开关只在下一次编辑时才生效。
@@ -728,8 +731,26 @@ export function MindCanvas({ page }: MindCanvasProps) {
           .mutate(linked ? "取消关系线" : "新建关系线", (p) => toggleRelationship(p, a, b)),
     });
   }
+  // 关系线的标注文字：连上之后直接在条子上给一个输入框，省掉再开一个对话框
+  const barRel = picked.length === 2 ? relationshipBetween(page, picked[0], picked[1]) : undefined;
+  const relText = () =>
+    barRel && relDraft && relDraft.id === barRel.id
+      ? relDraft.text
+      : barRel
+        ? plainText(barRel.text)
+        : "";
+  const commitRelText = () => {
+    if (!barRel || !relDraft || relDraft.id !== barRel.id) return;
+    const v = relDraft.text.trim();
+    setRelDraft(null);
+    if (v === plainText(barRel.text)) return;
+    useDoc.getState().mutate("编辑关系线标注", (p) => setRelationshipText(p, barRel.id, v));
+  };
   // 宽度按"中文字 12px + 左右内边距"估：条子居中偏几个像素不要紧，滑出视口才要紧。
-  const barW = barBtns.reduce((n, b) => n + b.label.length * 12 + 16, 4) + (barBtns.length - 1) * 4;
+  const barW =
+    barBtns.reduce((n, b) => n + b.label.length * 12 + 16, 4) +
+    (barBtns.length - 1) * 4 +
+    (barRel ? 132 : 0);
   // 多选时条子贴着"两个框的外接矩形"上方，正好压在关系线弧顶那一带。
   // 注意 ShapePaint 的 x/y 已经是左上角（paintPage 里减过一半），不能再减一次。
   const barAt = (() => {
@@ -993,6 +1014,32 @@ export function MindCanvas({ page }: MindCanvasProps) {
               {b.label}
             </button>
           ))}
+          {barRel && (
+            <input
+              value={relText()}
+              placeholder="标注"
+              title="关系线上的说明文字（回车或点到别处生效）"
+              onChange={(e) => setRelDraft({ id: barRel.id, text: e.target.value })}
+              onBlur={commitRelText}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitRelText();
+                if (e.key === "Escape") {
+                  setRelDraft(null);
+                  e.currentTarget.blur();
+                }
+              }}
+              style={{
+                width: 112,
+                height: 24,
+                border: "1px solid #d9d9d9",
+                borderRadius: 5,
+                padding: "0 6px",
+                fontSize: 12,
+                color: "#333333",
+                outline: "none",
+              }}
+            />
+          )}
         </div>
       )}
 

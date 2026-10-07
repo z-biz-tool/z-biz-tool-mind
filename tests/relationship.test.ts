@@ -15,6 +15,7 @@ import {
 import { computeLayout, relationshipPaths } from "../src/engine/layout.ts";
 import { buildSvg, paintPage } from "../src/engine/export/svg.ts";
 import { parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
+import { plainText } from "../src/types/model.ts";
 import type { Page, RelationshipShape } from "../src/types/model.ts";
 
 /** d = "M x y Q cx cy x y"，测试要把锚点抠出来核对它确实落在框边上。 */
@@ -166,5 +167,21 @@ const r2 = back2.relationships[0];
 eq("线色存住了", r2?.style.line?.fill?.color?.v, "#00A859");
 eq("虚线存住了", r2?.style.line?.style, "Dashes");
 eq("线宽存住了", r2?.style.line?.weight, 3);
+
+const twoRels = toggleRelationship(linked, a, c);
+eq("第二条线叠在同一个起点上", twoRels.relationships.length, 2);
+const named = setRelationshipText(twoRels, twoRels.relationships[0].id, "依赖");
+eq("标注写进了这一条", plainText(named.relationships[0].text), "依赖");
+eq("别的线不受影响", plainText(named.relationships[1].text), "");
+eq(
+  "标注只改文字，端点不动",
+  `${named.relationships[0].beginId}>${named.relationships[0].endId}`,
+  `${twoRels.relationships[0].beginId}>${twoRels.relationships[0].endId}`
+);
+eq("改不存在的线等于没改", setRelationshipText(linked, "9999", "x") === linked, true);
+ok(
+  "几何读得到这条标注",
+  relationshipPaths(named, computeLayout(named).boxes).some((r) => r.text === "依赖")
+);
 
 done();
