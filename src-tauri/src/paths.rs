@@ -102,7 +102,23 @@ pub fn validate(path: &str, write: bool) -> Result<PathBuf, String> {
     if write {
         ensure_parent(&final_path)?;
     }
-    Ok(final_path)
+    Ok(strip_verbatim(final_path))
+}
+
+/// Windows 的 canonicalize 给出的是 `\\?\` 开头的 verbatim 路径。它只对内核有用：
+/// 回到前端后状态栏会把它当文件名显示，"最近文件"里也会存成这串前缀。
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy().into_owned();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{}", rest));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    p
 }
 
 /// 读出 (已存在的最深祖先, 尚未存在的第一级名字)。
@@ -165,6 +181,23 @@ pub fn sanitize_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_prefix_is_stripped() {
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\C:\Users\a\m.emmx")),
+            PathBuf::from(r"C:\Users\a\m.emmx")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\UNC\nas\share\m.emmx")),
+            PathBuf::from(r"\\nas\share\m.emmx")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"D:\ceo_workplace\a.emmx")),
+            PathBuf::from(r"D:\ceo_workplace\a.emmx")
+        );
+    }
 
     #[test]
     fn rejects_dotdot_traversal() {

@@ -58,7 +58,25 @@ const MODS = {
   alt: { win: "Alt", mac: "⌥", rank: 2 },
 } as const;
 
-const IGNORED_KEYS = new Set(["control", "shift", "alt", "meta", "tab", "enter", " ", "process", "dead"]);
+const IGNORED_KEYS = new Set([
+  "control",
+  "shift",
+  "alt",
+  "meta",
+  "tab",
+  "enter",
+  " ",
+  "process",
+  "dead",
+]);
+
+/**
+ * 正在打字时仍然要生效的命令。
+ * 判"在输入就不拦截"是为了 Ctrl+A 别把整张画布选上、Ctrl+Z 别把撤销打到画布上；
+ * 但保存/导出这类动作针对的是文档而不是光标 —— 新建标注会立刻进入文字编辑态，
+ * 那时按 Ctrl+S 存不下东西，用户只会以为软件没反应。
+ */
+const TYPING_SAFE = new Set<ShortcutCommand>(["save", "saveAs", "export", "options"]);
 
 const registry: Partial<ShortcutHandlers>[] = [];
 
@@ -123,12 +141,13 @@ export function useGlobalShortcuts(): void {
   useEffect(() => {
     if (!listener) {
       listener = (e: KeyboardEvent) => {
-        if (isTyping(e.target) || isTyping(document.activeElement)) return;
         if (e.defaultPrevented) return;
         const chord = chordOf(e);
         if (!chord) return;
         const cmd = CHORDS[chord];
         if (!cmd) return;
+        if ((isTyping(e.target) || isTyping(document.activeElement)) && !TYPING_SAFE.has(cmd))
+          return;
         if (dispatch(cmd)) e.preventDefault();
       };
       window.addEventListener("keydown", listener);
