@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { ErrorState } from "./States.tsx";
+import { reportCrash } from "../services/crash.ts";
 
 interface Props {
   children: ReactNode;
@@ -28,6 +29,12 @@ export class PanelErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error(`[${this.props.label ?? "panel"}]`, error, info.componentStack);
+    // 组件栈比 message 有用得多："哪个投影、哪一层"只有它说得出。开关关着时这里什么都不写。
+    void reportCrash(
+      `render:${this.props.label ?? "panel"}`,
+      error.message,
+      info.componentStack ?? ""
+    );
   }
 
   componentDidUpdate(prev: Props): void {

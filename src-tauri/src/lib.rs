@@ -1,6 +1,9 @@
 mod backup;
 mod commands;
 mod config;
+mod crash;
+mod log;
+mod net;
 mod openfile;
 mod paths;
 mod recent;
@@ -24,6 +27,24 @@ fn lock_config_env() -> std::sync::MutexGuard<'static, ()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 这几件事必须在 Builder 之前：日志级别决定第一行记录写不写得出，
+    // 代理参数只在 WebView2 核心创建那一刻读一次 —— 建好窗口再设就晚了，
+    // panic hook 则要赶在第一批命令被调用前装上，不然头一次崩溃就没有记录。
+    let cfg = config::read_config();
+    let level = log::configure_from(&cfg);
+    log::log("info", "config", &format!("日志级别 = {level}"));
+    match net::install(&cfg) {
+        Ok(st) => log::log("info", "net", &st.message),
+        // 用户手改过的 config.json 里可能有非法代理地址：拦不住的话就退回跟随系统，
+        // 并把这件事写进日志，而不是让整个应用起不来。
+        Err(e) => log::log("error", "net", &format!("代理设置无法应用，已按跟随系统启动: {e}")),
+    }
+    // 崩溃记录要在任何可能 panic 的代码之前就位：开关读配置，hook 只装一次。
+    let crash_on = crash::configure_from(&cfg);
+    crash::install_panic_hook();
+    log::log("debug", "config", &format!("崩溃记录 = {}", if crash_on { "开" } else { "关" }));
+    log::prune();
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -63,11 +84,32 @@ pub fn run() {
             commands::reveal_in_folder,
             commands::history_list,
             openfile::open_take_pending,
+            log::log_write,
+            log::log_set_level,
+            log::log_info,
+            log::log_open_dir,
+            net::proxy_status,
+            crash::crash_report,
+            crash::crash_info,
+            crash::crash_open_dir,
         ])
         .setup(|app| {
             // 启动即保证配置目录存在：后续所有读写都假设它可用。
             let dir = config::get_config_dir();
             std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
+            let info = app.package_info();
+            log::log(
+                "info",
+                "app",
+                &format!(
+                    "{} v{} 已启动（{}/{}），配置目录 {}",
+                    info.name,
+                    info.version,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                    dir.display()
+                ),
+            );
             // Windows / Linux 双击 .emmx：路径就在命令行里，趁前端开始渲染之前收进队列。
             openfile::seed_from_args(app.handle());
             Ok(())

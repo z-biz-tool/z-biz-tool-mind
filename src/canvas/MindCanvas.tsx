@@ -12,6 +12,7 @@
  * 在 PDF/图片管线和本机看图软件里都是渲染事故。
  */
 import {
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   useEffect,
   useLayoutEffect,
@@ -44,6 +45,7 @@ import {
   removeOverlay,
   removeShape,
   setCollapsed,
+  setFloating,
   setRelationshipText,
   swapSibling,
   siblingIndex,
@@ -58,6 +60,7 @@ import {
 import { useDoc } from "../stores/docStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import { useUi } from "../stores/uiStore.ts";
+import { keepActions, type MenuAction } from "./menuActions.ts";
 
 export interface MindCanvasProps {
   page: Page;
@@ -77,6 +80,21 @@ interface DropTarget extends Rect {
   mode: "child" | "gap";
   parentId: string;
   at: number | undefined;
+}
+
+/**
+ * 右键菜单的落点。
+ *
+ * 屏幕坐标（sx/sy）用来摆菜单，世界坐标（x/y）用来在正确的位置新建自由主题 ——
+ * 菜单是钉在点击处的那个"点"上的，画布平移之后那个点已经不是原来的内容了。
+ */
+interface MenuAt {
+  sx: number;
+  sy: number;
+  x: number;
+  y: number;
+  /** 点在空白画布上：只有这时才给"新建自由主题"。 */
+  onEmpty: boolean;
 }
 
 const ACCENT = "#1677ff";
@@ -249,6 +267,7 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const wheelAt = useSettings((s) => s.settings.general.wheelZoom);
   const showQuickBar = useSettings((s) => s.settings.general.showQuickBar);
   const topicWidthMode = useSettings((s) => s.settings.format.topicWidthMode);
+  const menuEnabled = useSettings((s) => s.settings.rightMenu.enabled);
 
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -258,6 +277,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const [draft, setDraft] = useState<{ id: string; text: string } | null>(null);
   // 关系线标注的临时草稿：只在回车或失焦时进撤销栈，边打字边改会把栈撑满
   const [relDraft, setRelDraft] = useState<{ id: string; text: string } | null>(null);
+  // 右键菜单：整张画布同时只该有一个，所以状态放在这里而不是每个主题上
+  const [menu, setMenu] = useState<MenuAt | null>(null);
+  // 右键拖动（画布平移）结束时不该弹菜单：Windows 在拖完之后照样发 contextmenu。
+  const panDragged = useRef(false);
+  // 按下落在菜单自己身上时不能先收菜单，否则条目永远点不着（见 onWrapPointerDown）
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // P-2：布局是算出来的。page 是整页快照，换指向就是唯一的失效信号；
   // 框宽模式不在 page 里（它是应用级设置），所以换模式也得重算，否则开关只在下一次编辑时才生效。
@@ -425,7 +450,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
     const base = live.current.pan;
     setDraggingCanvas(true);
     track(
-      (ev) => setPan({ x: base.x + ev.clientX - from.x, y: base.y + ev.clientY - from.y }),
+      (ev) => {
+        if (Math.hypot(ev.clientX - from.x, ev.clientY - from.y) >= DRAG_SLOP) {
+          panDragged.current = true;
+        }
+        setPan({ x: base.x + ev.clientX - from.x, y: base.y + ev.clientY - from.y });
+      },
       () => setDraggingCanvas(false)
     );
   };
@@ -478,6 +508,20 @@ export function MindCanvas({ page }: MindCanvasProps) {
     );
   };
 
+  /**
+   * 收菜单放在外壳的捕获阶段，而不是画布的 pointerdown 里：
+   * 点在主题上时主题的 pointerdown 要 stopPropagation（它得自己起拖拽），事件根本冒泡不到画布，
+   * 菜单就钉在原地不动了 —— 而"点哪儿都该关掉它"是右键菜单唯一的收起契约。
+   *
+   * 菜单自己身上的按下要放行，交给条目的 onClick 去收：这里抢先卸载节点，
+   * 浏览器就把随后的 click 派到共同祖先上，表现是"菜单点什么都没反应"。
+   */
+  const onWrapPointerDown = (e: ReactPointerEvent) => {
+    if (menuRef.current?.contains(e.target as Node)) return;
+    setMenu(null);
+    panDragged.current = false;
+  };
+
   const onCanvasPointerDown = (e: ReactPointerEvent) => {
     const panning =
       (e.button === 0 && live.current.dragButton === "left") ||
@@ -488,6 +532,46 @@ export function MindCanvas({ page }: MindCanvasProps) {
     }
     if (e.button === 0) startMarquee(e);
   };
+
+  /** 右键：自己弹菜单，浏览器的原生菜单永远不该出现（它会把右键平移打断）。 */
+  const onCanvasContextMenu = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    if (panDragged.current) return;
+    const w = toWorld(e.clientX, e.clientY);
+    const hit = hitBox(live.current.paint, w.x, w.y, new Set());
+    // 右键点在一个没选中的主题上 = 把它单独选中；已经在多选里就保留整组（亿图也是这个规矩）。
+    if (hit && !live.current.picked.includes(hit.id)) useDoc.getState().select([hit.id], hit.id);
+    setMenu({
+      sx: Math.round(w.sx),
+      sy: Math.round(w.sy),
+      x: w.x,
+      y: w.y,
+      onEmpty: !hit,
+    });
+  };
+
+  /** 新建自由主题：先按普通子主题插进树，再立刻摘出来浮动 —— 复用同一批原语，不另写一套建形状的代码。 */
+  const addFloatingAt = (x: number, y: number) => {
+    const doc = useDoc.getState();
+    if (!doc.hist) return;
+    let newId = "";
+    doc.mutate("新建自由主题", (p) => {
+      const r = insertChild(p, p.rootId, NEW_TOPIC);
+      newId = r.id;
+      return setFloating(r.page, r.id, x, y, true);
+    });
+    if (newId) doc.select([newId], newId);
+  };
+
+  // 菜单开着时 Escape 收掉它。capture 阶段拦下，免得同一次 Escape 又去关掉外层对话框。
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [menu]);
 
   const onTopicPointerDown = (e: ReactPointerEvent, id: string) => {
     if (e.button !== 0) return; // 右键继续冒泡给画布，走平移
@@ -682,104 +766,116 @@ export function MindCanvas({ page }: MindCanvasProps) {
   // ---------------------------------------------------------- 快捷操作条（§3.1）
   // 单选给主题动作；多选给"盖一层"的动作（外框/概要天生要两个以上主题），
   // 而"连一条关系线"只在两点之间有意义。编辑中让位给输入框。
+  //
+  // 动作表只认"选中了哪几个"，不认是谁要显示它：快捷条和右键菜单共用一份，
+  // 否则关掉"显示快捷操作条"就等于砍掉一半功能，两处 run 里的撤销标签也会分叉。
+  const actionsFor = (ids: string[]): MenuAction[] => {
+    const out: MenuAction[] = [];
+    const boxes = ids
+      .map((id) => paint.boxes.find((b) => b.id === id))
+      .filter((b): b is ShapePaint => Boolean(b));
+    const only = ids.length === 1 ? page.shapes[ids[0]] : undefined;
+    if (only && boxes.length === 1) {
+      const id = only.id;
+      // 标注泡不是主题：给它"插入子主题"会造出一棵亿图读不懂的树，只给改名和删除。
+      if (only.type === "Callout") {
+        out.push({
+          k: "edit",
+          label: "改文字",
+          tip: "编辑标注内容（F2 或双击）",
+          run: () => useDoc.getState().setEditing(id),
+        });
+        out.push({
+          k: "del",
+          label: "删标注",
+          tip: "删掉这个标注框",
+          run: () => useDoc.getState().mutate("删除标注", (p) => removeOverlay(p, id)),
+        });
+      } else {
+        out.push({
+          k: "child",
+          label: "子主题",
+          tip: "插入子主题（Tab）",
+          run: () => addChild(id),
+        });
+        out.push({
+          k: "sibling",
+          label: "同级",
+          tip: "插入同级主题（Enter）",
+          run: () => addSibling(id, false),
+        });
+        if (only.childIds.length)
+          out.push({
+            k: "fold",
+            label: only.extras.collapsed ? "展开" : "折叠",
+            tip: "折叠 / 展开这条分支（F4）",
+            run: () => toggleFold(id),
+          });
+        if (only.parentId)
+          out.push({
+            k: "del",
+            label: "删除",
+            tip: "删除这个主题及其分支（Delete）",
+            run: () => removeTopics([id]),
+          });
+        out.push({
+          k: "note",
+          label: "附注",
+          tip: "备注与超链接",
+          run: () => useUi.getState().openDialog("topicInfo"),
+        });
+        out.push({
+          k: "edit",
+          label: "改名",
+          tip: "编辑文字（F2 或双击）",
+          run: () => useDoc.getState().setEditing(id),
+        });
+        out.push({
+          k: "callout",
+          label: "标注",
+          tip: "在这个主题上挂一个标注框",
+          run: () => useDoc.getState().mutate("新建标注", (p) => addCallout(p, id, "").page),
+        });
+      }
+    }
+    if (ids.length >= 2 && boxes.length === ids.length) {
+      out.push({
+        k: "boundary",
+        label: "外框",
+        tip: "给选中的主题盖一层外框（再点一次取消）",
+        run: () => useDoc.getState().mutate("外框", (p) => addBoundary(p, ids).page),
+      });
+      out.push({
+        k: "summary",
+        label: "概要",
+        tip: "给选中的主题加一个大括号和概要主题（再点一次取消）",
+        run: () => useDoc.getState().mutate("概要", (p) => addSummary(p, ids).page),
+      });
+    }
+    if (ids.length === 2 && boxes.length === 2) {
+      const [a, b] = ids;
+      const linked = Boolean(relationshipBetween(page, a, b));
+      out.push({
+        k: "rel",
+        label: linked ? "取消连线" : "连线",
+        tip: linked ? "删掉这两个主题之间的关系线" : "在选中的两个主题之间连一条关系线",
+        run: () =>
+          useDoc
+            .getState()
+            .mutate(linked ? "取消关系线" : "新建关系线", (p) => toggleRelationship(p, a, b)),
+      });
+    }
+    return out;
+  };
+
+  // 菜单开着的时候先让位：两处给的是同一批动作，叠在一起只会被点错。
   const barBoxes =
-    showQuickBar && !editingId && !drop && picked.length
+    showQuickBar && !menu && !editingId && !drop && picked.length
       ? picked
           .map((id) => paint.boxes.find((b) => b.id === id))
           .filter((b): b is ShapePaint => Boolean(b))
       : [];
-  const barShape = picked.length === 1 ? page.shapes[picked[0]] : undefined;
-  const barBtns: { k: string; label: string; tip: string; run: () => void }[] = [];
-  if (barShape && barBoxes.length === 1) {
-    const id = barShape.id;
-    // 标注泡不是主题：给它"插入子主题"会造出一棵亿图读不懂的树，只给改名和删除。
-    if (barShape.type === "Callout") {
-      barBtns.push({
-        k: "edit",
-        label: "改文字",
-        tip: "编辑标注内容（F2 或双击）",
-        run: () => useDoc.getState().setEditing(id),
-      });
-      barBtns.push({
-        k: "del",
-        label: "删标注",
-        tip: "删掉这个标注框",
-        run: () => useDoc.getState().mutate("删除标注", (p) => removeOverlay(p, id)),
-      });
-    } else {
-      barBtns.push({
-        k: "child",
-        label: "子主题",
-        tip: "插入子主题（Tab）",
-        run: () => addChild(id),
-      });
-      barBtns.push({
-        k: "sibling",
-        label: "同级",
-        tip: "插入同级主题（Enter）",
-        run: () => addSibling(id, false),
-      });
-      if (barShape.childIds.length)
-        barBtns.push({
-          k: "fold",
-          label: barShape.extras.collapsed ? "展开" : "折叠",
-          tip: "折叠 / 展开这条分支（F4）",
-          run: () => toggleFold(id),
-        });
-      if (barShape.parentId)
-        barBtns.push({
-          k: "del",
-          label: "删除",
-          tip: "删除这个主题及其分支（Delete）",
-          run: () => removeTopics([id]),
-        });
-      barBtns.push({
-        k: "note",
-        label: "附注",
-        tip: "备注与超链接",
-        run: () => useUi.getState().openDialog("topicInfo"),
-      });
-      barBtns.push({
-        k: "edit",
-        label: "改名",
-        tip: "编辑文字（F2 或双击）",
-        run: () => useDoc.getState().setEditing(id),
-      });
-      barBtns.push({
-        k: "callout",
-        label: "标注",
-        tip: "在这个主题上挂一个标注框",
-        run: () => useDoc.getState().mutate("新建标注", (p) => addCallout(p, id, "").page),
-      });
-    }
-  }
-  if (picked.length >= 2 && barBoxes.length === picked.length) {
-    barBtns.push({
-      k: "boundary",
-      label: "外框",
-      tip: "给选中的主题盖一层外框（再点一次取消）",
-      run: () => useDoc.getState().mutate("外框", (p) => addBoundary(p, picked).page),
-    });
-    barBtns.push({
-      k: "summary",
-      label: "概要",
-      tip: "给选中的主题加一个大括号和概要主题（再点一次取消）",
-      run: () => useDoc.getState().mutate("概要", (p) => addSummary(p, picked).page),
-    });
-  }
-  if (picked.length === 2 && barBoxes.length === 2) {
-    const [a, b] = picked;
-    const linked = Boolean(relationshipBetween(page, a, b));
-    barBtns.push({
-      k: "rel",
-      label: linked ? "取消连线" : "连线",
-      tip: linked ? "删掉这两个主题之间的关系线" : "在选中的两个主题之间连一条关系线",
-      run: () =>
-        useDoc
-          .getState()
-          .mutate(linked ? "取消关系线" : "新建关系线", (p) => toggleRelationship(p, a, b)),
-    });
-  }
+  const barBtns = barBoxes.length ? actionsFor(picked) : [];
   // 关系线的标注文字：连上之后直接在条子上给一个输入框，省掉再开一个对话框
   const barRel = picked.length === 2 ? relationshipBetween(page, picked[0], picked[1]) : undefined;
   const relText = () =>
@@ -820,11 +916,56 @@ export function MindCanvas({ page }: MindCanvasProps) {
     );
   })();
 
+  // ------------------------------------------------------------ 右键菜单（§3.1）
+  // 点在主题上就给这一组选中的动作（多选时是整组），和快捷条同源；
+  // 点在空白上只给画布级动作 —— 手上还留着选中项时把两套拼在一起，
+  // 出来的就是"子主题 + 新建自由主题"这种没人能读懂的菜单（真机上折叠完再点空处就是这样）。
+  const menuItems: MenuAction[] = menu
+    ? keepActions(
+        menu.onEmpty
+          ? [
+              {
+                k: "float",
+                label: "新建自由主题",
+                tip: "在点击处放一个不挂在主树上的主题",
+                run: () => addFloatingAt(menu.x, menu.y),
+              },
+              {
+                k: "fit",
+                label: "适应画布",
+                tip: "把整张图缩放到刚好装进窗口",
+                run: () => useUi.getState().fitZoom(),
+              },
+            ]
+          : [
+              ...actionsFor(picked),
+              {
+                k: "fit",
+                label: "适应画布",
+                tip: "把整张图缩放到刚好装进窗口",
+                run: () => useUi.getState().fitZoom(),
+              },
+            ],
+        menuEnabled
+      )
+    : [];
+  // 定宽一列：变宽的菜单会在"折叠 / 展开"这种换字的动作上抖一下。
+  const MENU_W = 148;
+  const MENU_H = 8 + menuItems.length * 26;
+  const menuAt =
+    menu && menuItems.length
+      ? {
+          left: Math.max(4, Math.min(menu.sx, size.w - MENU_W - 4)),
+          top: Math.max(4, Math.min(menu.sy, size.h - MENU_H - 4)),
+        }
+      : null;
+
   return (
     <div
       ref={wrapRef}
-      // 右键是画布平移键，浏览器的菜单会把拖拽打断
-      onContextMenu={(e) => e.preventDefault()}
+      onPointerDownCapture={onWrapPointerDown}
+      // 右键自己弹菜单：浏览器的原生菜单会把右键平移打断，什么都不给又会让用户以为没做
+      onContextMenu={onCanvasContextMenu}
       style={{
         position: "relative",
         width: "100%",
@@ -1133,6 +1274,56 @@ export function MindCanvas({ page }: MindCanvasProps) {
               }}
             />
           )}
+        </div>
+      )}
+
+      {menuAt && (
+        <div
+          ref={menuRef}
+          onPointerDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+          style={{
+            position: "absolute",
+            left: menuAt.left,
+            top: menuAt.top,
+            width: MENU_W,
+            padding: "4px 0",
+            boxSizing: "border-box",
+            background: "#ffffff",
+            border: "1px solid #d9d9d9",
+            borderRadius: 6,
+            boxShadow: "0 4px 16px rgba(0,0,0,0.16)",
+            cursor: "default",
+          }}
+        >
+          {menuItems.map((b) => (
+            <button
+              key={b.k}
+              type="button"
+              title={b.tip}
+              onClick={() => {
+                // 先收菜单再动手：动作里可能有 select/setEditing，反过来会让菜单停在原位
+                setMenu(null);
+                b.run();
+              }}
+              style={{
+                display: "block",
+                width: "100%",
+                border: 0,
+                background: "transparent",
+                padding: "0 12px",
+                height: 26,
+                fontSize: 12,
+                lineHeight: "26px",
+                color: "#333333",
+                textAlign: "left",
+                whiteSpace: "nowrap",
+                cursor: "pointer",
+              }}
+            >
+              {b.label}
+            </button>
+          ))}
         </div>
       )}
 

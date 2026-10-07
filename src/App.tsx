@@ -30,6 +30,7 @@ import { startRecentListeners, useRecent } from "./stores/recentStore.ts";
 import { useSettings } from "./stores/settingsStore.ts";
 import {
   registerShortcuts,
+  setShortcutOverrides,
   shortcutLabel,
   useGlobalShortcuts,
   type ShortcutHandlers,
@@ -37,6 +38,7 @@ import {
 import { canSave } from "./utils/entitlement.ts";
 import { humanSize, timestampName } from "./utils/id.ts";
 import { autosaveNote, newestPendingAutosave, startAutosave } from "./services/autosave.ts";
+import { installCrashWatch } from "./services/crash.ts";
 import { runAiInsert } from "./services/ai.ts";
 import {
   listen,
@@ -315,6 +317,8 @@ function Shell() {
 
   useEffect(() => startAutosave(), []);
   useEffect(() => startRecentListeners(), []);
+  // 监听从一开始就挂着：崩溃可能发生在设置读回来之前，那一会儿由 Rust 侧的阈值决定写不写。
+  useEffect(() => installCrashWatch(), []);
 
   /**
    * 关联打开的两个触发点：启动时取一次队列（双击新进程那条路），
@@ -427,6 +431,14 @@ function Shell() {
   });
   useEffect(() => registerShortcuts(commands.current), []);
   useGlobalShortcuts();
+
+  // 键位表要从配置里过一遍才生效：面板改的是 settings.shortcut.custom，监听器改不了自己的表。
+  // 订阅这一节顺带让上面那些 shortcutLabel(...) 在改键后重算 —— 不然按钮的悬浮提示会一直
+  // 显示老键位，而按下的是新键位。
+  const shortcutCustom = useSettings((s) => s.settings.shortcut.custom);
+  useEffect(() => {
+    setShortcutOverrides(shortcutCustom);
+  }, [shortcutCustom]);
 
   useEffect(() => {
     if (!dirty) return;

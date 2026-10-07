@@ -1,5 +1,5 @@
 /**
- * 选项面板（亿图 F1 那一份"选项"对话框，七个分页正好对上 Settings 的七个节）。
+ * 选项面板（亿图 F1 那一份"选项"对话框，分页一节对上一份配置，Settings 里有几节就有几个分页）。
  *
  * 没有草稿态，也没有"确定"按钮：每个控件读 useSettings().settings、写 patch(section, partial)，
  * 改一下就落盘。亿图自己是改完即生效的，做成"草稿 + 确定"就多出一套状态同步 ——
@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 import {
   Alert,
   Button,
+  Checkbox,
   Input,
   InputNumber,
   Modal,
@@ -25,16 +26,36 @@ import {
   Tooltip,
 } from "antd";
 import { LoadingState } from "../_shared/index.ts";
+import { MENU_ACTION_GROUPS, MENU_PRESETS, keepActions } from "../canvas/menuActions.ts";
 import { LAYOUT_LABELS, QUOTA } from "../model/constants.ts";
 import { native } from "../services/native.ts";
-import type { AppInfo } from "../services/native.ts";
+import type { AppInfo, CrashInfo, LogInfo, ProxyStatus } from "../services/native.ts";
 import { useRecent } from "../stores/recentStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
+import type { Settings } from "../stores/settingsStore.ts";
+import {
+  SHORTCUT_COMMANDS,
+  aliasChords,
+  chordFromEvent,
+  chordLabel,
+  commandOfChord,
+  defaultChordOf,
+} from "../utils/shortcuts.ts";
+import type { ShortcutCommand } from "../utils/shortcuts.ts";
 
 /** 密钥在加密库里的条目名：只在这一个文件出现，改它等于换一份用户凭据，别散落。 */
 const AI_KEY_NAME = "ai-api-key";
 
-type SectionKey = "general" | "format" | "save" | "network" | "advanced" | "recent" | "quota";
+type SectionKey =
+  | "general"
+  | "format"
+  | "save"
+  | "network"
+  | "shortcut"
+  | "advanced"
+  | "rightMenu"
+  | "recent"
+  | "quota";
 
 interface OptionsViewProps {
   open: boolean;
@@ -90,6 +111,14 @@ const QUOTA_ROWS: { label: string; value: string }[] = [
   { label: "回收站保留", value: `${QUOTA.trashKeepDays} 天` },
 ];
 
+/** 日志目录里留几天的文件。数值与 Rust log.rs 的 KEEP_FILES 同源，改一处要改两处。 */
+const LOG_KEEP = 14;
+/** 崩溃记录一份一个文件，只留最新这么多份。与 Rust crash.rs 的 KEEP_FILES 同源。 */
+const CRASH_KEEP = 20;
+
+/** 目录来自 canvas/menuActions.ts：面板上画的格子必须和菜单里 push 的键是同一份。 */
+const ALL_MENU_KEYS = MENU_ACTION_GROUPS.map((g) => g.k);
+
 export function OptionsView({ open, onClose }: OptionsViewProps) {
   const settings = useSettings((s) => s.settings);
   const loaded = useSettings((s) => s.loaded);
@@ -105,8 +134,20 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
   const [secretTip, setSecretTip] = useState<string | null>(null);
   const [hasKey, setHasKey] = useState(false);
   const [info, setInfo] = useState<AppInfo | null>(null);
+  // 日志与代理的"实际状态"而不是设置值：这两项都可能因为平台原因不生效，界面要说真话。
+  const [logs, setLogs] = useState<LogInfo | null>(null);
+  const [proxy, setProxy] = useState<ProxyStatus | null>(null);
+  const [logTip, setLogTip] = useState<string | null>(null);
+  // 崩溃记录同理：开关说了不算，Rust 里那份阈值说了才算；份数也只有它知道。
+  const [crash, setCrash] = useState<CrashInfo | null>(null);
+  const [crashTip, setCrashTip] = useState<string | null>(null);
+  // 快捷键面板正在录哪一条（null = 没在录），以及那句"这条键已经归谁"的话。
+  const [recording, setRecording] = useState<ShortcutCommand | null>(null);
+  const [shortcutTip, setShortcutTip] = useState<string | null>(null);
 
   useEffect(() => {
+    // 这些读的是外壳里的**现状**，不是设置值：日志份数、崩溃份数、加密库里有没有密钥，
+    // 都会在面板关着的这段时间里变。所以每次开框都重新问一遍，别拿首次挂载那份旧数说话。
     // 开框先探一次"加密库里到底有没有"：secretReveal 会把明文读进输入框，
     // 而用户多数只想知道自己配没配过 —— 不该为了看一个布尔值就看到密钥本身。
     void native
@@ -117,7 +158,19 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
       .appInfo()
       .then(setInfo)
       .catch(() => undefined);
-  }, []);
+    void native
+      .logInfo()
+      .then(setLogs)
+      .catch(() => undefined);
+    void native
+      .crashInfo()
+      .then(setCrash)
+      .catch(() => undefined);
+    void native
+      .proxyStatus()
+      .then(setProxy)
+      .catch(() => undefined);
+  }, [open]);
 
   useEffect(() => {
     // 对话框可能被任何视图打开（工具栏、错误面板、F1），不保证有人替我们 load() 过。
@@ -159,6 +212,111 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
     } catch (e) {
       setSecretTip(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  /**
+   * 日志级别改完就到 Rust 里生效（不用重启），所以这里立刻回读一次真实阈值：
+   * 万一写盘失败，界面显示的是磁盘上的那一档，而不是我以为的那一档。
+   */
+  async function changeLogLevel(v: string) {
+    await patch("advanced", { logLevel: v });
+    try {
+      const applied = await native.logSetLevel(v);
+      setLogs(await native.logInfo());
+      setLogTip(null);
+      if (applied !== v) await patch("advanced", { logLevel: applied });
+    } catch (e) {
+      setLogTip(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function openLogDir() {
+    try {
+      await native.logOpenDir();
+      setLogTip(null);
+    } catch (e) {
+      setLogTip(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /**
+   * 崩溃开关也走"改完回读"：真正决定下一次写不写的是 Rust 里那份阈值，
+   * 面板显示的 enabled 是从它那儿问回来的，不是我以为存进去的那个布尔。
+   */
+  async function changeCrashReport(v: boolean) {
+    await patch("advanced", { crashReport: v });
+    try {
+      setCrash(await native.crashInfo());
+      setCrashTip(null);
+    } catch (e) {
+      setCrashTip(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function openCrashDir() {
+    try {
+      await native.crashOpenDir();
+      setCrashTip(null);
+    } catch (e) {
+      setCrashTip(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /**
+   * 网络一节改完都回读一次真实状态。
+   *
+   * 代理是否成立由三项共同决定（档位 + 地址 + 端口），只监听档位那一个控件的话，
+   * 用户把地址填完、界面还停在"地址还没填"那句旧话上 —— 说明文字就成了假的。
+   */
+  async function patchNetwork(value: Partial<Settings["network"]>) {
+    await patch("network", value);
+    try {
+      setProxy(await native.proxyStatus());
+    } catch {
+      setProxy(null);
+    }
+  }
+
+  /**
+   * 离开手动档就把地址与端口一起清掉，两个平台都要这样。
+   *
+   * 桌面端 Rust 在落盘前会做这件事（net::sanitize）并把它写回的那一节回报给界面，
+   * 浏览器模式没有 Rust 那一层：不在这里清，"切到别的档就把这两格清空"这句提示就是假的。
+   */
+  async function changeProxyMode(v: string) {
+    await patchNetwork(
+      v === "manual" ? { proxyMode: v } : { proxyMode: v, proxyHost: "", proxyPort: 0 }
+    );
+  }
+
+  /**
+   * 落一次键位改动：chord 传 null 恢复默认，传 "" 禁用这条命令。
+   *
+   * 冲突判 commandOfChord 而不是只翻 custom 表：没写进配置的默认键（Ctrl+F 这种）一样占着位置，
+   * 只比配置就会让两条命令撞上同一个键，而监听器只认表里先建的那一条 —— 到时用户看到的是
+   * "我明明把搜索改走了，Ctrl+F 却还在开搜索"。
+   */
+  async function bindShortcut(cmd: ShortcutCommand, chord: string | null) {
+    const next = { ...settings.shortcut.custom };
+    if (chord === null) delete next[cmd];
+    else next[cmd] = chord;
+    const applied = await patch("shortcut", { custom: next });
+    setShortcutTip(
+      applied ? null : "这一条没写进配置文件，重启就会回到原样：原因见面板顶部的错误。"
+    );
+  }
+
+  function rebindShortcut(cmd: ShortcutCommand, chord: string) {
+    const owner = commandOfChord(chord);
+    if (owner && owner !== cmd) {
+      const label = SHORTCUT_COMMANDS.find((c) => c.cmd === owner)?.label ?? owner;
+      setShortcutTip(`这个键位当前是「${label}」的。先去那一行把它改走或禁掉，再回来按这条。`);
+      return;
+    }
+    // 键位换回默认值就当没改过：把 "ctrl+s" 这种值留在配置里，以后默认表动一次，
+    // 这一行就会莫名其妙地"被用户改过"，恢复默认也恢复不到新默认上。
+    void bindShortcut(cmd, chord === defaultChordOf(cmd) ? null : chord);
+    setRecording(null);
   }
 
   /** 每个分页右上角的"恢复本节"：只重置这一节，其它节一个字都不动。 */
@@ -204,16 +362,13 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                   size="small"
                 />
               </Field>
-              <Field label="语言">
-                <Select
-                  size="small"
-                  value={settings.general.language}
-                  onChange={(v: string) => void patch("general", { language: v })}
-                  options={[
-                    { value: "zh-CN", label: "简体中文" },
-                    { value: "en-US", label: "English" },
-                  ]}
-                />
+              <Field
+                label="语言"
+                hint="全应用只有简体中文这一套文案（antd 的 locale 也是写死的），没有第二份翻译可切。亿图在这里给英文选项，我们不给 —— 选了等于没选的开关不该放在这儿。"
+              >
+                <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>
+                  简体中文（仅此一套）
+                </span>
               </Field>
               <Field
                 label="启动恢复上次会话"
@@ -407,11 +562,18 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
           children: (
             <div>
               {sectionHeader("network", "代理与超时")}
-              <Field label="代理方式">
+              <Field
+                label="代理方式"
+                hint={
+                  proxy
+                    ? proxy.message
+                    : "读取代理当前状态失败：这一档是否生效要问桌面外壳，浏览器模式由浏览器自己决定。"
+                }
+              >
                 <Select
                   size="small"
                   value={settings.network.proxyMode}
-                  onChange={(v: string) => void patch("network", { proxyMode: v })}
+                  onChange={(v: string) => void changeProxyMode(v)}
                   options={[
                     { value: "system", label: "跟随系统" },
                     { value: "none", label: "不用代理" },
@@ -421,7 +583,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
               </Field>
               <Field
                 label="代理地址"
-                hint="只有“手动”这一档才会写进请求；其它模式下这两项存着也不生效。"
+                hint="只有“手动”这一档会用地址和端口，切到别的档就把这两格清空；地址里不能有空格或引号。改完要重启应用。"
               >
                 <Input
                   size="small"
@@ -429,7 +591,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                   disabled={settings.network.proxyMode !== "manual"}
                   placeholder="127.0.0.1"
                   value={settings.network.proxyHost}
-                  onChange={(e) => void patch("network", { proxyHost: e.target.value })}
+                  onChange={(e) => void patchNetwork({ proxyHost: e.target.value })}
                 />
               </Field>
               <Field label="代理端口">
@@ -439,12 +601,12 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                   min={0}
                   max={65535}
                   value={settings.network.proxyPort}
-                  onChange={(v) => void patch("network", { proxyPort: toInt(v, 0, 65535) })}
+                  onChange={(v) => void patchNetwork({ proxyPort: toInt(v, 0, 65535) })}
                 />
               </Field>
               <Field
                 label="超时"
-                hint="秒。AI 与模板库这类在线能力共用一个超时值；调太小会把慢一点的正常请求判成失败。"
+                hint="秒。这一项由 AI 生成读取（写请求的等待上限）；调太小会把慢一点的正常请求判成失败。"
               >
                 <InputNumber<number>
                   size="small"
@@ -458,40 +620,222 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
           ),
         },
         {
+          key: "shortcut",
+          label: "快捷键",
+          children: (
+            <div>
+              {sectionHeader("shortcut", "全量可自定义、可禁用、可恢复默认")}
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--zm-text-2)",
+                  margin: "4px 0 10px",
+                  lineHeight: 1.6,
+                }}
+              >
+                点一下键位格子进入录制，按下的组合键就是这条命令的新键位：至少要带一个修饰键 （Ctrl
+                / Shift / Alt），或者直接用 F1–F12 / Esc 这类功能键。抢别人正在用的键不会抢，
+                会当场说清这条键归谁。改完立即生效，工具栏按钮上的悬浮提示跟着一起改。
+                <b>禁用之后没有键盘入口</b>，按钮和菜单项都还在 —— 这一页只管键盘。
+                亿图在这里还能导入 / 导出整套键位方案，我们没做：这张表就是
+                <code style={{ fontSize: 12 }}>~/.z-mind/config.json</code> 的 shortcut.custom 节。
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {SHORTCUT_COMMANDS.map((c) => {
+                  const stored = settings.shortcut.custom[c.cmd];
+                  const touched = stored !== undefined;
+                  const off = stored === "";
+                  const chord = touched ? stored : defaultChordOf(c.cmd);
+                  const rec = recording === c.cmd;
+                  const alias = aliasChords(c.cmd);
+                  return (
+                    <div
+                      key={c.cmd}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr auto auto",
+                        alignItems: "center",
+                        gap: "0 10px",
+                        fontSize: 13,
+                        padding: "3px 0",
+                        borderBottom: "1px solid var(--zm-border)",
+                      }}
+                    >
+                      <span>
+                        {c.label}
+                        <span style={{ color: "var(--zm-text-2)", fontSize: 12 }}>
+                          （{c.group}）
+                        </span>
+                        {touched && !off ? <Tag style={{ marginLeft: 6 }}>已改</Tag> : null}
+                      </span>
+                      <Input
+                        size="small"
+                        readOnly
+                        style={{ width: 150, textAlign: "center", cursor: "text" }}
+                        value={rec ? "按下新键位…" : off ? "已禁用" : chordLabel(chord)}
+                        onFocus={() => {
+                          setRecording(c.cmd);
+                          setShortcutTip(null);
+                        }}
+                        onBlur={() => {
+                          setRecording((r) => (r === c.cmd ? null : r));
+                          setShortcutTip(null);
+                        }}
+                        onKeyDown={(e) => {
+                          // Tab 留给"跳到下一格"，别把换焦点也当成键位。
+                          if (e.key === "Tab") return;
+                          e.preventDefault();
+                          // 录制时把键吃掉：否则 Esc 会被外层对话框当成"关掉选项"。
+                          e.stopPropagation();
+                          if (["Shift", "Control", "Alt", "Meta"].includes(e.key)) return;
+                          const next = chordFromEvent(e.nativeEvent);
+                          if (!next) {
+                            setShortcutTip(
+                              "这组键不成键位：修饰键之外还要一个字母、数字或 F1–F12 / Esc。"
+                            );
+                            return;
+                          }
+                          setRecording(null);
+                          // 按回默认键就等于恢复默认，别把同一个键再钉一份进配置里。
+                          void rebindShortcut(c.cmd, next);
+                        }}
+                      />
+                      <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        {alias.length ? (
+                          <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>
+                            还认 {alias.map(chordLabel).join("、")}
+                          </span>
+                        ) : null}
+                        <Button
+                          size="small"
+                          disabled={!touched}
+                          onClick={() => void bindShortcut(c.cmd, null)}
+                        >
+                          恢复默认
+                        </Button>
+                        <Button
+                          size="small"
+                          danger
+                          disabled={off}
+                          onClick={() => void bindShortcut(c.cmd, "")}
+                        >
+                          禁用
+                        </Button>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {shortcutTip ? (
+                <div style={{ fontSize: 12, color: "#d4380d", marginTop: 8 }}>{shortcutTip}</div>
+              ) : null}
+            </div>
+          ),
+        },
+        {
           key: "advanced",
           label: "高级",
           children: (
             <div>
               {sectionHeader("advanced", "更新、日志与 AI 服务")}
-              <Field label="自动检查更新">
-                <Switch
-                  size="small"
-                  checked={settings.advanced.autoUpdate}
-                  onChange={(v) => void patch("advanced", { autoUpdate: v })}
-                />
+              <Field
+                label="自动检查更新"
+                hint="检查、下载、安装三条路一条都没通：没有更新源地址，也没有签名校验，所以这个开关按不动。等双平台的发布通道建好再接上，届时这一行会自己活过来。"
+              >
+                <Switch size="small" checked={settings.advanced.autoUpdate} disabled />
               </Field>
-              <Field label="发送崩溃报告">
+              <Field
+                label="发送崩溃报告"
+                hint="名字沿用亿图，做的其实只是本机留痕：崩一次在 crashes 目录写一个带栈的文本文件，不上传任何东西。关下去之后连目录都不会建，一次也不记。改完立即生效，不用重启。"
+              >
                 <Switch
                   size="small"
                   checked={settings.advanced.crashReport}
-                  onChange={(v) => void patch("advanced", { crashReport: v })}
+                  onChange={(v) => void changeCrashReport(v)}
                 />
               </Field>
               <Field
+                label="崩溃记录"
+                hint={
+                  crash === null ? (
+                    (crashTip ??
+                    "崩溃记录状态读不到：当前环境没有桌面外壳，前端只能把错误打在控制台里。")
+                  ) : (
+                    <>
+                      一次一份，只留最新 {CRASH_KEEP} 份；开关关着时一次都不写。
+                      {crash.dir ? (
+                        <>
+                          <br />
+                          <code style={{ fontSize: 12 }}>{crash.dir}</code>
+                          <br />
+                          {crash.files
+                            ? `${crash.files} 份 / 共 ${(crash.bytes / 1024).toFixed(1)} KB，最新一份 ${crash.latest}。`
+                            : "还没有记录过崩溃。"}
+                          {/* "在不在记录"只有外壳知道：浏览器模式不落盘，问出来的永远是关，说出来反而误导。 */}
+                          <br />
+                          当前是否在记录：<b>{crash.enabled ? "是" : "否"}</b>。
+                        </>
+                      ) : (
+                        "（浏览器模式不落盘）"
+                      )}
+                    </>
+                  )
+                }
+              >
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Button size="small" onClick={() => void openCrashDir()}>
+                    打开记录目录
+                  </Button>
+                  {crashTip ? (
+                    <span style={{ fontSize: 12, color: "#d4380d" }}>{crashTip}</span>
+                  ) : null}
+                </div>
+              </Field>
+              <Field
                 label="日志级别"
-                hint="debug 会把每次布局与解析都写满日志目录，只在复现问题的时候开。"
+                hint="debug 会把每次布局与解析都写满日志目录，只在复现问题的时候开；off 一个字都不记。改完立即生效，不用重启。"
               >
                 <Select
                   size="small"
                   value={settings.advanced.logLevel}
-                  onChange={(v: string) => void patch("advanced", { logLevel: v })}
-                  options={[
-                    { value: "debug", label: "debug" },
-                    { value: "info", label: "info" },
-                    { value: "warn", label: "warn" },
-                    { value: "error", label: "error" },
-                  ]}
+                  onChange={(v: string) => void changeLogLevel(v)}
+                  // 档位取自外壳的回报而不是在这里抄一份：Rust 认 off，界面漏了它，
+                  // 用户手改过 config.json 之后这一格就会显示一个下拉里没有的值。
+                  options={(logs?.levels ?? ["off", "error", "warn", "info", "debug"])
+                    .slice()
+                    .reverse()
+                    .map((v) => ({ value: v, label: v }))}
                 />
+              </Field>
+              <Field
+                label="运行日志"
+                hint={
+                  logs === null ? (
+                    (logTip ?? "日志状态读不到：当前环境没有桌面外壳，日志只打在浏览器控制台里。")
+                  ) : (
+                    <>
+                      一天一份，最多留 {LOG_KEEP} 份；级别不够的那一行根本不写。
+                      {logs.dir ? (
+                        <>
+                          <br />
+                          <code style={{ fontSize: 12 }}>{logs.file || logs.dir}</code>
+                          <br />
+                          {logs.files} 份 / 共 {(logs.bytes / 1024).toFixed(1)} KB， 当前生效级别{" "}
+                          <b>{logs.level}</b>。
+                        </>
+                      ) : (
+                        "（浏览器模式不落盘）"
+                      )}
+                    </>
+                  )
+                }
+              >
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Button size="small" onClick={() => void openLogDir()}>
+                    打开日志目录
+                  </Button>
+                  {logTip ? <span style={{ fontSize: 12, color: "#d4380d" }}>{logTip}</span> : null}
+                </div>
               </Field>
               <Field
                 label="AI 服务端点"
@@ -563,6 +907,86 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                     <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>{secretTip}</span>
                   ) : null}
                 </div>
+              </Field>
+            </div>
+          ),
+        },
+        {
+          key: "rightMenu",
+          label: "右键菜单",
+          children: (
+            <div>
+              {sectionHeader("rightMenu", "画布右键菜单的功能集合")}
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--zm-text-2)",
+                  margin: "4px 0 10px",
+                  lineHeight: 1.6,
+                }}
+              >
+                取消勾选就等于从菜单里去掉，改完立即生效 —— 菜单是每次右键现算的，不用重开。
+                这一节只管<b>右键菜单</b>：快捷操作条、工具栏和快捷键都不受它影响，
+                去掉"删除主题或标注"之后，选中主题按 Delete 照样删得掉。 亿图在这里还能把方案导出成
+                xml 换机器加载，我们没做；配置就是
+                <code style={{ fontSize: 12 }}>~/.z-mind/config.json</code> 的 rightMenu
+                节，要搬直接拷那个文件。
+              </div>
+              <Field
+                label="预设方案"
+                hint="亿图的预设也是不可改的：点一下只覆盖下面的勾选，不产生能存下来的新方案。"
+              >
+                <div style={{ display: "flex", gap: 8 }}>
+                  {MENU_PRESETS.map((p) => (
+                    <Button
+                      key={p.label}
+                      size="small"
+                      type={
+                        p.keys.length === settings.rightMenu.enabled.length &&
+                        p.keys.every((k) => settings.rightMenu.enabled.includes(k))
+                          ? "primary"
+                          : "default"
+                      }
+                      onClick={() => void patch("rightMenu", { enabled: [...p.keys] })}
+                    >
+                      {p.label}
+                    </Button>
+                  ))}
+                </div>
+              </Field>
+              <Field
+                label="菜单里显示这些动作"
+                hint={
+                  <>
+                    顺序就是菜单里的顺序，实际某次右键给几条还要看选中的是什么（主主题没有"删除"，
+                    标注泡只有改名和删除）。
+                    <b>最后一项取消不了</b>：空列表在这份配置里的意思就是"全部显示"（默认值），
+                    让它表示"什么都不给"的话，恢复默认和清空勾选就成了同一件事。
+                  </>
+                }
+              >
+                <Checkbox.Group
+                  value={
+                    settings.rightMenu.enabled.length ? settings.rightMenu.enabled : ALL_MENU_KEYS
+                  }
+                  onChange={(v) => {
+                    const next = v as string[];
+                    if (!next.length) return;
+                    void patch("rightMenu", { enabled: next });
+                  }}
+                  options={MENU_ACTION_GROUPS.map((g) => ({ label: g.label, value: g.k }))}
+                  style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 24px" }}
+                />
+              </Field>
+              <Field
+                label="预览"
+                hint="这一行用画布同一份裁剪函数算出来，不是照着勾选状态手写的示意。"
+              >
+                <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>
+                  {keepActions(MENU_ACTION_GROUPS, settings.rightMenu.enabled)
+                    .map((g) => g.label)
+                    .join("、") || "（空）"}
+                </span>
               </Field>
             </div>
           ),

@@ -52,6 +52,35 @@ export interface RestoreResult {
   contentBase64?: string;
 }
 
+/** 「选项 → 高级」的日志面板要的这些数，正好对应 Rust log.rs 的 LogInfo。 */
+export interface LogInfo {
+  dir: string;
+  file: string;
+  level: string;
+  levels: string[];
+  files: number;
+  bytes: number;
+  today: boolean;
+}
+
+export interface ProxyStatus {
+  /** 真正附加给 WebView2 的启动参数；null = 跟随系统。 */
+  arg: string | null;
+  /** 这个设置在当前平台上是否真的起作用（macOS 的手动代理就不起作用）。 */
+  active: boolean;
+  message: string;
+}
+
+/** 「选项 → 高级」的崩溃记录面板，字段与 Rust crash.rs 的 CrashInfo 一一对应。 */
+export interface CrashInfo {
+  dir: string;
+  files: number;
+  bytes: number;
+  /** 开关的**实际**生效值：界面据此判断"我刚点的到底存进去没有"。 */
+  enabled: boolean;
+  latest: string;
+}
+
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -470,6 +499,101 @@ export const native = {
     if (!isTauri) return [];
     return call<string[]>("open_take_pending");
   },
+
+  // ---------- 运行日志 ----------
+  //
+  // 这些方法存在的意义只有一个：让"我这边点一下没反应"能被一张日志截图说清楚。
+  // 因此**任何凭据都不能进参数** —— 日志文件是用户会直接发给别人看的文本。
+  // 浏览器模式不落盘：只往控制台复述一份，logInfo 如实报 dir:""。
+
+  async logWrite(level: string, message: string, target = "web"): Promise<void> {
+    if (!isTauri) {
+      if (rankOf(level) > rankOf(webLogLevel)) return;
+      const kind = level === "error" ? "error" : level === "warn" ? "warn" : "log";
+      (console[kind] as (...a: unknown[]) => void)(`[${target}] ${message}`);
+      return;
+    }
+    await call<void>("log_write", { level, message, target });
+  },
+
+  async logInfo(): Promise<LogInfo> {
+    if (!isTauri) {
+      return {
+        dir: "",
+        file: "",
+        level: webLogLevel,
+        levels: [...LOG_LEVELS],
+        files: 0,
+        bytes: 0,
+        today: false,
+      };
+    }
+    return call<LogInfo>("log_info");
+  },
+
+  /** 改级别：桌面版立即生效（不用重启）；浏览器模式只是把控制台过滤档位记下来。 */
+  async logSetLevel(level: string): Promise<string> {
+    if (!isTauri) {
+      if (rankOf(level) < 0) throw new Error(`未知的日志级别: ${level}`);
+      webLogLevel = level;
+      return level;
+    }
+    return call<string>("log_set_level", { level });
+  },
+
+  async logOpenDir(): Promise<string> {
+    if (!isTauri) throw new Error("浏览器模式不落盘日志，请在桌面版里打开日志目录");
+    return call<string>("log_open_dir");
+  },
+
+  /** 代理当前的真实状态：active=false 时界面要老实说"这一档在本机不起作用"。 */
+  async proxyStatus(): Promise<ProxyStatus> {
+    if (!isTauri) {
+      return {
+        arg: null,
+        active: false,
+        message: "浏览器模式由浏览器自己决定代理，这里的手动设置不参与。",
+      };
+    }
+    return call<ProxyStatus>("proxy_status");
+  },
+
+  // ---------- 崩溃记录 ----------
+  //
+  // 与 Rust 侧一致：只写本机，一个字节都不上传。桌面版的开关在 Rust 里同步
+  // （关着时 panic 也不会落盘），浏览器版的开关由调用方读设置决定，
+  // 所以这里的浏览器分支只负责"这一份记在哪儿"，不再判断开关。
+
+  /** 返回落盘路径；关着或浏览器模式没有路径可给时返回 null —— 那不是失败。 */
+  async crashReport(kind: string, message: string, detail = ""): Promise<string | null> {
+    if (!isTauri) {
+      memCrash.push({ at: Date.now(), kind, message, detail });
+      while (memCrash.length > CRASH_KEEP) memCrash.shift();
+      return null;
+    }
+    return call<string | null>("crash_report", { kind, message, detail });
+  },
+
+  async crashInfo(): Promise<CrashInfo> {
+    if (!isTauri) {
+      const cfg = lsGet<Record<string, unknown>>(LS_CONFIG, {}) as {
+        advanced?: { crashReport?: boolean };
+      };
+      return {
+        dir: "",
+        files: memCrash.length,
+        bytes: memCrash.reduce((s, r) => s + r.kind.length + r.message.length + r.detail.length, 0),
+        enabled: cfg.advanced?.crashReport === true,
+        latest: memCrash.length ? `本次会话共 ${memCrash.length} 次` : "",
+      };
+    }
+    return call<CrashInfo>("crash_info");
+  },
+
+  async crashOpenDir(): Promise<string> {
+    if (!isTauri) throw new Error("浏览器模式不落盘崩溃记录，请在桌面版里打开记录目录");
+    return call<string>("crash_open_dir");
+  },
 };
 
 /** <input> 兜底路径没有 createWritable，写回失败就交回调用方下载。 */
@@ -482,6 +606,23 @@ export async function writeHandleSafe(path: string, bytes: Uint8Array): Promise<
 }
 
 const memSecrets = new Map<string, string>();
+
+/** 与 Rust crash.rs 的 KEEP_FILES 同规格：浏览器里随标签页消失，但淘汰规则要一样。 */
+const CRASH_KEEP = 20;
+const memCrash: { at: number; kind: string; message: string; detail: string }[] = [];
+
+/**
+ * 日志档位，顺序即阈值（与 Rust log.rs 的 RANKS 同一份语义：数组下标 = 级别秩）。
+ * 浏览器模式没有落盘那一段，控制台至少按这个档位过滤，两边行为才分得出对错。
+ */
+const LOG_LEVELS = ["off", "error", "warn", "info", "debug"] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+let webLogLevel: string = "info";
+
+/** 认不出来的级别返回 -1：调用方要么拒绝，要么按 info 处理，不能默默当成 0。 */
+function rankOf(level: string): number {
+  return LOG_LEVELS.indexOf(level as LogLevel);
+}
 
 // ---------- 原生选择框 / 事件（浏览器模式各自退化） ----------
 

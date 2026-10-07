@@ -178,8 +178,11 @@ pub fn write_config(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// 按节合并写入：`patch` 必须是对象，只覆盖它出现的键。
-pub fn merge_page(page: &str, patch: &Value) -> Result<Value, String> {
+/// 按节合并（**不落盘**）：`patch` 必须是对象，只覆盖它出现的键。
+///
+/// 拆成"先合再写"两步是为了校验：network 一节要在落盘前判代理地址（见 commands.rs），
+/// 否则 config.json 会停在"记下了一个应用不了的值"的状态 —— 那是最难查的一类不一致。
+pub fn merged_page(page: &str, patch: &Value) -> Result<Value, String> {
     let mut cfg = read_config();
     let obj = cfg
         .as_object_mut()
@@ -195,7 +198,6 @@ pub fn merge_page(page: &str, patch: &Value) -> Result<Value, String> {
         }
         _ => return Err(format!("配置节 {} 只能是对象", page)),
     }
-    write_config(&cfg)?;
     Ok(cfg)
 }
 
@@ -253,18 +255,44 @@ mod tests {
     }
 
     #[test]
-    fn writes_then_reads_back_and_merges_page() {
+    fn merged_page_touches_only_the_keys_patched() {
+        let _g = crate::lock_config_env();
+        let _dir = isolated("merge-pure");
+        let patch: Value = serde_json::from_str(r#"{"autoSave":false}"#).unwrap();
+        let cfg = merged_page("save", &patch).expect("merge 应成功");
+        assert_eq!(cfg["save"]["autoSave"], Value::Bool(false));
+        assert_eq!(cfg["save"]["historyCount"], Value::Number(10.into()));
+        // 这一层承诺的就是"不写"：commands.rs 靠它在落盘前校验
+        assert!(
+            !config_path().exists(),
+            "merged_page 不该碰磁盘，实际 {}",
+            config_path().display()
+        );
+    }
+
+    #[test]
+    fn writes_then_reads_back_and_keeps_unpatched_keys() {
         let _g = crate::lock_config_env();
         let dir = isolated("merge");
         let _ = std::fs::remove_dir_all(&dir);
         let patch: Value = serde_json::from_str(r#"{"autoSave":false}"#).unwrap();
-        let cfg = merge_page("save", &patch).expect("merge 应成功");
+        let cfg = merged_page("save", &patch).expect("merge 应成功");
         assert_eq!(cfg["save"]["autoSave"], Value::Bool(false));
         // 未提及的键保持默认值，不能被整节替换掉
         assert_eq!(cfg["save"]["historyCount"], Value::Number(10.into()));
+        write_config(&cfg).expect("写入应成功");
         let reread = read_config();
         assert_eq!(reread["save"]["autoSave"], Value::Bool(false));
+        assert_eq!(reread["save"]["historyCount"], Value::Number(10.into()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merging_a_non_object_patch_is_refused() {
+        let _g = crate::lock_config_env();
+        let _dir = isolated("merge-bad");
+        assert!(merged_page("save", &Value::Number(1.into())).is_err());
+        assert!(merged_page("save", &Value::Null).is_err());
     }
 
     #[test]

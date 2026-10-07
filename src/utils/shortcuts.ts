@@ -21,6 +21,24 @@ type ShortcutCommand =
   | "options"
   | "closeDialog";
 
+export type { ShortcutCommand };
+
+/** 选项面板的快捷键分页要逐行列出来，顺序就是这张表的顺序。 */
+export const SHORTCUT_COMMANDS: readonly { cmd: ShortcutCommand; label: string; group: string }[] =
+  [
+    { cmd: "newDoc", label: "新建文档", group: "文件" },
+    { cmd: "open", label: "打开 .emmx", group: "文件" },
+    { cmd: "save", label: "保存", group: "文件" },
+    { cmd: "saveAs", label: "另存为", group: "文件" },
+    { cmd: "export", label: "导出", group: "文件" },
+    { cmd: "print", label: "打印", group: "文件" },
+    { cmd: "undo", label: "撤销", group: "编辑" },
+    { cmd: "redo", label: "重做", group: "编辑" },
+    { cmd: "search", label: "搜索", group: "视图" },
+    { cmd: "options", label: "选项", group: "视图" },
+    { cmd: "closeDialog", label: "关闭对话框 / 菜单", group: "视图" },
+  ];
+
 export interface ShortcutHandlers {
   [k: string]: (() => void) | undefined;
   newDoc?: () => void;
@@ -37,29 +55,38 @@ export interface ShortcutHandlers {
 }
 
 /**
- * 键位表。ctrl 在 mac 上由 meta(Cmd) 触发，chordOf 里已经把两者归一成 ctrl，
- * 所以这里只写 ctrl。`ctrl+y` 是亿图给重做的第二个键，保留它比只认 Ctrl+Shift+Z 更贴近用户肌肉记忆。
+ * 默认键位表（§3.17「快捷键 · 全量可自定义、可禁用、可恢复默认」）。
+ *
+ * ctrl 在 mac 上由 meta(Cmd) 触发，chordOf 里已经把两者归一成 ctrl，所以这里只写 ctrl。
+ * 键串一律用 normalizeChord 认得的那种形式（小写、ctrl→shift→alt 的顺序），
+ * 因为自定义值是从配置文件里读进来的，两种写法对不上就会出现"改了却没生效"。
  */
-const CHORDS: Record<string, ShortcutCommand> = {
-  "ctrl+n": "newDoc",
-  "ctrl+o": "open",
-  "ctrl+s": "save",
-  "ctrl+shift+s": "saveAs",
-  "ctrl+f": "search",
-  "ctrl+z": "undo",
-  "ctrl+shift+z": "redo",
-  "ctrl+y": "redo",
-  "ctrl+e": "export",
-  "ctrl+p": "print",
-  f1: "options",
-  esc: "closeDialog",
+const DEFAULT_CHORDS: Record<ShortcutCommand, string> = {
+  newDoc: "ctrl+n",
+  open: "ctrl+o",
+  save: "ctrl+s",
+  saveAs: "ctrl+shift+s",
+  search: "ctrl+f",
+  undo: "ctrl+z",
+  redo: "ctrl+shift+z",
+  export: "ctrl+e",
+  print: "ctrl+p",
+  options: "f1",
+  closeDialog: "esc",
 };
+
+/** `ctrl+y` 是亿图给重做的第二个键，保留它比只认 Ctrl+Shift+Z 更贴近用户肌肉记忆。 */
+const ALIASES: readonly { chord: string; cmd: ShortcutCommand }[] = [
+  { chord: "ctrl+y", cmd: "redo" },
+];
 
 const MODS = {
   ctrl: { win: "Ctrl", mac: "⌘", rank: 1 },
   shift: { win: "Shift", mac: "⇧", rank: 0 },
   alt: { win: "Alt", mac: "⌥", rank: 2 },
 } as const;
+
+const MOD_ORDER = ["ctrl", "shift", "alt"] as const;
 
 const IGNORED_KEYS = new Set([
   "control",
@@ -113,6 +140,100 @@ function chordOf(e: KeyboardEvent): string | null {
   return parts.join("+");
 }
 
+/** 选项面板录制键位用的同一个归一化：面板拿到的串和监听器算出的串必须是一种东西。 */
+export function chordFromEvent(e: KeyboardEvent): string | null {
+  return chordOf(e);
+}
+
+/**
+ * 校验并归一化配置文件 / 面板里的一条键串。
+ *
+ * 不合规就返回 null，而不是"原样收下"：存进配置的键若是 `Ctrl-Shift-S` 这种写法，
+ * 监听器永远匹配不上，用户看到的是"改完快捷键就失灵了"，而这最难复现 —— 因为配置文件里
+ * 明明写着东西。归一化顺手把修饰键按 ctrl→shift→alt 排好，重复的修饰键视为不合规。
+ */
+export function normalizeChord(raw: string): string | null {
+  const parts = raw
+    .toLowerCase()
+    .split("+")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  if (!parts.length) return null;
+  const rawKey = parts[parts.length - 1];
+  const key = rawKey === "escape" ? "esc" : rawKey;
+  const mods = parts.slice(0, -1);
+  if (mods.some((m) => !(m in MODS))) return null;
+  if (new Set(mods).size !== mods.length) return null;
+  const sorted = MOD_ORDER.filter((m) => mods.includes(m));
+  const fn = key === "esc" || /^f\d{1,2}$/.test(key);
+  // 裸键只放行功能键，和 chordOf 同一个口径：单按一个字母就发命令的话，
+  // 在改名框里打第一个字就把命令打出来了。
+  if (!sorted.length) return fn ? key : null;
+  // 带修饰键时收单个可见字符（空格除外：chordOf 把 " " 归入忽略键，绑了也永远不触发）。
+  return fn || /^[!-~]$/.test(key) ? [...sorted, key].join("+") : null;
+}
+
+/** cmd → 键串；空串表示"这条被禁用了"。缺键 = 用默认。 */
+let overrides: Partial<Record<ShortcutCommand, string>> = {};
+let lookup = new Map<string, ShortcutCommand>();
+
+function rebuildLookup(): void {
+  const next = new Map<string, ShortcutCommand>();
+  // 别名先写：命令一旦改过自己的键，Ctrl+Y 就该让位给新主人，而不是继续抢在 redo 上。
+  for (const a of ALIASES) if (overrides[a.cmd] === undefined) next.set(a.chord, a.cmd);
+  for (const cmd of Object.keys(DEFAULT_CHORDS) as ShortcutCommand[]) {
+    const chord = overrides[cmd] ?? DEFAULT_CHORDS[cmd];
+    if (chord) next.set(chord, cmd);
+  }
+  lookup = next;
+}
+
+// 装载就建一次表：Shell 的 useEffect 要把配置里的自定义键位推进来，但在那之前
+// （以及任何没调 setShortcutOverrides 的环境里）默认键位也得能用。
+rebuildLookup();
+
+/** 由 settings.shortcut.custom 调用：整表替换，改一次键不用重启。 */
+export function setShortcutOverrides(custom: Record<string, string>): void {
+  const next: Partial<Record<ShortcutCommand, string>> = {};
+  for (const cmd of Object.keys(DEFAULT_CHORDS) as ShortcutCommand[]) {
+    const raw = custom[cmd];
+    if (raw === undefined) continue;
+    // 配置里的值可能是手改坏的：认不得就回落到默认，别让一个坏串把整条命令废掉。
+    next[cmd] = raw === "" ? "" : (normalizeChord(raw) ?? DEFAULT_CHORDS[cmd]);
+  }
+  overrides = next;
+  rebuildLookup();
+}
+
+/** 这条命令现在认哪条键；null = 已禁用。 */
+export function chordOfCommand(cmd: ShortcutCommand): string | null {
+  const chord = overrides[cmd] ?? DEFAULT_CHORDS[cmd];
+  return chord || null;
+}
+
+export function defaultChordOf(cmd: ShortcutCommand): string {
+  return DEFAULT_CHORDS[cmd];
+}
+
+/** 这个键当前归谁（用来挡冲突）；没人用返回 null。 */
+export function commandOfChord(chord: string): ShortcutCommand | null {
+  return lookup.get(chord) ?? null;
+}
+
+/** 这条命令除了主键之外还认哪些键（亿图的 Ctrl+Y）。改过主键之后别名就没了。 */
+export function aliasChords(cmd: ShortcutCommand): string[] {
+  if (overrides[cmd] !== undefined) return [];
+  return ALIASES.filter((a) => a.cmd === cmd).map((a) => a.chord);
+}
+
+/** 全部命令的当前键位快照：给测试和面板判断"这一格是不是默认的"。 */
+export function effectiveChords(): Record<ShortcutCommand, string> {
+  const out = {} as Record<ShortcutCommand, string>;
+  for (const cmd of Object.keys(DEFAULT_CHORDS) as ShortcutCommand[])
+    out[cmd] = chordOfCommand(cmd) ?? "";
+  return out;
+}
+
 function dispatch(cmd: ShortcutCommand): boolean {
   for (let i = registry.length - 1; i >= 0; i -= 1) {
     const fn = registry[i][cmd];
@@ -147,7 +268,7 @@ export function useGlobalShortcuts(): void {
         if (e.defaultPrevented) return;
         const chord = chordOf(e);
         if (!chord) return;
-        const cmd = CHORDS[chord];
+        const cmd = lookup.get(chord);
         if (!cmd) return;
         if ((isTyping(e.target) || isTyping(document.activeElement)) && !TYPING_SAFE.has(cmd))
           return;
@@ -173,10 +294,8 @@ function isMac(): boolean {
   return /mac|iphone|ipad/i.test(navigator.platform ?? "");
 }
 
-/** 菜单/提示里给用户的键名：mac 是 "⌘S"，其它平台是 "Ctrl+S"。 */
-export function shortcutLabel(cmd: string): string {
-  const chord = Object.keys(CHORDS).find((k) => CHORDS[k] === cmd);
-  if (!chord) return cmd;
+/** 一条键串的显示形式：mac 是 "⇧⌘S"，其它平台是 "Ctrl+Shift+S"。 */
+export function chordLabel(chord: string): string {
   const parts = chord.split("+");
   const raw = parts[parts.length - 1];
   const key = raw === "esc" ? "Esc" : raw.toUpperCase();
@@ -188,4 +307,11 @@ export function shortcutLabel(cmd: string): string {
   // mac 的书写顺序是 ⇧⌘⌥，与事件里的判定顺序无关，按 rank 排一次。
   const sorted = [...mods].sort((a, b) => a.rank - b.rank).map((m) => m.mac);
   return `${sorted.join("")}${key}`;
+}
+
+/** 菜单/提示里给用户的键名：mac 是 "⌘S"，其它平台是 "Ctrl+S"；被禁用的那条直说。 */
+export function shortcutLabel(cmd: string): string {
+  if (!(cmd in DEFAULT_CHORDS)) return cmd;
+  const chord = chordOfCommand(cmd as ShortcutCommand);
+  return chord ? chordLabel(chord) : "（已禁用）";
 }

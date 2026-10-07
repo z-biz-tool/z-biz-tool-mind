@@ -31,7 +31,11 @@ export interface Settings {
     backupKeepDays: number;
   };
   network: { proxyMode: string; proxyHost: string; proxyPort: number; timeoutSec: number };
+  /** 快捷键自定义：命令 → 键串，空串 = 禁用这条，缺键 = 用默认（utils/shortcuts.ts）。 */
+  shortcut: { custom: Record<string, string> };
   advanced: { autoUpdate: boolean; crashReport: boolean; logLevel: string; aiEndpoint: string; aiModel: string };
+  /** 画布右键菜单的动作白名单：空 = 全部显示，裁剪规则在 canvas/menuActions.ts。 */
+  rightMenu: { enabled: string[] };
   recent: { maxCount: number };
   quota: { aiPoints: number; aiUsed: number };
 }
@@ -41,7 +45,9 @@ export const DEFAULT_SETTINGS: Settings = {
   format: { defaultLayout: "balanced", defaultThemeId: "default", autoFitOnOpen: true, topicWidthMode: "auto" },
   save: { autoSave: true, autoSaveIntervalMin: 5, historyCount: QUOTA.historyMax, backupOnSave: true, backupDir: "", backupKeepDays: QUOTA.trashKeepDays },
   network: { proxyMode: "system", proxyHost: "", proxyPort: 0, timeoutSec: 20 },
+  shortcut: { custom: {} },
   advanced: { autoUpdate: true, crashReport: false, logLevel: "info", aiEndpoint: "", aiModel: "" },
+  rightMenu: { enabled: [] },
   recent: { maxCount: QUOTA.recentMax },
   quota: { aiPoints: 0, aiUsed: 0 },
 };
@@ -54,8 +60,8 @@ interface SettingsStore {
   saving: boolean;
   error: string | null;
   load: () => Promise<void>;
-  /** 局部改一节；返回后 settings 已是新值，界面立刻生效。 */
-  patch: <K extends Section>(section: K, patch: Partial<Settings[K]>) => Promise<void>;
+  /** 局部改一节。返回落盘后真正的那一节；写失败返回 null（settings 保留乐观值 + error）。 */
+  patch: <K extends Section>(section: K, patch: Partial<Settings[K]>) => Promise<Settings[K] | null>;
   resetSection: (section: Section) => Promise<void>;
   /** 免费版点数用完后要限流的 AI 额度。 */
   spendAiPoints: (chars: number) => Promise<boolean>;
@@ -87,10 +93,20 @@ export const useSettings = create<SettingsStore>((set, get) => ({
     const next: Settings = { ...get().settings, [section]: { ...get().settings[section], ...value } };
     set({ settings: next, saving: true });
     try {
-      await native.configSet(section, value as Record<string, unknown>);
-      set({ saving: false, error: null });
+      const raw = (await native.configSet(section, value as Record<string, unknown>)) as Partial<Settings>;
+      // 以落盘结果为准，不信乐观值：Rust 会在写之前改写某些节（network 切走手动档就清掉
+      // 地址和端口）。继续显示改之前的值，就成了"框里填着、文件里没有"。
+      const stored = raw[section] as object | undefined;
+      const applied = { ...next[section], ...(stored ?? {}) } as Settings[Section];
+      set({
+        settings: { ...get().settings, [section]: applied } as Settings,
+        saving: false,
+        error: null,
+      });
+      return applied as Settings[typeof section];
     } catch (e) {
       set({ saving: false, error: e instanceof Error ? e.message : String(e) });
+      return null;
     }
   },
 

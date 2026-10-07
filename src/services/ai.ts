@@ -25,6 +25,30 @@ export interface AiRequest {
 /** 与「选项 → 高级」的密钥输入框约定的槽位名（Rust secret.rs 同名）。 */
 const SECRET_KEY = "ai-api-key";
 
+/**
+ * 往运行日志里记一条，且**永远不打断生成**。
+ *
+ * 日志是排查手段，不是功能本身：写盘的 IPC 挂了（磁盘满、目录不可写）不该让用户看到"AI 生成失败"。
+ * Rust 那侧按「选项 → 高级」的级别过滤，所以这里只管把事写清楚，够不够格由它判。
+ */
+function logEvent(level: "debug" | "info" | "warn" | "error", message: string): void {
+  void native.logWrite(level, message, "ai").catch(() => undefined);
+}
+
+/**
+ * 只取 origin（协议 + 主机 + 端口），路径和查询串都丢掉。
+ *
+ * 有些网关把凭据放在 `?api_key=…` 里，日志文件是用户会直接发给别人看的文本，
+ * 一条完整的 URL 就等于把密钥抄进了日志。端点配置本身在「选项 → 高级」里看得见，不必再抄一遍。
+ */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "（地址无法解析）";
+  }
+}
+
 const SYSTEM_PROMPT =
   "你是思维导图大纲生成器。只输出大纲本身：每行一个主题，第一行为中心主题，用制表符缩进表示层级，" +
   "不要解释、不要代码块围栏、不要编号。";
@@ -32,7 +56,9 @@ const SYSTEM_PROMPT =
 export async function generateOutline(req: AiRequest): Promise<string> {
   const endpoint = req.endpoint.trim();
   if (!endpoint) {
-    throw new Error("尚未配置 AI 接口地址，请在「选项 → 高级」里填写 OpenAI 兼容的服务地址（如 https://api.openai.com/v1）。");
+    throw new Error(
+      "尚未配置 AI 接口地址，请在「选项 → 高级」里填写 OpenAI 兼容的服务地址（如 https://api.openai.com/v1）。"
+    );
   }
   const model = req.model.trim();
   if (!model) {
@@ -40,7 +66,9 @@ export async function generateOutline(req: AiRequest): Promise<string> {
   }
   const apiKey = req.apiKey?.trim() ?? "";
   if (!apiKey) {
-    throw new Error("尚未配置 AI API Key，请在「选项 → 高级」里填写密钥；密钥只存在本机加密库，不会写进配置文件。");
+    throw new Error(
+      "尚未配置 AI API Key，请在「选项 → 高级」里填写密钥；密钥只存在本机加密库，不会写进配置文件。"
+    );
   }
 
   // 有人填baseUrl 有人填完整路径，两种都收，省一次"为什么 404"的客服问题。
@@ -50,6 +78,10 @@ export async function generateOutline(req: AiRequest): Promise<string> {
 
   // 超时读「选项 → 网络」：走代理的用户 20 秒不够，写死就是替用户做错了决定。
   const timeoutSec = Math.max(1, useSettings.getState().settings.network.timeoutSec || 20);
+  logEvent(
+    "debug",
+    `AI 请求 → ${originOf(url)}（模型 ${model}，超时 ${timeoutSec}s，描述 ${req.prompt.length} 字）`
+  );
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutSec * 1000);
   const outer = req.signal;
@@ -76,18 +108,38 @@ export async function generateOutline(req: AiRequest): Promise<string> {
     });
   } catch (e) {
     // 三种中止原因要分清楚：用户主动停 ≠ 网络慢 ≠ 地址错了。
-    if (outer?.aborted) throw new Error("AI 生成已取消。");
-    if (ctrl.signal.aborted) {
-      throw new Error(`AI 服务在 ${timeoutSec} 秒内没有响应，已超时；请在「选项 → 网络」里加大超时或检查代理设置。`);
+    if (outer?.aborted) {
+      logEvent("info", "AI 生成被用户取消。");
+      throw new Error("AI 生成已取消。");
     }
-    throw new Error(`无法连接 AI 服务：${e instanceof Error ? e.message : String(e)}；请检查接口地址与网络代理。`);
+    if (ctrl.signal.aborted) {
+      logEvent(
+        "error",
+        `AI 请求超时（${timeoutSec}s，${originOf(url)}）；代理档位 ${
+          useSettings.getState().settings.network.proxyMode
+        }`
+      );
+      throw new Error(
+        `AI 服务在 ${timeoutSec} 秒内没有响应，已超时；请在「选项 → 网络」里加大超时或检查代理设置。`
+      );
+    }
+    logEvent(
+      "error",
+      `AI 连接失败：${e instanceof Error ? e.message : String(e)}（${originOf(url)}）`
+    );
+    throw new Error(
+      `无法连接 AI 服务：${e instanceof Error ? e.message : String(e)}；请检查接口地址与网络代理。`
+    );
   } finally {
     clearTimeout(timer);
   }
 
   if (!res.ok) {
     // 只带状态码：有些网关的响应体会把 Authorization 回显出来，那句话不能进界面日志。
-    throw new Error(`AI 服务返回错误（HTTP ${res.status}），请确认接口地址、模型名称与 API Key 是否匹配。`);
+    logEvent("error", `AI 服务返回 HTTP ${res.status}（${originOf(url)}，模型 ${model}）`);
+    throw new Error(
+      `AI 服务返回错误（HTTP ${res.status}），请确认接口地址、模型名称与 API Key 是否匹配。`
+    );
   }
 
   let content = "";
@@ -95,9 +147,16 @@ export async function generateOutline(req: AiRequest): Promise<string> {
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     content = data.choices?.[0]?.message?.content ?? "";
   } catch {
-    throw new Error("AI 服务返回的不是可解析的 JSON，请确认填写的是 OpenAI 兼容的 chat/completions 接口地址。");
+    logEvent("error", `AI 响应不是可解析的 JSON（HTTP ${res.status}，${originOf(url)}）`);
+    throw new Error(
+      "AI 服务返回的不是可解析的 JSON，请确认填写的是 OpenAI 兼容的 chat/completions 接口地址。"
+    );
   }
-  if (!content.trim()) throw new Error("AI 服务没有返回任何内容，请换一种更具体的描述后重试。");
+  if (!content.trim()) {
+    logEvent("warn", `AI 返回空内容（${originOf(url)}，模型 ${model}）`);
+    throw new Error("AI 服务没有返回任何内容，请换一种更具体的描述后重试。");
+  }
+  logEvent("info", `AI 返回 ${content.length} 字（${originOf(url)}，模型 ${model}）`);
   return content;
 }
 
@@ -148,10 +207,16 @@ export async function runAiInsert(label: string): Promise<{ ok: boolean; message
   const endpoint = settings.advanced.aiEndpoint.trim();
   const model = settings.advanced.aiModel.trim();
   if (!endpoint) {
-    return { ok: false, message: "尚未配置 AI 接口地址，请在「选项 → 高级」里填写 OpenAI 兼容的服务地址后再生成。" };
+    return {
+      ok: false,
+      message: "尚未配置 AI 接口地址，请在「选项 → 高级」里填写 OpenAI 兼容的服务地址后再生成。",
+    };
   }
   if (!model) {
-    return { ok: false, message: "尚未配置 AI 模型名称，请在「选项 → 高级」里填写，例如 gpt-4o-mini。" };
+    return {
+      ok: false,
+      message: "尚未配置 AI 模型名称，请在「选项 → 高级」里填写，例如 gpt-4o-mini。",
+    };
   }
 
   let apiKey: string | null = null;
@@ -172,7 +237,14 @@ export async function runAiInsert(label: string): Promise<{ ok: boolean; message
   const q = settings.quota;
   // 先按输入字数拦一次，别为注定要失败的请求花网络钱；结算按生成出来的实际字数（"按上报字数计费"）。
   const precheck = canGenerate(label.length, q.aiPoints, q.aiUsed);
-  if (!precheck.ok) return { ok: false, message: precheck.reason };
+  if (!precheck.ok) {
+    // 配额拦下来时一分钱网络请求都没花，日志里要留得下"为什么点按钮没反应"这一句。
+    logEvent(
+      "warn",
+      `AI 配额不足：需要 ${precheck.need} 点，可用 ${Math.max(0, q.aiPoints - q.aiUsed)} 点`
+    );
+    return { ok: false, message: precheck.reason };
+  }
 
   let outline: string;
   try {
@@ -196,12 +268,21 @@ export async function runAiInsert(label: string): Promise<{ ok: boolean; message
   // 拿旧页算好的结果覆盖回去会吃掉那几步编辑。
   const committed = useDoc.getState().mutate("AI 生成", (live) => insertOutlineText(live, outline));
   if (!committed) {
+    // 生成了、也扣了点数，但树没落下去 —— 这一条必须留在日志里，否则事后完全无从解释。
+    logEvent("error", `AI 结果未能写入：文档已关闭（生成 ${outline.length} 字）`);
     return { ok: false, message: "AI 生成失败：文档已经关闭，生成结果没有写入。" };
   }
   const now = activePage(useDoc.getState());
   const added = now ? Object.keys(now.shapes).length - Object.keys(page.shapes).length : 0;
-  if (!added) return { ok: true, message: "AI 这次没有给出可识别的大纲，树没有变化。" };
+  if (!added) {
+    logEvent("warn", `AI 返回的 ${outline.length} 字没有被识别为大纲，树未变化`);
+    return { ok: true, message: "AI 这次没有给出可识别的大纲，树没有变化。" };
+  }
 
   const left = Math.max(0, after.aiPoints - after.aiUsed - billed.need);
-  return { ok: true, message: `AI 生成完成：新增 ${added} 个主题，消耗 ${billed.need} 点，剩余 ${left} 点。` };
+  logEvent("info", `AI 生成落树：新增 ${added} 个主题，扣 ${billed.need} 点，余 ${left} 点`);
+  return {
+    ok: true,
+    message: `AI 生成完成：新增 ${added} 个主题，消耗 ${billed.need} 点，剩余 ${left} 点。`,
+  };
 }

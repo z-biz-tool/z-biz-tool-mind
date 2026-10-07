@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::Emitter;
 
-use crate::{backup, config, paths, recent, secret};
+use crate::{backup, config, crash, log, net, paths, recent, secret};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,14 +69,73 @@ pub fn config_get() -> Result<Value, String> {
     Ok(config::read_config())
 }
 
+/// 把「高级」一节里那两个即时生效的键同步进 Rust。
+///
+/// 只有值真的变了才写日志：改一次设置会落好几条记录，级别没动还打印一次
+/// 「日志级别 info → info」就是在往日志里掺噪音。
+fn sync_advanced(cfg: &Value) {
+    let before = log::current_level();
+    let after = log::configure_from(cfg);
+    if before != after {
+        log::log(
+            "info",
+            "config",
+            &format!("日志级别 {before} → {after}（立即生效）"),
+        );
+    }
+    let crash_before = crash::enabled();
+    let crash_after = crash::configure_from(cfg);
+    if crash_before != crash_after {
+        log::log(
+            "info",
+            "config",
+            &format!(
+                "崩溃记录 {} → {}（立即生效）",
+                if crash_before { "开" } else { "关" },
+                if crash_after { "开" } else { "关" }
+            ),
+        );
+    }
+}
+
+/// 写一节配置。**先校验再落盘**：非法值一个字节都不许进 config.json。
+///
+/// 顺序很要紧 —— 先写再校验的话，用户填了个不能用的代理地址，文件里就留下一份
+/// 应用启动时会拒绝加载的设置，而他看到的是一个已经存进去的界面。
 #[tauri::command]
 pub fn config_set(page: String, patch: Value) -> Result<Value, String> {
-    config::merge_page(&page, &patch)
+    let mut merged = config::merged_page(&page, &patch)?;
+    if page == "network" {
+        net::sanitize(&mut merged);
+        net::validate(&merged)?;
+    }
+    config::write_config(&merged)?;
+
+    // 高级一节里有两个会立刻改变 Rust 行为的键：日志级别与崩溃记录。两者都不用在
+    // 改完之后重启 —— 关下去之后下一条记录就不该写、下一次 panic 就不该留痕。
+    if page == "advanced" {
+        sync_advanced(&merged);
+    }
+    if page == "network" {
+        if let Ok(st) = net::status(&merged) {
+            log::log("info", "config", &st.message);
+        }
+    }
+    let keys: Vec<String> = patch
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    log::log("debug", "config", &format!("更新 {page}: {}", keys.join(", ")));
+    Ok(merged)
 }
 
 #[tauri::command]
 pub fn config_reset_page(page: String) -> Result<Value, String> {
-    config::reset_page(&page)
+    let cfg = config::reset_page(&page)?;
+    if page == "advanced" {
+        sync_advanced(&cfg);
+    }
+    Ok(cfg)
 }
 
 // ---------- 最近打开 ----------
@@ -155,6 +214,16 @@ pub fn file_write_bytes(
     ));
     config::write_private(&tmp, &bytes)?;
     std::fs::rename(&tmp, &target).map_err(|e| format!("写入文件失败: {} ({})", path, e))?;
+    log::log(
+        "info",
+        "file",
+        &format!(
+            "写入 {}（{} 字节，{}）",
+            target.display(),
+            bytes.len(),
+            if existed { "覆盖，原件已进历史版本" } else { "新建" }
+        ),
+    );
     Ok(WriteResult {
         path: target.to_string_lossy().to_string(),
         bytes: bytes.len() as u64,
@@ -179,7 +248,9 @@ pub fn file_size(path: String) -> Result<u64, String> {
 #[tauri::command]
 pub fn file_remove(path: String) -> Result<String, String> {
     let p = paths::validate(&path, false)?;
-    backup::to_trash(p.to_str().ok_or_else(|| "路径不是合法 UTF-8".to_string())?)
+    let moved = backup::to_trash(p.to_str().ok_or_else(|| "路径不是合法 UTF-8".to_string())?)?;
+    log::log("info", "file", &format!("删除 {path}，已送入回收站"));
+    Ok(moved)
 }
 
 // ---------- 自动保存 ----------
@@ -299,6 +370,8 @@ pub fn trash_purge_older_than(days: i64) -> Result<usize, String> {
 #[tauri::command]
 pub fn secret_store(name: String, value: String) -> Result<bool, String> {
     secret::put(&name, &value)?;
+    // 只记条目名。日志是用户会直接发给别人的东西，密钥不行。
+    log::log("info", "secret", &format!("已保存密钥条目 {name}"));
     Ok(true)
 }
 

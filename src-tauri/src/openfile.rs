@@ -76,7 +76,12 @@ pub fn push(app: &AppHandle, raw: impl Iterator<Item = String>) {
 
 #[tauri::command]
 pub fn open_take_pending(state: tauri::State<'_, Pending>) -> Vec<String> {
-    state.take()
+    let got = state.take();
+    if !got.is_empty() {
+        // 双击打不开时第一件要看的事就是"队列里到底有没有这条路径"。
+        crate::log::log("info", "open", &format!("待打开路径交给前端: {}", got.join(" | ")));
+    }
+    got
 }
 
 #[cfg(test)]
