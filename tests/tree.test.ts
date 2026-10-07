@@ -1,7 +1,8 @@
 /**
  * 树原语（一条树六个投影里"树"的那一半）。
  * 覆盖的缺陷形状：删根、把父节点拖进自己的子树、第一个分支无处降级、
- * 浮动主题脱离主树、脏数据（parentId 指向不存在的节点）自愈但不能丢内容。
+ * 浮动主题脱离主树、拖浮动主题改位置后布局要认、挂回主树时浮动标记必须一起摘下、
+ * 脏数据（parentId 指向不存在的节点）自愈但不能丢内容。
  */
 import { done, eq, ok } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
@@ -26,6 +27,7 @@ import {
   swapSibling,
   toggleCollapsed,
   updateText,
+  updateTransform,
   visibleChildren,
 } from "../src/engine/tree.ts";
 import { plainText } from "../src/types/model.ts";
@@ -134,6 +136,23 @@ const unfl = setFloating(fl, B, 900, 700, false);
 eq("取消浮动回到根下", unfl.shapes[B].parentId, root);
 ok("取消浮动后 childIds 补齐", unfl.shapes[root].childIds.includes(B));
 eq("中心主题拒绝转浮动", setFloating(p, root, 1, 1).shapes[root].type, "MainIdea");
+
+// --- 拖动浮动主题：位置是唯一由用户决定的坐标（P-2），拖完布局要认，整枝子树跟着走
+const [withKid, bk] = add(fl, B, "B 的孩子");
+const dragged = updateTransform(withKid, B, { x: 1200, y: 800 });
+eq("只改 x/y", [dragged.shapes[B].transform.x, dragged.shapes[B].transform.y], [1200, 800]);
+eq("保留自己拖出来的尺寸", dragged.shapes[B].transform.w, fl.shapes[B].transform.w);
+eq("别的主题不受牵连", dragged.shapes[A].transform.x, fl.shapes[A].transform.x);
+const dBoxes = computeLayout(dragged).boxes;
+eq("浮动根按新坐标摆", [dBoxes[B].x, dBoxes[B].y], [1200, 800]);
+ok("子树跟着走", dBoxes[bk].x > 1200);
+ok("未知 id 是空操作", updateTransform(fl, "不存在的id", { x: 1 }) === fl);
+// 把浮动根挂回主树：浮动标记必须一起摘下，否则类型停在 Floating、导出照写 FreePostion
+const back = moveShape(fl, B, A);
+eq("挂回主树即不再是浮动主题", back.shapes[B].floating, false);
+eq("类型跟着层级重算", back.shapes[B].type, "SubTopic");
+eq("父的 childIds 补上", back.shapes[A].childIds.includes(B), true);
+ok("回到主树后仍在布局里", Boolean(computeLayout(back).boxes[B]));
 
 // --- 脏数据自愈
 const dirty = { ...p, shapes: { ...p.shapes, [A]: { ...p.shapes[A], parentId: "99999" } } };

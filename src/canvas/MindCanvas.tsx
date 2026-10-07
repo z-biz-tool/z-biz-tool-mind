@@ -53,6 +53,7 @@ import {
   toggleCollapsed,
   toggleRelationship,
   updateText,
+  updateTransform,
   addBoundary,
   addCallout,
   addSummary,
@@ -75,9 +76,12 @@ interface Rect {
   h: number;
 }
 
-/** 拖拽落点：mode=child 表示"成为它的子主题"，mode=gap 表示"插在两主题之间"。 */
+/**
+ * 拖拽落点：mode=child 表示"成为它的子主题"，mode=gap 表示"插在两主题之间"，
+ * mode=move 表示"把整枝浮动主题搬到这儿"（只有浮动根能落到空白处，x/y 是新盒子左上角）。
+ */
 interface DropTarget extends Rect {
-  mode: "child" | "gap";
+  mode: "child" | "gap" | "move";
   parentId: string;
   at: number | undefined;
 }
@@ -488,6 +492,14 @@ export function MindCanvas({ page }: MindCanvasProps) {
 
   const dragTopic = (e: ReactPointerEvent, id: string) => {
     const from = { x: e.clientX, y: e.clientY };
+    const start = toWorld(from.x, from.y);
+    const dragged = live.current.page.shapes[id];
+    // 只有浮动根的位置属于用户（P-2 的唯一定位例外）：它落在空白处就是搬到那儿，
+    // 落在别的主题上才走"挂上去"。主树上的主题位置由布局引擎写回，拖了也白拖。
+    const ownBox =
+      dragged?.floating && !dragged.parentId
+        ? live.current.paint.boxes.find((b) => b.id === id)
+        : undefined;
     let moving = false;
     let target: DropTarget | null = null;
     track(
@@ -496,14 +508,34 @@ export function MindCanvas({ page }: MindCanvasProps) {
         moving = true;
         const w = toWorld(ev.clientX, ev.clientY);
         target = dropTargetAt(live.current.page, live.current.paint, id, w.x, w.y);
+        if (!target && ownBox) {
+          target = {
+            mode: "move",
+            parentId: id,
+            at: undefined,
+            x: ownBox.x + (w.x - start.x),
+            y: ownBox.y + (w.y - start.y),
+            w: ownBox.w,
+            h: ownBox.h,
+          };
+        }
         setDrop(target);
       },
       () => {
         setDrop(null);
         if (!moving) return;
-        // 移进自己子树这种非法落点由 moveShape 自己拒绝，这里只负责不崩
         const t: DropTarget | null = target;
-        if (t) useDoc.getState().mutate("移动主题", (p) => moveShape(p, id, t.parentId, t.at));
+        if (!t) return;
+        if (t.mode === "move") {
+          // 落点盒子是左上角，transform 存的是中心（布局与 .emmx 的 CX/CY 同一个约定）；
+          // 不换算的话每拖一次就往左上偏半个盒子。取整：亚像素坐标存进文件只是噪声。
+          const x = Math.round(t.x + t.w / 2);
+          const y = Math.round(t.y + t.h / 2);
+          useDoc.getState().mutate("移动浮动主题", (p) => updateTransform(p, id, { x, y }));
+          return;
+        }
+        // 移进自己子树这种非法落点由 moveShape 自己拒绝，这里只负责不崩
+        useDoc.getState().mutate("移动主题", (p) => moveShape(p, id, t.parentId, t.at));
       }
     );
   };
@@ -1161,33 +1193,35 @@ export function MindCanvas({ page }: MindCanvasProps) {
               />
             ))}
 
-          {drop &&
-            (drop.mode === "child" ? (
-              <rect
-                x={drop.x - 4}
-                y={drop.y - 4}
-                width={drop.w + 8}
-                height={drop.h + 8}
-                rx={8}
-                fill="none"
+          {drop?.mode === "gap" ? (
+            <g pointerEvents="none">
+              <line
+                x1={drop.x}
+                y1={drop.y}
+                x2={drop.x + drop.w}
+                y2={drop.y}
                 stroke={ACCENT}
-                strokeWidth={2 / zoom}
-                pointerEvents="none"
+                strokeWidth={2.5 / zoom}
+                strokeLinecap="round"
               />
-            ) : (
-              <g pointerEvents="none">
-                <line
-                  x1={drop.x}
-                  y1={drop.y}
-                  x2={drop.x + drop.w}
-                  y2={drop.y}
-                  stroke={ACCENT}
-                  strokeWidth={2.5 / zoom}
-                  strokeLinecap="round"
-                />
-                <circle cx={drop.x} cy={drop.y} r={3 / zoom} fill={ACCENT} />
-              </g>
-            ))}
+              <circle cx={drop.x} cy={drop.y} r={3 / zoom} fill={ACCENT} />
+            </g>
+          ) : drop ? (
+            // child 是实线"挂进来"，move 是虚线带淡底"整枝搬走"，两种意图不该长一个样
+            <rect
+              x={drop.x - 4}
+              y={drop.y - 4}
+              width={drop.w + 8}
+              height={drop.h + 8}
+              rx={8}
+              fill={drop.mode === "move" ? ACCENT : "none"}
+              fillOpacity={drop.mode === "move" ? 0.08 : undefined}
+              stroke={ACCENT}
+              strokeWidth={2 / zoom}
+              strokeDasharray={drop.mode === "move" ? `${5 / zoom} ${4 / zoom}` : undefined}
+              pointerEvents="none"
+            />
+          ) : null}
 
           {marquee && (
             <rect

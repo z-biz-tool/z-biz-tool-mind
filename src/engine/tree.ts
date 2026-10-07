@@ -278,6 +278,10 @@ export function moveShape(page: Page, id: string, newParentId: string, at?: numb
   const ix = at === undefined ? list.length : Math.max(0, Math.min(at, list.length));
   list.splice(ix, 0, id);
   next = setChildren(next, newParentId, list);
+  // 浮动根被挂回主树时必须摘下浮动标记：否则它既有 parentId 又 floating:true，
+  // 类型永远停在 Floating（retypeSubtree 按设计跳过浮动主题），导出还照浮动写 FreePostion。
+  if (s.floating && !target.floating)
+    next = patch(next, id, { ...next.shapes[id], floating: false });
   // 浮动性跟着父走：普通主题移进浮动主题下即成为浮动主题的兄弟 -> 保持普通
   next = retypeSubtree(next, id);
   if (oldParent) next = retypeSubtree(next, oldParent);
