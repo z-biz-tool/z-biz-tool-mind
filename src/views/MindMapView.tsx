@@ -8,7 +8,7 @@
 import { useMemo } from "react";
 import { Button, ColorPicker, Segmented, Select, Tooltip } from "antd";
 import { LAYOUT_LABELS } from "../model/constants.ts";
-import { maxDepth, updateStyle } from "../engine/tree.ts";
+import { countTopics, maxDepth, updateStyle } from "../engine/tree.ts";
 import { applyPalette, styleFor } from "../engine/style.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { useUi } from "../stores/uiStore.ts";
@@ -22,7 +22,10 @@ const LAYOUT_OPTIONS = (Object.keys(LAYOUT_LABELS) as LayoutCode[]).map((code) =
 
 const LEVEL_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({ value: n, label: `${n} 级` }));
 
-const SIZE_OPTIONS = [10, 12, 14, 16, 18, 20, 24, 28, 36, 48].map((n) => ({ value: n, label: `${n}` }));
+const SIZE_OPTIONS = [10, 12, 14, 16, 18, 20, 24, 28, 36, 48].map((n) => ({
+  value: n,
+  label: `${n}`,
+}));
 
 export function MindMapView({ page }: { page: Page }) {
   const mutate = useDoc((s) => s.mutate);
@@ -42,7 +45,8 @@ export function MindMapView({ page }: { page: Page }) {
     if (!selection.length) return;
     mutate(label, (p) => {
       let out = p;
-      for (const id of selection) if (out.shapes[id]) out = updateStyle(out, id, patch(out.shapes[id]));
+      for (const id of selection)
+        if (out.shapes[id]) out = updateStyle(out, id, patch(out.shapes[id]));
       return out;
     });
   };
@@ -50,7 +54,7 @@ export function MindMapView({ page }: { page: Page }) {
   /** 有多少主题被用户单独配过色 —— 它决定"恢复主题配色"这一钮有没有事可做。 */
   const pinnedCount = useMemo(
     () => Object.values(page.shapes).filter((s) => ((s.style.mask ?? 0) & 1) !== 0).length,
-    [page],
+    [page]
   );
 
   /**
@@ -69,7 +73,7 @@ export function MindMapView({ page }: { page: Page }) {
             if (rest) style.mask = rest;
             else delete style.mask;
             return [id, { ...s, style }];
-          }),
+          })
         ),
       };
       return applyPalette(cleared);
@@ -110,7 +114,9 @@ export function MindMapView({ page }: { page: Page }) {
           options={LEVEL_OPTIONS.slice(0, Math.max(2, Math.min(9, deepest + 1)))}
           onChange={(v) => setDisplayLevels(Number(v))}
         />
-        <span className="zm-bar-label">共 {deepest + 1} 级 · {Object.keys(page.shapes).length} 个主题</span>
+        <span className="zm-bar-label">
+          共 {deepest + 1} 级 · {countTopics(page)} 个主题
+        </span>
         <div className="zm-bar-spacer" />
         <span className="zm-bar-label">
           样式{selection.length > 1 ? ` ${selection.length} 个主题` : ""}
@@ -131,7 +137,9 @@ export function MindMapView({ page }: { page: Page }) {
           disabled={!picked}
           value={look?.font.color}
           onChangeComplete={(c) =>
-            styleSelected("改文字色", (s) => ({ font: { ...s.style.font, color: c.toHexString() } }))
+            styleSelected("改文字色", (s) => ({
+              font: { ...s.style.font, color: c.toHexString() },
+            }))
           }
         />
         <Select
@@ -140,7 +148,9 @@ export function MindMapView({ page }: { page: Page }) {
           disabled={!picked}
           value={look?.font.size}
           options={SIZE_OPTIONS}
-          onChange={(size: number) => styleSelected("改字号", (s) => ({ font: { ...s.style.font, size } }))}
+          onChange={(size: number) =>
+            styleSelected("改字号", (s) => ({ font: { ...s.style.font, size } }))
+          }
         />
         <Tooltip title="加粗只改选中的主题">
           <Button
@@ -150,7 +160,9 @@ export function MindMapView({ page }: { page: Page }) {
             onClick={() =>
               // 取推导值来翻转：中心主题本来就没存 bold，对着 undefined 取反会得到 true，
               // 用户看下去就是"第一次点没反应"。
-              styleSelected("切换加粗", (s) => ({ font: { ...s.style.font, bold: !styleFor(page, s).font.bold } }))
+              styleSelected("切换加粗", (s) => ({
+                font: { ...s.style.font, bold: !styleFor(page, s).font.bold },
+              }))
             }
           >
             <b>B</b>
@@ -161,7 +173,10 @@ export function MindMapView({ page }: { page: Page }) {
             <Button
               size="small"
               onClick={() =>
-                styleSelected("跟随主题", (s) => ({ fill: undefined, mask: (s.style.mask ?? 0) & ~1 }))
+                styleSelected("跟随主题", (s) => ({
+                  fill: undefined,
+                  mask: (s.style.mask ?? 0) & ~1,
+                }))
               }
             >
               跟随主题
@@ -169,16 +184,26 @@ export function MindMapView({ page }: { page: Page }) {
           </Tooltip>
         )}
         {pinnedCount ? (
-          <Tooltip title={`当前有 ${pinnedCount} 个主题被单独配过色；这一步把它们全部交还给主题。之后仍可用撤销恢复。`}>
+          <Tooltip
+            title={`当前有 ${pinnedCount} 个主题被单独配过色；这一步把它们全部交还给主题。之后仍可用撤销恢复。`}
+          >
             <Button size="small" onClick={resetTheme}>
               恢复主题配色（{pinnedCount}）
             </Button>
           </Tooltip>
         ) : null}
-        <button type="button" className="zm-btn zm-btn-ghost" onClick={() => collapseBranches(true)}>
+        <button
+          type="button"
+          className="zm-btn zm-btn-ghost"
+          onClick={() => collapseBranches(true)}
+        >
           全部折叠
         </button>
-        <button type="button" className="zm-btn zm-btn-ghost" onClick={() => collapseBranches(false)}>
+        <button
+          type="button"
+          className="zm-btn zm-btn-ghost"
+          onClick={() => collapseBranches(false)}
+        >
           全部展开
         </button>
       </div>

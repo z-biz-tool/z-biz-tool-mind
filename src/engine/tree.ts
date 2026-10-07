@@ -191,6 +191,9 @@ export function removeShape(page: Page, id: string): Page {
   const s = page.shapes[id];
   if (!s || !s.parentId) return page;
   const doomed = new Set(subtreeIds(page, id));
+  // 标注不在主题树上（子树顺着 childIds 走），删宿主时得另顺着 calloutIds 把它一起带走
+  for (const d of [...doomed])
+    for (const c of page.shapes[d]?.extras.calloutIds ?? []) doomed.add(c);
   const parent = page.shapes[s.parentId];
   let next = setChildren(
     page,
@@ -212,7 +215,42 @@ export function removeShape(page: Page, id: string): Page {
       next = patch(next, key, { ...sh, extras: { ...sh.extras, biLinks: links } });
     }
   }
-  return next;
+  return pruneOverlays(next, doomed);
+}
+
+/**
+ * 主题删掉之后，盖着它的外框/概要、挂在它身上的标注要一起收尾。
+ * 成员被删空的覆盖层不再是任何东西的边框，留着只会画出一个空框，所以连形带它的概要主题一起删；
+ * 本来就一个成员都没有的（陌生 id 读进来的）不动 —— 那不是我们造的，删它等于改坏别人的文件。
+ */
+function pruneOverlays(page: Page, doomed: Set<string>): Page {
+  const shapes: Record<string, Shape> = {};
+  const gone = new Set<string>();
+  for (const [id, s] of Object.entries(page.shapes)) {
+    if (s.type === "Boundary" || s.type === "Summary") {
+      const covered = s.extras.covered ?? [];
+      const left = covered.filter((c) => !doomed.has(c));
+      if (covered.length && !left.length) {
+        gone.add(id);
+        for (const c of s.childIds) gone.add(c);
+        continue;
+      }
+      if (covered.length && left.length !== covered.length) {
+        shapes[id] = { ...s, extras: { ...s.extras, covered: left } };
+        continue;
+      }
+    }
+    shapes[id] = s;
+  }
+  // 宿主删掉之后，calloutIds 里可能留下指向不存在的形状的引用：一并摘干净，
+  // 否则布局层要逐个防着 undefined。
+  for (const [id, s] of Object.entries(shapes)) {
+    const cs = s.extras.calloutIds;
+    if (cs?.some((c) => !shapes[c]))
+      shapes[id] = { ...s, extras: { ...s.extras, calloutIds: cs.filter((c) => shapes[c]) } };
+  }
+  for (const id of gone) delete shapes[id];
+  return { ...page, shapes };
 }
 
 /**
@@ -386,6 +424,104 @@ export function setRelationshipText(page: Page, id: string, text: string): Page 
   };
 }
 
+/** 覆盖层只盖主题：混进来的标注/外框 id、重复 id 与已删的 id 都在这一步滤掉。 */
+function coverable(page: Page, ids: string[]): string[] {
+  return [...new Set(ids)].filter((id) => isTopic(page.shapes[id]?.type));
+}
+
+const sameMembers = (a: string[], b: string[]) =>
+  a.length === b.length && [...a].sort().join(";") === [...b].sort().join(";");
+
+/** 找已经正好盖着这批主题的那一层：再点一次应该是取消，而不是叠第二层。 */
+function layerOn(page: Page, type: "Boundary" | "Summary", covered: string[]): Shape | undefined {
+  return Object.values(page.shapes).find(
+    (s) => s.type === type && sameMembers(s.extras.covered ?? [], covered)
+  );
+}
+
+/**
+ * 外框：给选中主题盖一层矩形。少于两个主题不盖 —— 一个主题自己就是框，
+ * 盖上去只会多出一条线，亿图也是这么拦的。
+ */
+export function addBoundary(page: Page, ids: string[]): { page: Page; id: string | null } {
+  const covered = coverable(page, ids);
+  if (covered.length < 2) return { page, id: null };
+  const hit = layerOn(page, "Boundary", covered);
+  if (hit) return { page: removeOverlay(page, hit.id), id: null };
+  const s = createShape(nextShapeId(page), "Boundary", "", null);
+  s.extras.covered = covered;
+  return { page: patch(page, s.id, s), id: s.id };
+}
+
+/**
+ * 概要：大括号 + 括号尖上那个概要主题。
+ * 亿图把概要主题挂在 Summary 形状自己下面（`<SubLevel V="127"/>`），不是挂在中心主题上，
+ * 所以这里也建父子边 —— 写回去才是同一个结构。
+ */
+export function addSummary(
+  page: Page,
+  ids: string[],
+  text = "概要"
+): { page: Page; id: string | null } {
+  const covered = coverable(page, ids);
+  if (!covered.length) return { page, id: null };
+  const hit = layerOn(page, "Summary", covered);
+  if (hit) return { page: removeOverlay(page, hit.id), id: null };
+  const sum = createShape(nextShapeId(page), "Summary", "", null);
+  sum.extras.covered = covered;
+  const withSum = patch(page, sum.id, sum);
+  const label = createShape(nextShapeId(withSum), "SummaryTopic", text, sum.id);
+  sum.childIds = [label.id];
+  return { page: patchMany(withSum, [sum, label]), id: sum.id };
+}
+
+/** 标注：在宿主主题上挂一个气泡，多个按挂上的顺序排在宿主外侧。 */
+export function addCallout(
+  page: Page,
+  hostId: string,
+  text = ""
+): { page: Page; id: string | null } {
+  const host = page.shapes[hostId];
+  if (!host || !isTopic(host.type)) return { page, id: null };
+  const c = createShape(nextShapeId(page), "Callout", text, null);
+  const withCallout = patch(page, c.id, c);
+  return {
+    page: patchMany(withCallout, [
+      {
+        ...host,
+        extras: { ...host.extras, calloutIds: [...(host.extras.calloutIds ?? []), c.id] },
+      },
+    ]),
+    id: c.id,
+  };
+}
+
+/** 删掉一个覆盖层：外框、概要（连同它的概要主题）、或单个标注（同时从宿主身上摘掉引用）。 */
+export function removeOverlay(page: Page, id: string): Page {
+  const s = page.shapes[id];
+  if (!s) return page;
+  const gone = new Set<string>([id, ...(s.type === "Summary" ? s.childIds : [])]);
+  const shapes: Record<string, Shape> = {};
+  for (const [k, v] of Object.entries(page.shapes)) {
+    if (gone.has(k)) continue;
+    const cs = v.extras.calloutIds;
+    if (cs?.includes(id))
+      shapes[k] = { ...v, extras: { ...v.extras, calloutIds: cs.filter((c) => c !== id) } };
+    else shapes[k] = v;
+  }
+  return { ...page, shapes };
+}
+
+/** 盖住某批主题的层（外框/概要）：给"选中主题→删除外框"这类反查用。 */
+export function layersCovering(page: Page, ids: string[]): Shape[] {
+  const set = new Set(ids);
+  return Object.values(page.shapes).filter(
+    (s) =>
+      (s.type === "Boundary" || s.type === "Summary") &&
+      (s.extras.covered ?? []).some((c) => set.has(c))
+  );
+}
+
 export function updateStyle(page: Page, id: string, style: Partial<Shape["style"]>): Page {
   const s = page.shapes[id];
   if (!s) return page;
@@ -411,11 +547,26 @@ export function normalize(page: Page): Page {
   const roots: string[] = [];
   for (const id of Object.keys(shapes)) {
     const s = shapes[id];
-    if (!isTopic(s.type) && s.type !== "Callout") continue;
+    if (!isTopic(s.type)) continue;
     const p = s.parentId && shapes[s.parentId] ? s.parentId : null;
     s.parentId = p;
     if (p) shapes[p].childIds.push(id);
     else roots.push(id);
+  }
+  // 1b) 标注框不在主题树上。亿图有的文件把宿主的 id 写在标注的 <Super> 里，
+  // 这条边必须落到宿主身上的 calloutIds：留在 parentId 上，它就会被当成"多出来的根"
+  // 收编成中心主题的一根分支（实测 ThemeBase 的 110 号标注第一次编辑就变了形），
+  // 写回去还会多出一个我们发明不了的 <Super>。
+  for (const id of Object.keys(shapes)) {
+    const s = shapes[id];
+    if (s.type !== "Callout") continue;
+    const p = s.parentId && shapes[s.parentId] ? s.parentId : null;
+    if (p) {
+      const list = shapes[p].extras.calloutIds ?? [];
+      if (!list.includes(id))
+        shapes[p] = { ...shapes[p], extras: { ...shapes[p].extras, calloutIds: [...list, id] } };
+    }
+    s.parentId = null;
   }
   // 2) 根：优先原有 rootId，其次唯一的 MainIdea，最后任意一个无父主题。
   const mainIdea = roots.find((id) => shapes[id].type === "MainIdea");
@@ -459,8 +610,15 @@ export function normalize(page: Page): Page {
   return next;
 }
 
-/** 深度：根为 0。布局层按它决定"显示层级数"裁剪。 */
-export function maxDepth(page: Page): number {
+/**
+ * "本页有多少个主题"只有一处算法：外框、概要、标注都是形状但不是主题，
+ * 数 shapes 会把它们算进去（状态栏一度就是这么虚报的）。
+ */
+export function countTopics(page: Page): number {
+  return Object.values(page.shapes).filter((s) => isTopic(s.type)).length;
+}
+
+/** 深度：根为 0。布局层按它决定"显示层级数"裁剪。 */ export function maxDepth(page: Page): number {
   let max = 0;
   const walk = (id: string, d: number) => {
     if (d > max) max = d;

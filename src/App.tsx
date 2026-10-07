@@ -23,6 +23,7 @@ import { ExportDialog } from "./views/ExportDialog.tsx";
 import { TopicInfoDialog } from "./views/TopicInfoDialog.tsx";
 import { OptionsView } from "./views/OptionsView.tsx";
 import { activeDoc, activePage, depthOf, dirtyOf, useDoc } from "./stores/docStore.ts";
+import { countTopics } from "./engine/tree.ts";
 import { PROJECTIONS, useUi, type Projection } from "./stores/uiStore.ts";
 import { startRecentListeners, useRecent } from "./stores/recentStore.ts";
 import { useSettings } from "./stores/settingsStore.ts";
@@ -593,7 +594,7 @@ function Shell() {
         {path ?? "未保存"}
       </span>
       <span>{dirty ? "有未保存的修改" : savedAt ? `已保存 ${clockOf(savedAt)}` : "尚未保存"}</span>
-      {page && <span>{Object.keys(page.shapes).length} 个主题</span>}
+      {page && <span>{countTopics(page)} 个主题</span>}
       {page && selection.length > 1 && <span>选中 {selection.length} 个</span>}
       <span>{warnings.length ? `解析告警 ${warnings.length} 条` : "无解析告警"}</span>
       <span>

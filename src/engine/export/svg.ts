@@ -121,11 +121,12 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
     });
   }
   const pad = opts.padding ?? 40;
-  // 概要主题（Summary 的 SummaryTopic 孩子）走 boxes 这条路：它本来就是个主题的样子，
-  // 进 boxes 就自动拿到同一套圆角矩形 + 折行 + 命中测试，不必再有第二条画法。
+  // 概要主题与标注框走 boxes 这条路：它们本来就是个"有文字的框"，
+  // 进 boxes 就自动拿到同一套圆角矩形 + 折行 + 命中测试 + 就地改字，不必再有第二条画法。
   const overlays = overlayShapes(page, layout.boxes, palette);
+  const isBubble = (o: OverlayPaint) => o.kind === "label" || o.kind === "callout";
   for (const o of overlays) {
-    if (o.kind !== "label") continue;
+    if (!isBubble(o)) continue;
     boxes.push({
       id: o.id,
       x: o.x,
@@ -153,6 +154,7 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
     boxes,
     connectors: layout.connectors,
     rels: relationshipPaths(page, layout.boxes),
+    // 标注泡本身已经在 boxes 里画过了，留在 overlays 里是为了那根引导线
     overlays: overlays.filter((o) => o.kind !== "label"),
     width: layout.width + pad * 2,
     height: layout.height + pad * 2,
@@ -232,7 +234,8 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
       );
     }
   }
-  // 大括号与标注框压在主题之上：它们是"盖在分支外面"的一层，画在框底下就等于没画。
+  // 大括号压在主题之上：它是"盖在分支外面"的一层，画在框底下就等于没画。
+  // 标注泡本身走 boxes 那条路（可点、可改字），这里只剩它的引导线。
   for (const o of p.overlays) {
     if (o.kind === "brace") {
       out.push(
@@ -241,19 +244,7 @@ export function buildSvg(page: Page, opts: RenderOptions = {}): string {
       continue;
     }
     if (o.kind !== "callout") continue;
-    out.push(
-      `<path d="${esc(o.d ?? "")}" fill="none" stroke="${o.line}" stroke-width="1"/>`,
-      `<rect x="${round(o.x)}" y="${round(o.y)}" width="${round(o.w)}" height="${round(o.h)}" rx="${round(Math.min(o.rounding, o.w / 2, o.h / 2))}" ` +
-        `fill="${o.fill}" stroke="${o.line}" stroke-width="${round(o.lineWidth)}"/>`
-    );
-    const lh = lineGap(o.fontSize);
-    const startY = o.y + o.h / 2 - ((o.lines.length - 1) * lh) / 2 + o.fontSize * 0.35;
-    for (const [ix, line] of o.lines.entries()) {
-      out.push(
-        `<text x="${round(o.x + o.w / 2)}" y="${round(startY + ix * lh)}" font-size="${round(o.fontSize)}" ` +
-          `text-anchor="middle"${o.bold ? ' font-weight="bold"' : ""} fill="${o.textColor}">${esc(line)}</text>`
-      );
-    }
+    out.push(`<path d="${esc(o.d ?? "")}" fill="none" stroke="${o.line}" stroke-width="1"/>`);
   }
   // 关系线压在主题之上：它本来就常从别的主题身上跨过去，画在框底下等于没画
   // （第一版就是这样，DOM 里数得出那条 path，屏幕上却一个字都没露）。

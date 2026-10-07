@@ -18,9 +18,20 @@ import { done, eq, near, ok, skip } from "./_harness.ts";
 import { parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
 import { computeLayout, overlayShapes, type OverlayPaint } from "../src/engine/layout.ts";
 import { buildSvg, paintPage } from "../src/engine/export/svg.ts";
-import { createPage, createShape } from "../src/model/factory.ts";
-import { insertChild, setCollapsed } from "../src/engine/tree.ts";
-import { type Page, type Shape } from "../src/types/model.ts";
+import { createDocument, createPage, createShape } from "../src/model/factory.ts";
+import {
+  addBoundary,
+  addCallout,
+  addSummary,
+  countTopics,
+  insertChild,
+  layersCovering,
+  normalize,
+  removeOverlay,
+  removeShape,
+  setCollapsed,
+} from "../src/engine/tree.ts";
+import { plainText, type DocumentModel, type Page, type Shape } from "../src/types/model.ts";
 
 const TEMPLATE = join(process.cwd(), "_research", "extract", "overlay", "boundary-summary.emmx");
 const DOC4 = join(process.cwd(), "_research", "extract", "doc4", "doc.zip");
@@ -152,6 +163,20 @@ if (!existsSync(DOC4)) {
     press.length === 0,
     JSON.stringify(press.map((p) => [p.id, p.x, p.y, p.w, p.h]))
   );
+  // 标注泡走 boxes 那条路：它因此自动可点、可选中、可就地改字；
+  // 引导线仍留在 overlays 里 —— 两边都少一个，屏幕上就只剩半个标注。
+  const painted = paintPage(page, {});
+  const inBoxes = bubbles.filter((b) => painted.boxes.some((x) => x.id === b.id));
+  eq("标注泡进了 boxes（所以点得中、改得了字）", inBoxes.length, bubbles.length);
+  eq(
+    "引导线还在 overlays 里",
+    painted.overlays.filter((o) => o.kind === "callout").length,
+    bubbles.length
+  );
+  ok(
+    "每根引导线都真的带几何",
+    painted.overlays.every((o) => o.kind !== "callout" || Boolean(o.d))
+  );
 }
 
 // ---------------------------------------------------------------- 合成页：跟布局走
@@ -263,6 +288,167 @@ if (!existsSync(DOC4)) {
     ov[0].x + ov[0].w <= ov[1].x || ov[1].x + ov[1].w <= ov[0].x,
     JSON.stringify(ov.map((o) => [o.x, o.w]))
   );
+}
+
+// ------------------------------------------------- 造：外框/概要/标注的编辑原语
+
+function twoKids() {
+  let p = createPage("造覆盖层");
+  p = insertChild(p, p.rootId, "甲").page;
+  p = insertChild(p, p.rootId, "乙").page;
+  const [a, b] = p.shapes[p.rootId].childIds;
+  return { p, a, b };
+}
+
+{
+  const { p, a, b } = twoKids();
+
+  const one = addBoundary(p, [a]);
+  ok("一个主题不盖外框（它自己就是框）", one.id === null && one.page === p);
+
+  const r = addBoundary(p, [a, b, "查无此形"]);
+  const bd = r.page.shapes[r.id ?? ""];
+  ok("两个主题盖出一层外框", bd?.type === "Boundary");
+  eq("陌生 id 进不了成员表", bd?.extras.covered?.join(";"), `${a};${b}`);
+  eq("外框不挂父", bd?.parentId, null);
+  eq("外框不进主题树", p.shapes[p.rootId].childIds.join(";"), `${a};${b}`);
+
+  const again = addBoundary(r.page, [b, a]);
+  ok("同一批主题再点一次是取消，不是叠第二层", again.id === null && !again.page.shapes[r.id ?? ""]);
+
+  const nz = normalize(r.page);
+  eq("normalize 不动外框的成员", nz.shapes[r.id ?? ""]?.extras.covered?.join(";"), `${a};${b}`);
+  eq("normalize 不把外框收编成主题", nz.shapes[r.id ?? ""]?.type, "Boundary");
+  eq("外框仍然不在根的孩子里", nz.shapes[nz.rootId].childIds.includes(r.id ?? ""), false);
+  eq("盖了外框不多数一个主题", countTopics(r.page), countTopics(p));
+  eq(
+    "反查：盖住甲的层找得回来",
+    layersCovering(nz, [a]).map((s) => s.id),
+    [r.id]
+  );
+}
+
+{
+  const { p, a, b } = twoKids();
+  const r = addSummary(p, [a, b], "小结");
+  const sum = r.page.shapes[r.id ?? ""];
+  ok("概要形状建出来了", sum?.type === "Summary");
+  eq("概要盖住选中的两个主题", sum?.extras.covered?.join(";"), `${a};${b}`);
+  const labelId = sum?.childIds[0] ?? "";
+  eq("概要主题挂在 Summary 自己下面（亿图的 <SubLevel>）", sum?.childIds.length, 1);
+  eq("概要主题认 Summary 当爹", r.page.shapes[labelId]?.parentId, r.id);
+  eq(
+    "概要主题的文字",
+    plainText(r.page.shapes[labelId]?.text ?? { paragraphs: [], characters: [] }),
+    "小结"
+  );
+
+  const nz = normalize(r.page);
+  eq(
+    "normalize 保住 Summary→SummaryTopic 这条边",
+    nz.shapes[r.id ?? ""]?.childIds.join(";"),
+    labelId
+  );
+  const ov = overlayShapes(nz, computeLayout(nz).boxes);
+  eq("概要主题本身算一个主题", countTopics(nz), countTopics(p) + 1);
+  eq("标注不多数主题", countTopics(addCallout(nz, a, "x").page), countTopics(nz));
+  eq("概要画出大括号", ov.filter((o) => o.kind === "brace").length, 1);
+  eq("括号尖上画出概要主题", ov.filter((o) => o.kind === "label").length, 1);
+
+  const off = addSummary(r.page, [b, a], "小结");
+  ok("同一批主题再点一次取消概要", off.id === null && !off.page.shapes[r.id ?? ""]);
+  ok("概要主题跟着一起删", !off.page.shapes[labelId]);
+}
+
+{
+  const { p, a, b } = twoKids();
+  const r = addCallout(p, a, "备注");
+  const cid = r.id ?? "";
+  ok("标注形状建出来了", r.page.shapes[cid]?.type === "Callout");
+  eq("宿主记下了标注", r.page.shapes[a].extras.calloutIds?.join(";"), cid);
+  eq("标注自己不认父", r.page.shapes[cid]?.parentId, null);
+  eq("标注不进主题树", r.page.shapes[r.page.rootId].childIds.join(";"), `${a};${b}`);
+
+  const nz = normalize(r.page);
+  eq("normalize 之后标注还是标注", nz.shapes[cid]?.type, "Callout");
+  eq("normalize 不把标注挂到根下", nz.shapes[nz.rootId].childIds.includes(cid), false);
+  const boxes = computeLayout(nz).boxes;
+  ok("标注不在布局的格子里", !boxes[cid]);
+  eq(
+    "但标注作为覆盖层画得出来",
+    overlayShapes(nz, boxes).filter((o) => o.kind === "callout").length,
+    1
+  );
+
+  // 亿图有的文件把宿主写在标注自己的 <Super> 上：这条边要归位到 calloutIds，不能变成一根分支
+  let viaSuper = r.page;
+  viaSuper = {
+    ...viaSuper,
+    shapes: { ...viaSuper.shapes, [cid]: { ...viaSuper.shapes[cid], parentId: b } },
+  };
+  const nz2 = normalize(viaSuper);
+  eq("<Super> 反查回 calloutIds", nz2.shapes[b].extras.calloutIds?.join(";"), cid);
+  eq("归位之后标注不再认父", nz2.shapes[cid].parentId, null);
+  eq("归位之后标注不是 b 的孩子", nz2.shapes[b].childIds.includes(cid), false);
+
+  const dropped = removeOverlay(nz, cid);
+  eq("删掉标注：宿主身上的引用一起摘", dropped.shapes[a].extras.calloutIds?.length ?? 0, 0);
+  ok("删掉标注：形状本身也没了", !dropped.shapes[cid]);
+}
+
+{
+  // 删除主题时覆盖层要跟着收尾，否则会留下一个盖着空气的空框
+  const { p, a, b } = twoKids();
+  const bd = addBoundary(p, [a, b]).page;
+  const bdId = Object.keys(bd.shapes).find((k) => bd.shapes[k].type === "Boundary") ?? "";
+  const afterOne = removeShape(bd, a);
+  eq("删掉一个成员：外框缩到剩下的那个", afterOne.shapes[bdId]?.extras.covered?.join(";"), b);
+  const afterAll = removeShape(afterOne, b);
+  ok("成员删光：外框 itself 也不再留着", !afterAll.shapes[bdId]);
+
+  const c = addCallout(p, a, "x");
+  const cid = c.id ?? "";
+  const gone = removeShape(c.page, a);
+  ok("删掉宿主：它身上的标注一起删", !gone.shapes[cid]);
+
+  // 陌生文件里 covered 本来就空的层不是我们造的，不能被无关的删除牵连
+  let odd = addBoundary(p, [a, b]).page;
+  const oddId = Object.keys(odd.shapes).find((k) => odd.shapes[k].type === "Boundary") ?? "";
+  odd = {
+    ...odd,
+    shapes: { ...odd.shapes, [oddId]: { ...odd.shapes[oddId], extras: { covered: [] } } },
+  };
+  const untouched = removeShape(odd, a);
+  ok("空成员的外框原样留着（等写回时按陌生数据带回）", Boolean(untouched.shapes[oddId]));
+}
+
+{
+  // 造出来的东西必须能写回 .emmx 再读回来 —— 否则用户点完按钮只是看见一个假象
+  const { p, a, b } = twoKids();
+  let page = addBoundary(p, [a, b]).page;
+  page = addSummary(page, [a], "要点").page;
+  page = addCallout(page, b, "注").page;
+  const doc: DocumentModel = { ...createDocument("覆盖层往返"), pages: [page] };
+  const back = (await parseEmmx(await writeEmmx(doc))).doc.pages[0];
+  const kindOf = (t: string) => Object.values(back.shapes).find((s) => s.type === t);
+  ok("外框写回去还在", Boolean(kindOf("Boundary")));
+  eq("外框的成员还在", kindOf("Boundary")?.extras.covered?.join(";"), `${a};${b}`);
+  ok("概要写回去还在", Boolean(kindOf("Summary")));
+  eq("概要盖住的还是那一个", kindOf("Summary")?.extras.covered?.join(";"), a);
+  ok("概要主题作为 SummaryTopic 回来了", Boolean(kindOf("SummaryTopic")));
+  eq(
+    "概要主题还挂在 Summary 下面",
+    kindOf("Summary")?.childIds.join(";"),
+    kindOf("SummaryTopic")?.id
+  );
+  const host = back.shapes[b];
+  eq("标注的宿主关系回来了", host?.extras.calloutIds?.length, 1);
+  eq(
+    "标注的文字回来了",
+    plainText(back.shapes[host.extras.calloutIds![0]]?.text ?? { paragraphs: [], characters: [] }),
+    "注"
+  );
+  eq("往返之后标注没有变成主题", back.shapes[host.extras.calloutIds![0]]?.type, "Callout");
 }
 
 done();

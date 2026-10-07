@@ -41,6 +41,7 @@ import {
   insertSibling,
   moveShape,
   promote,
+  removeOverlay,
   removeShape,
   setCollapsed,
   setRelationshipText,
@@ -50,6 +51,9 @@ import {
   toggleCollapsed,
   toggleRelationship,
   updateText,
+  addBoundary,
+  addCallout,
+  addSummary,
 } from "../engine/tree.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
@@ -548,12 +552,21 @@ export function MindCanvas({ page }: MindCanvasProps) {
     const doc = useDoc.getState();
     const pg = live.current.page;
     if (!doc.hist) return;
+    // 覆盖层没有 parentId：走 removeShape 会和"中心主题不可删"一起被拒掉，得先分出去
+    const layers = ids.filter((id) =>
+      ["Callout", "Boundary", "Summary"].includes(pg.shapes[id]?.type ?? "")
+    );
     const doomed = ids.filter((id) => Boolean(pg.shapes[id]?.parentId));
-    if (!doomed.length) return; // 中心主题不可删（removeShape 也会拒）
-    const gone = new Set(doomed);
+    if (!doomed.length && !layers.length) return; // 中心主题不可删（removeShape 也会拒）
+    const gone = new Set([...doomed, ...layers]);
     let back: string | null = pg.shapes[doomed[0]]?.parentId ?? null;
     while (back && gone.has(back)) back = pg.shapes[back]?.parentId ?? null;
-    doc.mutate("删除主题", (p) => doomed.reduce((q, id) => removeShape(q, id), p));
+    doc.mutate(layers.length && !doomed.length ? "删除覆盖层" : "删除主题", (p) =>
+      layers.reduce(
+        (q, id) => removeOverlay(q, id),
+        doomed.reduce((q, id) => removeShape(q, id), p)
+      )
+    );
     doc.select([back ?? pg.rootId], back ?? pg.rootId);
   };
 
@@ -667,10 +680,10 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const rxOf = (b: ShapePaint) => Math.min(b.rounding, b.w / 2, b.h / 2);
 
   // ---------------------------------------------------------- 快捷操作条（§3.1）
-  // 单选给主题动作；多选只给两个：一次作用在几十个主题上的按钮太容易失手，
-  // 而"连一条关系线"恰好只在两点之间有意义。编辑中让位给输入框。
+  // 单选给主题动作；多选给"盖一层"的动作（外框/概要天生要两个以上主题），
+  // 而"连一条关系线"只在两点之间有意义。编辑中让位给输入框。
   const barBoxes =
-    showQuickBar && !editingId && !drop && (picked.length === 1 || picked.length === 2)
+    showQuickBar && !editingId && !drop && picked.length
       ? picked
           .map((id) => paint.boxes.find((b) => b.id === id))
           .filter((b): b is ShapePaint => Boolean(b))
@@ -679,43 +692,79 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const barBtns: { k: string; label: string; tip: string; run: () => void }[] = [];
   if (barShape && barBoxes.length === 1) {
     const id = barShape.id;
-    barBtns.push({
-      k: "child",
-      label: "子主题",
-      tip: "插入子主题（Tab）",
-      run: () => addChild(id),
-    });
-    barBtns.push({
-      k: "sibling",
-      label: "同级",
-      tip: "插入同级主题（Enter）",
-      run: () => addSibling(id, false),
-    });
-    if (barShape.childIds.length)
+    // 标注泡不是主题：给它"插入子主题"会造出一棵亿图读不懂的树，只给改名和删除。
+    if (barShape.type === "Callout") {
       barBtns.push({
-        k: "fold",
-        label: barShape.extras.collapsed ? "展开" : "折叠",
-        tip: "折叠 / 展开这条分支（F4）",
-        run: () => toggleFold(id),
+        k: "edit",
+        label: "改文字",
+        tip: "编辑标注内容（F2 或双击）",
+        run: () => useDoc.getState().setEditing(id),
       });
-    if (barShape.parentId)
       barBtns.push({
         k: "del",
-        label: "删除",
-        tip: "删除这个主题及其分支（Delete）",
-        run: () => removeTopics([id]),
+        label: "删标注",
+        tip: "删掉这个标注框",
+        run: () => useDoc.getState().mutate("删除标注", (p) => removeOverlay(p, id)),
       });
+    } else {
+      barBtns.push({
+        k: "child",
+        label: "子主题",
+        tip: "插入子主题（Tab）",
+        run: () => addChild(id),
+      });
+      barBtns.push({
+        k: "sibling",
+        label: "同级",
+        tip: "插入同级主题（Enter）",
+        run: () => addSibling(id, false),
+      });
+      if (barShape.childIds.length)
+        barBtns.push({
+          k: "fold",
+          label: barShape.extras.collapsed ? "展开" : "折叠",
+          tip: "折叠 / 展开这条分支（F4）",
+          run: () => toggleFold(id),
+        });
+      if (barShape.parentId)
+        barBtns.push({
+          k: "del",
+          label: "删除",
+          tip: "删除这个主题及其分支（Delete）",
+          run: () => removeTopics([id]),
+        });
+      barBtns.push({
+        k: "note",
+        label: "附注",
+        tip: "备注与超链接",
+        run: () => useUi.getState().openDialog("topicInfo"),
+      });
+      barBtns.push({
+        k: "edit",
+        label: "改名",
+        tip: "编辑文字（F2 或双击）",
+        run: () => useDoc.getState().setEditing(id),
+      });
+      barBtns.push({
+        k: "callout",
+        label: "标注",
+        tip: "在这个主题上挂一个标注框",
+        run: () => useDoc.getState().mutate("新建标注", (p) => addCallout(p, id, "").page),
+      });
+    }
+  }
+  if (picked.length >= 2 && barBoxes.length === picked.length) {
     barBtns.push({
-      k: "note",
-      label: "附注",
-      tip: "备注与超链接",
-      run: () => useUi.getState().openDialog("topicInfo"),
+      k: "boundary",
+      label: "外框",
+      tip: "给选中的主题盖一层外框（再点一次取消）",
+      run: () => useDoc.getState().mutate("外框", (p) => addBoundary(p, picked).page),
     });
     barBtns.push({
-      k: "edit",
-      label: "改名",
-      tip: "编辑文字（F2 或双击）",
-      run: () => useDoc.getState().setEditing(id),
+      k: "summary",
+      label: "概要",
+      tip: "给选中的主题加一个大括号和概要主题（再点一次取消）",
+      run: () => useDoc.getState().mutate("概要", (p) => addSummary(p, picked).page),
     });
   }
   if (picked.length === 2 && barBoxes.length === 2) {
@@ -920,38 +969,16 @@ export function MindCanvas({ page }: MindCanvasProps) {
                 pointerEvents="none"
               />
             ) : o.kind === "callout" ? (
-              <g key={`callout-${o.id}`} pointerEvents="none">
-                <path d={o.d} fill="none" stroke={o.line} strokeWidth={1} />
-                <rect
-                  x={o.x}
-                  y={o.y}
-                  width={o.w}
-                  height={o.h}
-                  rx={Math.min(o.rounding, o.w / 2, o.h / 2)}
-                  fill={o.fill}
-                  stroke={o.line}
-                  strokeWidth={o.lineWidth}
-                />
-                {o.lines.map((line, ix) => (
-                  <text
-                    key={ix}
-                    x={o.x + o.w / 2}
-                    y={
-                      o.y +
-                      o.h / 2 -
-                      ((o.lines.length - 1) * lineGap(o.fontSize)) / 2 +
-                      o.fontSize * 0.35 +
-                      ix * lineGap(o.fontSize)
-                    }
-                    fontSize={o.fontSize}
-                    textAnchor="middle"
-                    fontWeight={o.bold ? "bold" : undefined}
-                    fill={o.textColor}
-                  >
-                    {line}
-                  </text>
-                ))}
-              </g>
+              // 只剩引导线：泡本身在 paint.boxes 里（和主题同一套画法），
+              // 于是它自动有了命中测试、选中框和就地改字，不必在这条路上再写一遍。
+              <path
+                key={`callout-${o.id}`}
+                d={o.d}
+                fill="none"
+                stroke={o.line}
+                strokeWidth={1}
+                pointerEvents="none"
+              />
             ) : null
           )}
 
