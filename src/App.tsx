@@ -48,16 +48,7 @@ import {
   pickSavePath,
   type AutosaveItem,
 } from "./services/native.ts";
-import {
-  IMPORT_EXTENSIONS,
-  docFromOutline,
-  importCsv,
-  importFilter,
-  importFreeMind,
-  importOpml,
-  sniff,
-} from "./engine/import/index.ts";
-import type { DocumentModel } from "./types/model.ts";
+import { IMPORT_EXTENSIONS, importBytes, importFilter, sniff } from "./engine/import/index.ts";
 
 /** 打开只收 .emmx，导入用 importFilter()：两条路径的报错文案不同，合成一个选择框就没法解释失败原因。 */
 const EMMX_FILTER = [{ name: "亿图脑图文件", extensions: ["emmx"] }];
@@ -244,8 +235,9 @@ function Shell() {
   }, [message, openPicked]);
 
   /**
-   * 导入。两族编码：XML/CSV 系列是文本，.emmx/.xmind 是 zip。
-   * .xmind 目前只认不解析（sniff 认得它，codec 不认），如实报错，不要谎报"导入成功"。
+   * 导入。格式分发只认 importBytes 这一处：这里再抄一份 switch，引擎加了格式界面却
+   * 还在说"暂不支持"—— .xmind 就被这么埋过一回（解析器在 engine 里躺着，没人调用）。
+   * .emmx 例外：它走「打开」那条路，要的是带路径的文档登记，不是"导入一份新内容"。
    */
   const doImport = useCallback(async () => {
     const picked = await pickOpenPath({ title: "导入", filters: importFilter() });
@@ -255,9 +247,9 @@ function Shell() {
       openPicked(picked);
       return;
     }
-    if (kind === "xmind") {
+    if (kind === "unknown") {
       message.error(
-        "暂不支持导入 .xmind：它的主题关系写在自己的 content.json 里，还没有对应的解析器。"
+        `认不出这个格式：${stemOf(picked)}。可导入的是 ${IMPORT_EXTENSIONS.join("、")}。`
       );
       return;
     }
@@ -265,24 +257,19 @@ function Shell() {
       void (async () => {
         try {
           const bytes = await native.fileReadBytes(picked);
-          const text = new TextDecoder("utf-8").decode(bytes);
-          const stem = stemOf(picked);
-          let built: DocumentModel;
-          if (kind === "freemind") built = importFreeMind(text, stem);
-          else if (kind === "opml") built = importOpml(text, stem);
-          else if (kind === "csv") built = importCsv(text, stem);
-          else built = docFromOutline(text, stem, kind === "markdown");
-          const shapes = Object.keys(built.pages[0]?.shapes ?? {}).length;
+          const built = await importBytes(picked, bytes);
+          const shapes = built.pages.reduce((n, p) => n + Object.keys(p.shapes).length, 0);
           if (!shapes) {
             message.error(
-              "没有解析出任何主题：请确认文件是缩进文本 / Markdown / FreeMind / OPML / CSV 之一。"
+              "没有解析出任何主题：请确认文件是缩进文本 / Markdown / FreeMind / OPML / CSV / XMind 之一。"
             );
             return;
           }
-          if (useDoc.getState().applyDoc(built, null, stem)) {
+          const pages = built.pages.length > 1 ? `、${built.pages.length} 页` : "";
+          if (useDoc.getState().applyDoc(built, null, stemOf(picked))) {
             setStartPage(false);
             message.success(
-              `已导入 ${shapes} 个主题（${kind}），还没有写进 .emmx，用「保存」落盘。`
+              `已导入 ${shapes} 个主题${pages}（${kind}），还没有写进 .emmx，用「保存」落盘。`
             );
           }
         } catch (e) {
@@ -524,7 +511,7 @@ function Shell() {
         打开
       </Button>
       <Tooltip
-        title={`导入缩进文本 / Markdown / FreeMind / OPML / CSV（${IMPORT_EXTENSIONS.join("、")}）`}
+        title={`导入 XMind / FreeMind / OPML / Markdown / CSV / 缩进文本（${IMPORT_EXTENSIONS.join("、")}）`}
       >
         <Button size="small" onClick={() => void doImport()}>
           导入

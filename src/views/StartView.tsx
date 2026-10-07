@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import { Alert, Button } from "antd";
 import { EmptyState, ListSkeleton, RecentRow, SectionTitle } from "../_shared/index.ts";
+import { IMPORT_EXTENSIONS } from "../engine/import/index.ts";
 import { QUOTA } from "../model/constants.ts";
 import { native, pickOpenPath } from "../services/native.ts";
 import { useRecent } from "../stores/recentStore.ts";
@@ -72,7 +73,10 @@ export function StartView({ onNew, onOpen, onImport }: StartViewProps) {
 
   // 删除失败时 store 已经把原生错误写进 storeError，这里不再叠一句"删除失败"。
   async function deleteItem(path: string) {
-    if (await deleteFile(path)) setNotice(`已删除文件，${QUOTA.trashKeepDays} 天内可在“历史与备份 → 回收站”放回原处：${path}`);
+    if (await deleteFile(path))
+      setNotice(
+        `已删除文件，${QUOTA.trashKeepDays} 天内可在“历史与备份 → 回收站”放回原处：${path}`
+      );
   }
 
   async function clearAll() {
@@ -116,7 +120,9 @@ export function StartView({ onNew, onOpen, onImport }: StartViewProps) {
           新建空白脑图
         </Button>
         <Button onClick={() => void pickAndOpen()}>打开 .emmx</Button>
-        <Button onClick={onImport}>从文本 · Markdown · OPML 导入</Button>
+        <Button onClick={onImport} title={`可导入 ${IMPORT_EXTENSIONS.join(" ")}`}>
+          从 XMind · Markdown · OPML 导入
+        </Button>
       </div>
 
       <SectionTitle
@@ -183,11 +189,7 @@ export function StartView({ onNew, onOpen, onImport }: StartViewProps) {
                 onRemove={(it) => void removeItem(it.path)}
                 onPin={(it) => void togglePin(it.path)}
                 onReveal={native.available ? (it) => void reveal(it) : undefined}
-                onDelete={
-                  missing[item.path]
-                    ? undefined
-                    : (it) => void deleteItem(it.path)
-                }
+                onDelete={missing[item.path] ? undefined : (it) => void deleteItem(it.path)}
               />
               {missing[item.path] ? (
                 <div className="zm-row-meta" style={{ padding: "0 12px 8px" }}>
