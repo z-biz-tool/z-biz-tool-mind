@@ -76,7 +76,7 @@ const DEFAULT_CHORDS: Record<ShortcutCommand, string> = {
 };
 
 /** `ctrl+y` 是亿图给重做的第二个键，保留它比只认 Ctrl+Shift+Z 更贴近用户肌肉记忆。 */
-const ALIASES: readonly { chord: string; cmd: ShortcutCommand }[] = [
+export const ALIASES: readonly { chord: string; cmd: ShortcutCommand }[] = [
   { chord: "ctrl+y", cmd: "redo" },
 ];
 

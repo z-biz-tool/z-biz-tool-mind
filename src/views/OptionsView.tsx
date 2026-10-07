@@ -29,6 +29,13 @@ import { LoadingState } from "../_shared/index.ts";
 import { MENU_ACTION_GROUPS, MENU_PRESETS, keepActions } from "../canvas/menuActions.ts";
 import { LAYOUT_LABELS, QUOTA } from "../model/constants.ts";
 import { native } from "../services/native.ts";
+import {
+  exportProfile,
+  importKeymapProfile,
+  importMenuProfile,
+  keymapProfileXml,
+  menuProfileXml,
+} from "../services/profileIO.ts";
 import type { AppInfo, CrashInfo, LogInfo, ProxyStatus } from "../services/native.ts";
 import { useRecent } from "../stores/recentStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
@@ -67,6 +74,22 @@ function toInt(raw: number | string | null, min: number, max: number): number {
   const n = typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
   if (!Number.isFinite(n)) return min;
   return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+/** 写盘失败的那句实话：配置没落下去，重启就回到原样（与 bindShortcut 同一口径）。 */
+const WRITE_FAILED = "这一节没写进配置文件，重启就会回到原样：原因见面板顶部的错误。";
+
+/** 方案文件的回执。tone 决定颜色：灰着的失败看起来就像成功了。 */
+interface ProfileTip {
+  tone: "ok" | "bad";
+  text: string;
+}
+
+const okTip = (text: string): ProfileTip => ({ tone: "ok", text });
+
+/** 加载回执：先说成了什么，再逐条说跳过了什么 —— 只报数字的话，用户不知道自己少了哪一条。 */
+function receipt(okText: string, skipped: string[]): string {
+  return skipped.length ? `${okText}跳过了 ${skipped.length} 条：${skipped.join("；")}` : okText;
 }
 
 /** 一行的骨架：标签、控件、控件下面那行小字说明（说明摊开写，不当 tooltip 的第二层菜单）。 */
@@ -144,6 +167,10 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
   // 快捷键面板正在录哪一条（null = 没在录），以及那句"这条键已经归谁"的话。
   const [recording, setRecording] = useState<ShortcutCommand | null>(null);
   const [shortcutTip, setShortcutTip] = useState<string | null>(null);
+  // 方案文件的回执分两页各留一份：Tabs 访问过的分页仍然挂在那里，共用一条消息会同时出现在两页上。
+  const [menuProfileTip, setMenuProfileTip] = useState<ProfileTip | null>(null);
+  const [keyProfileTip, setKeyProfileTip] = useState<ProfileTip | null>(null);
+  const [profileBusy, setProfileBusy] = useState(false);
 
   useEffect(() => {
     // 这些读的是外壳里的**现状**，不是设置值：日志份数、崩溃份数、加密库里有没有密钥，
@@ -317,6 +344,84 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
     // 这一行就会莫名其妙地"被用户改过"，恢复默认也恢复不到新默认上。
     void bindShortcut(cmd, chord === defaultChordOf(cmd) ? null : chord);
     setRecording(null);
+  }
+
+  /**
+   * 方案文件的四条路（两页 × 导出/加载）形状一样，所以走同一个壳：一次只让一个在跑，
+   * 取消和失败都在按钮下面说一句，不另开弹窗 —— 这一页本来就是改完即落盘，叠窗只会多一套状态。
+   */
+  async function runProfile(say: (tip: ProfileTip) => void, fn: () => Promise<ProfileTip>) {
+    if (profileBusy) return;
+    setProfileBusy(true);
+    try {
+      say(await fn());
+    } catch (e) {
+      say({ tone: "bad", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  const exportMenuProfile = () =>
+    runProfile(setMenuProfileTip, async () => {
+      const target = await exportProfile("rightMenu", menuProfileXml(settings.rightMenu.enabled));
+      return okTip(target ? `已导出到 ${target}` : "已取消导出。");
+    });
+
+  const loadMenuProfile = () =>
+    runProfile(setMenuProfileTip, async () => {
+      const got = await importMenuProfile();
+      if (!got) return okTip("已取消加载。");
+      const applied = await patch("rightMenu", { enabled: got.profile.enabled });
+      if (!applied) return { tone: "bad", text: WRITE_FAILED };
+      return okTip(
+        receipt(
+          `已加载：菜单里给 ${
+            got.profile.enabled.length
+              ? `${got.profile.enabled.length} 个动作`
+              : "全部 12 个动作（这份文件写的是整套显示）"
+          }。`,
+          got.profile.skipped
+        )
+      );
+    });
+
+  const exportKeymapProfile = () =>
+    runProfile(setKeyProfileTip, async () => {
+      const target = await exportProfile("shortcut", keymapProfileXml(settings.shortcut.custom));
+      return okTip(target ? `已导出到 ${target}` : "已取消导出。");
+    });
+
+  const loadKeymapProfile = () =>
+    runProfile(setKeyProfileTip, async () => {
+      const got = await importKeymapProfile();
+      if (!got) return okTip("已取消加载。");
+      const { custom, skipped } = got.profile;
+      const applied = await patch("shortcut", { custom });
+      if (!applied) return { tone: "bad", text: WRITE_FAILED };
+      const off = Object.values(custom).filter((v) => !v).length;
+      return okTip(
+        receipt(
+          `已按这份方案换掉整套键位：改走 ${Object.keys(custom).length - off} 条、禁用 ${off} 条，其余一律回到默认。`,
+          skipped
+        )
+      );
+    });
+
+  /** 回执那一行：坏消息要红，灰着的失败看起来就像成功了。 */
+  function tipRow(tip: ProfileTip | null) {
+    if (!tip) return null;
+    return (
+      <div
+        style={{
+          fontSize: 12,
+          marginTop: 4,
+          color: tip.tone === "bad" ? "#d4380d" : "var(--zm-text-2)",
+        }}
+      >
+        {tip.text}
+      </div>
+    );
   }
 
   /** 每个分页右上角的"恢复本节"：只重置这一节，其它节一个字都不动。 */
@@ -636,9 +741,23 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                 点一下键位格子进入录制，按下的组合键就是这条命令的新键位：至少要带一个修饰键 （Ctrl
                 / Shift / Alt），或者直接用 F1–F12 / Esc 这类功能键。抢别人正在用的键不会抢，
                 会当场说清这条键归谁。改完立即生效，工具栏按钮上的悬浮提示跟着一起改。
-                <b>禁用之后没有键盘入口</b>，按钮和菜单项都还在 —— 这一页只管键盘。
-                亿图在这里还能导入 / 导出整套键位方案，我们没做：这张表就是
-                <code style={{ fontSize: 12 }}>~/.z-mind/config.json</code> 的 shortcut.custom 节。
+                <b>禁用之后没有键盘入口</b>，按钮和菜单项都还在 —— 这一页只管键盘。 这张表就是
+                <code style={{ fontSize: 12 }}>~/.z-mind/config.json</code> 的 shortcut.custom
+                节，换机器要带走就用下面两个按钮整套搬。
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Button size="small" loading={profileBusy} onClick={exportKeymapProfile}>
+                    导出键位方案
+                  </Button>
+                  <Button size="small" loading={profileBusy} onClick={loadKeymapProfile}>
+                    加载键位方案
+                  </Button>
+                  <span style={{ fontSize: 12, color: "var(--zm-text-2)", lineHeight: "24px" }}>
+                    文件里只写动过的键；加载是整套替换，没提的命令一律回到默认键位。
+                  </span>
+                </div>
+                {tipRow(keyProfileTip)}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                 {SHORTCUT_COMMANDS.map((c) => {
@@ -927,10 +1046,10 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
               >
                 取消勾选就等于从菜单里去掉，改完立即生效 —— 菜单是每次右键现算的，不用重开。
                 这一节只管<b>右键菜单</b>：快捷操作条、工具栏和快捷键都不受它影响，
-                去掉"删除主题或标注"之后，选中主题按 Delete 照样删得掉。 亿图在这里还能把方案导出成
-                xml 换机器加载，我们没做；配置就是
-                <code style={{ fontSize: 12 }}>~/.z-mind/config.json</code> 的 rightMenu
-                节，要搬直接拷那个文件。
+                去掉"删除主题或标注"之后，选中主题按 Delete 照样删得掉。
+                换机器要带走这份勾选就用下面的 方案文件，它导出的就是{" "}
+                <code style={{ fontSize: 12 }}>~/.z-mind/config.json</code> 里 rightMenu 那一节，抄
+                XML 的形状是给人在看的。
               </div>
               <Field
                 label="预设方案"
@@ -952,6 +1071,22 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                       {p.label}
                     </Button>
                   ))}
+                </div>
+              </Field>
+              <Field
+                label="方案文件"
+                hint="一份 xml 就是上面这份勾选。加载是整份替换这一节：文件里没提的动作一律回到「全部显示」。"
+              >
+                <div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Button size="small" loading={profileBusy} onClick={exportMenuProfile}>
+                      导出方案
+                    </Button>
+                    <Button size="small" loading={profileBusy} onClick={loadMenuProfile}>
+                      加载方案
+                    </Button>
+                  </div>
+                  {tipRow(menuProfileTip)}
                 </div>
               </Field>
               <Field
