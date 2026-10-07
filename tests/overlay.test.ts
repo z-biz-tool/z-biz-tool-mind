@@ -138,6 +138,20 @@ if (!existsSync(DOC4)) {
     bubbles.every((b) => (b.d ?? "").startsWith("M ") && (b.d ?? "").includes(" L "))
   );
   ok("标注框几何进了导出（以前一个都没露过）", buildSvg(page).includes(bubbles[0]?.d ?? "¤"));
+  const rects = Object.values(boxes).map((b) => ({
+    x0: b.x - b.w / 2,
+    y0: b.y - b.h / 2,
+    x1: b.x + b.w / 2,
+    y1: b.y + b.h / 2,
+  }));
+  const press = bubbles.filter((o) =>
+    rects.some((r) => r.x0 < o.x + o.w && o.x < r.x1 && r.y0 < o.y + o.h && o.y < r.y1)
+  );
+  ok(
+    `18 个真实标注没有一个压在主题框上（压了 ${press.length} 个）`,
+    press.length === 0,
+    JSON.stringify(press.map((p) => [p.id, p.x, p.y, p.w, p.h]))
+  );
 }
 
 // ---------------------------------------------------------------- 合成页：跟布局走
@@ -219,6 +233,35 @@ if (!existsSync(DOC4)) {
     "宿主被折叠时标注一起消失",
     pick(overlayShapes(folded, computeLayout(folded).boxes), "callout").length,
     0
+  );
+}
+
+{
+  // 标注要整棵子树都让开：只让开宿主那一格，就会压在它孩子的框上（真机截图里露的馅）
+  let p = createPage("标注避让");
+  p = insertChild(p, p.rootId, "宿主").page;
+  const host = p.shapes[p.rootId].childIds[0];
+  let withKid = insertChild(p, host, "孩子").page;
+  const kidId = withKid.shapes[host].childIds[0];
+  withKid = addShape(withKid, { ...createShape("700", "Callout", "第一条", null) });
+  withKid = addShape(withKid, { ...createShape("701", "Callout", "第二条标注", null) });
+  withKid = withExtras(withKid, host, { calloutIds: ["700", "701"] });
+  const boxes = computeLayout(withKid).boxes;
+  const subtreeBottom = Math.max(
+    boxes[host].y + boxes[host].h / 2,
+    boxes[kidId].y + boxes[kidId].h / 2
+  );
+  const ov = pick(overlayShapes(withKid, boxes), "callout");
+  eq("两条标注都画出来", ov.length, 2);
+  ok(
+    "标注让开整棵子树，不压孩子的框",
+    ov.every((o) => o.y >= subtreeBottom),
+    `泡顶 ${ov.map((o) => o.y).join("/")} vs 子树底 ${subtreeBottom}`
+  );
+  ok(
+    "两条标注横向排开，不叠在一起",
+    ov[0].x + ov[0].w <= ov[1].x || ov[1].x + ov[1].w <= ov[0].x,
+    JSON.stringify(ov.map((o) => [o.x, o.w]))
   );
 }
 

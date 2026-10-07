@@ -14,6 +14,7 @@
 import type { LayoutCode, Page, Shape } from "../types/model.ts";
 import { isTopic, plainText } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
+import { descendants } from "./tree.ts";
 import {
   contrastText,
   defaultPalette,
@@ -432,12 +433,25 @@ export function overlayShapes(
   }
 
   // 标注框挂在主题身上：有文字就按文字量，没文字就是亿图那种序号小圆泡。
+  const taken: Rect[] = Object.values(boxes).map((b) => ({
+    x0: b.x - b.w / 2,
+    y0: b.y - b.h / 2,
+    x1: b.x + b.w / 2,
+    y1: b.y + b.h / 2,
+  }));
+  const clash = (r: Rect) =>
+    taken.find((o) => o.x0 < r.x1 && r.x0 < o.x1 && o.y0 < r.y1 && r.y0 < o.y1);
   for (const t of Object.values(page.shapes)) {
     const ids = t.extras.calloutIds;
     if (!ids?.length) continue;
     const host = boxes[t.id];
     if (!host) continue;
     const side = host.side === -1 ? -1 : 1;
+    // 让开整棵子树：只让开宿主自己那一格的话，标注会盖在它孩子的框上（真机截图里就是这么难看）。
+    const below = [t.id, ...descendants(page, t.id)]
+      .map((id) => boxes[id])
+      .reduce((n, b) => (b ? Math.max(n, b.y + b.h / 2) : n), host.y + host.h / 2);
+    let cursor = 0;
     ids.forEach((cid, ix) => {
       const c = page.shapes[cid];
       if (!c) return;
@@ -446,8 +460,19 @@ export function overlayShapes(
       const w = text ? m.w : Math.round((c.style.font?.size ?? DEFAULTS.fontSize) * 1.5);
       const h = text ? m.h : w;
       const x =
-        side > 0 ? host.x + host.w / 2 + CALLOUT_GAP : host.x - host.w / 2 - CALLOUT_GAP - w;
-      const y = host.y + host.h / 2 + CALLOUT_GAP;
+        side > 0
+          ? host.x + host.w / 2 + CALLOUT_GAP + cursor
+          : host.x - host.w / 2 - CALLOUT_GAP - w - cursor;
+      // 宿主的兄弟主题就在下一行、且和这一列横向重叠，所以让开子树还不够：
+      // 布局是定死的、泡是附加物，只能把泡一格一格往下推，直到谁都不压。
+      let y = below + CALLOUT_GAP;
+      for (let guard = 0; guard < 32; guard++) {
+        const hit = clash({ x0: x, y0: y, x1: x + w, y1: y + h });
+        if (!hit) break;
+        y = hit.y1 + CALLOUT_GAP;
+      }
+      cursor += w + 4;
+      taken.push({ x0: x, y0: y, x1: x + w, y1: y + h });
       out.push({
         id: cid,
         shapeId: cid,
