@@ -103,6 +103,12 @@ export async function parseEmmx(bytes: Uint8Array): Promise<ParseResult> {
   const docRoot = parseXml(decodeBytes(docEntry.data));
   const media: Record<string, Uint8Array> = {};
   for (const e of entries) if (/^media\//i.test(e.name)) media[e.name] = e.data;
+  // 亿图在包里另存一张 thumbnail.jpeg 给"打开"对话框做预览：它不属于任何 Shape，
+  // 但按名字带回原字节，总比整条 entry 消失好。
+  const thumb = entries.find((e) => /^thumbnail\.\w+$/i.test(e.name));
+  if (thumb) media[thumb.name] = thumb.data;
+  // 空的 <Relationships/> 亿图也照样写一条；"有没有这个文件"和"里面有没有条目"是两件事。
+  const relsPresent = entries.some((e) => /^rels\/page_rels\.xml$/i.test(e.name));
 
   const rels = parseRels(entries);
   const pages: Page[] = [];
@@ -110,8 +116,10 @@ export async function parseEmmx(bytes: Uint8Array): Promise<ParseResult> {
     pages.push(parsePage(pe.name, decodeBytes(pe.data), rels.map, warnings));
   }
 
-  const props = parseProperties(find(docRoot, "Properties"), warnings);
-  const gantt = parseGantt(find(docRoot, "GanttOption"));
+  const propsNode = find(docRoot, "Properties");
+  const ganttNode = find(docRoot, "GanttOption");
+  const props = parseProperties(docRoot, propsNode, warnings);
+  const gantt = parseGantt(ganttNode);
   const markSheet = findAll(find(docRoot, "MarkSheet") ?? el("MarkSheet"), "Mark").map((m) => ({
     name: attr(m, "Name"),
     label: attr(m, "Label", attr(m, "Name")),
@@ -124,6 +132,11 @@ export async function parseEmmx(bytes: Uint8Array): Promise<ParseResult> {
     themeRoot: pageThemeRoot(entries),
     // 原 rels 清单：原样回写的 Shape 不会经过 buildShape，它们的 rId 只能靠这份表恢复。
     relEntries: rels.list,
+    relsPresent,
+    // Properties / GanttOption 的源顺序与源值：亿图在这里放的字段比我们能改的多
+    //（ShowGroupName、ModifyPlatform、ChangeMinor…），未知的必须原样带回。
+    propsSection: sectionRaw(propsNode),
+    ganttSection: sectionRaw(ganttNode),
   };
 
   return {
@@ -182,13 +195,36 @@ function parseRels(entries: ZipEntry[]): {
 
 // ---------------------------------------------------------------- document.xml
 
-function parseProperties(node: XmlNode | undefined, warnings: string[]): DocProperties {
+/** `<Properties>`/`<GanttOption>` 的源快照：亿图写的字段比我们能改的多，未知的要原样带回原位。 */
+interface SectionRaw {
+  order: string[];
+  values: Record<string, string>;
+}
+
+function sectionRaw(node: XmlNode | undefined): SectionRaw {
+  const order: string[] = [];
+  const values: Record<string, string> = {};
+  for (const c of node?.children ?? []) {
+    if (order.includes(c.tag)) continue;
+    order.push(c.tag);
+    values[c.tag] = valueOrText(c);
+  }
+  return { order, values };
+}
+
+function parseProperties(
+  docRoot: XmlNode,
+  node: XmlNode | undefined,
+  warnings: string[]
+): DocProperties {
+  // 实测 5 份语料 + 亿图模板：Version 与 DocGuid 挂在 <Document> 身上，不在 <Properties> 里。
+  const head = docRoot.attrs ?? {};
   if (!node) {
     warnings.push("document.xml 没有 Properties，按默认值补齐");
     const now = new Date().toISOString().slice(0, 19).replace("T", " ");
     return {
-      version: DEFAULTS.emmxVersion,
-      docGuid: "",
+      version: head.Version || DEFAULTS.emmxVersion,
+      docGuid: head.DocGuid ?? "",
       creator: "",
       modifier: "",
       createdDate: now,
@@ -209,14 +245,14 @@ function parseProperties(node: XmlNode | undefined, warnings: string[]): DocProp
     return child ? valueOrText(child) : "";
   };
   return {
-    version: pick("Version", "version") || DEFAULTS.emmxVersion,
-    docGuid: pick("DocID", "DocGuid", "ID"),
+    version: head.Version || pick("Version", "version") || DEFAULTS.emmxVersion,
+    docGuid: head.DocGuid || pick("DocID", "DocGuid", "ID"),
     creator: pick("Creator", "CreateUser"),
     modifier: pick("Modifier", "LastSavedUser", "SaveUser"),
     createdDate: pick("CreatedData", "CreatedDate", "CreateTime"),
     modifiedDate: pick("ModifiedData", "ModifiedDate", "SaveTime"),
     platform: pick("Platform", "Application") === "Mac" ? "mac" : "win",
-    dpi: Number(pick("DPI", "DotPerInch")) || 1,
+    dpi: Number(pick("Dpi", "DPI", "DotPerInch")) || 1,
     screenWidth: Number(pick("ScreenWidth")) || 1920,
     screenHeight: Number(pick("ScreenHeight")) || 1080,
     autoLayout: pick("AutoLayout", "LayoutMemory") !== "0",
@@ -747,7 +783,8 @@ export async function writeEmmx(doc: DocumentModel): Promise<Uint8Array> {
 
   const themeRaw = doc.rawUnknown?.themeRoot as XmlNode | undefined;
   if (themeRaw) entries.push({ name: THEME_XML, data: encodeText(serializeXml(themeRaw)) });
-  if (ctx.rels.length) {
+  const relsPresent = Boolean(doc.rawUnknown?.relsPresent);
+  if (ctx.rels.length || relsPresent) {
     const r = el("Relationships");
     for (const x of ctx.rels)
       r.children.push(el("Relationship", { Id: x.id, Target: `../${x.target}` }));
@@ -763,38 +800,111 @@ interface WriteCtx {
   media: Record<string, Uint8Array>;
 }
 
+/**
+ * 亿图新建文件时 Properties/GanttOption 的实际书写顺序（语料 doc1 就是它在本机新建的文件）。
+ * 只有"源里不存在这个字段"时才按这里的顺序补，避免给老文件凭空加项。
+ */
+const DOC_PROP_ORDER = [
+  "AutoLayout",
+  "TimelineWidth",
+  "CalloutLayout",
+  "Dpi",
+  "ScreenWidth",
+  "ScreenHeight",
+  "Platform",
+  "ModifyPlatform",
+  "Creator",
+  "CreatedDate",
+  "ModifiedDate",
+  "Modifier",
+];
+const GANTT_ORDER = [
+  "WorkDay",
+  "MajorTick",
+  "MinorTick",
+  "StartDate",
+  "FinishDate",
+  "StartTime",
+  "FinishTime",
+  "UnitWidth",
+  "ChangeMinor",
+];
+
+/**
+ * 按"源顺序 + 模型新值"重建 `<X><Y V="…"/></X>` 这一节。
+ * 模型改得了的字段用模型值，改不了的（ShowGroupName、ModifyPlatform、亿图新版本加的项）
+ * 原样带回；源里没有的字段才按默认顺序补上。
+ */
+function buildSection(
+  tag: string,
+  raw: SectionRaw | undefined,
+  owned: Map<string, string>,
+  dfltOrder: string[]
+): XmlNode {
+  const order = raw?.order.length ? raw.order : dfltOrder;
+  const children: XmlNode[] = [];
+  for (const name of order) {
+    const v = owned.get(name) ?? raw?.values[name];
+    if (v !== undefined) children.push(vNode(name, v));
+  }
+  for (const [name, v] of owned) {
+    if (order.includes(name) || v === "") continue;
+    children.push(vNode(name, v));
+  }
+  return el(tag, {}, children);
+}
+
+function propsOwned(d: DocProperties): Map<string, string> {
+  const m = new Map<string, string>();
+  m.set("AutoLayout", d.autoLayout ? "1" : "0");
+  m.set("TimelineWidth", String(d.timelineWidth));
+  m.set("CalloutLayout", String(d.calloutLayout));
+  m.set("Dpi", String(d.dpi));
+  m.set("ScreenWidth", String(d.screenWidth));
+  m.set("ScreenHeight", String(d.screenHeight));
+  m.set("Creator", d.creator);
+  m.set("CreatedDate", d.createdDate);
+  m.set("ModifiedDate", d.modifiedDate);
+  m.set("Modifier", d.modifier);
+  return m;
+}
+
+function ganttOwned(g: GanttOption): Map<string, string> {
+  const m = new Map<string, string>();
+  m.set("WorkDay", g.workDay.join(";"));
+  m.set("MajorTick", String(g.majorTick));
+  m.set("MinorTick", String(g.minorTick));
+  m.set("StartDate", String(g.startDate));
+  m.set("FinishDate", String(g.finishDate));
+  m.set("StartTime", String(g.startTime));
+  m.set("FinishTime", String(g.finishTime));
+  m.set("UnitWidth", String(g.unitWidth));
+  return m;
+}
+
 function buildDocumentXml(doc: DocumentModel): XmlNode {
-  const raw = doc.rawUnknown as { documentRoot?: XmlNode; documentSig?: string } | undefined;
+  const raw = doc.rawUnknown as
+    | {
+        documentRoot?: XmlNode;
+        documentSig?: string;
+        propsSection?: SectionRaw;
+        ganttSection?: SectionRaw;
+      }
+    | undefined;
   const want = sigOfDocument(doc.properties, doc.gantt, doc.pages.length);
   if (raw?.documentRoot && raw.documentSig === want) return raw.documentRoot;
 
-  const root = el("Document", { xmlns: "" });
-  const props = el("Properties", {
-    Version: doc.properties.version,
-    DocID: doc.properties.docGuid,
-    Creator: doc.properties.creator,
-    Modifier: doc.properties.modifier,
-    CreatedData: doc.properties.createdDate,
-    ModifiedData: doc.properties.modifiedDate,
-    Platform: doc.properties.platform === "mac" ? "Mac" : "Windows",
-    DPI: doc.properties.dpi,
-    AutoLayout: doc.properties.autoLayout ? "1" : "0",
-    TimelineWidth: doc.properties.timelineWidth,
-    CalloutLayout: doc.properties.calloutLayout,
-  });
-  root.children.push(props);
-  const g = doc.gantt;
+  // Version / DocGuid 属于 <Document> 本身；Platform 只在"源里没有"时按当前平台补，
+  // 有源值时上面已经原样带回。
+  const root = el("Document", { Version: doc.properties.version, DocGuid: doc.properties.docGuid });
+  const owned = propsOwned(doc.properties);
+  if (!raw?.propsSection) {
+    owned.set("Platform", doc.properties.platform);
+    owned.set("ModifyPlatform", doc.properties.platform);
+  }
+  root.children.push(buildSection("Properties", raw?.propsSection, owned, DOC_PROP_ORDER));
   root.children.push(
-    el("GanttOption", {}, [
-      vNode("WorkDay", g.workDay.join(";")),
-      vNode("MajorTick", g.majorTick),
-      vNode("MinorTick", g.minorTick),
-      vNode("StartDate", g.startDate),
-      vNode("FinishDate", g.finishDate),
-      vNode("StartTime", g.startTime),
-      vNode("FinishTime", g.finishTime),
-      vNode("UnitWidth", g.unitWidth),
-    ])
+    buildSection("GanttOption", raw?.ganttSection, ganttOwned(doc.gantt), GANTT_ORDER)
   );
   const ms = el("MarkSheet");
   for (const m of doc.markSheet)

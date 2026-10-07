@@ -12,12 +12,14 @@
  *    丢了一位，保存重开之后换主题就会把用户挑的颜色盖掉。
  * 7) 编辑正文会让整份 Shape 节点重新生成 —— 批注、超链接，以及任何我们还没建模的标签，
  *    都不能跟着一起没了。
+ * 8) 保存会改 ModifiedDate，"复用原始 document.xml 节点"的快速通道随之失效；重新生成的那一份
+ *    必须还是亿图的写法（Version/DocGuid 在 <Document> 上，属性是 <X V/> 子节点）。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { done, eq, ok, rejects, skip } from "./_harness.ts";
-import { readZip, decodeBytes } from "../src/engine/emmx/zip.ts";
-import { nodeEquals, parseXml, findAll, attr, numVnode } from "../src/engine/emmx/xparse.ts";
+import { readZip, writeZip, decodeBytes } from "../src/engine/emmx/zip.ts";
+import { nodeEquals, parseXml, findAll, attr, numVnode, vnode } from "../src/engine/emmx/xparse.ts";
 import type { XmlNode } from "../src/engine/emmx/xparse.ts";
 import { modelEquals, parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
 import { insertChild, updateExtras, updateStyle, updateText } from "../src/engine/tree.ts";
@@ -97,6 +99,47 @@ if (!existsSync(FIXTURE)) {
       parseXml(decodeBytes(reEntries.find((e) => e.name === "document.xml").data))
     )
   );
+
+  // --- 真按"保存"的语义走一次。app 落盘时会盖 ModifiedDate，上面的"复用原节点"快速通道就此失效，
+  //     重新生成的那份必须还是亿图的写法 —— 它读不回去的属性，等于我们把别人的文件改坏了。
+  const stamped = {
+    ...doc,
+    properties: { ...doc.properties, modifiedDate: "2026-01-02 03:04:05" },
+  };
+  const stEntries = await readZip(await writeEmmx(stamped));
+  const stRoot = parseXml(decodeBytes(stEntries.find((e) => e.name === "document.xml").data));
+  const stProps = findAll(stRoot, "Properties")[0];
+  const stGantt = findAll(stRoot, "GanttOption")[0];
+  eq("Version 挂在 <Document> 上", attr(stRoot, "Version"), "7.2");
+  eq("DocGuid 挂在 <Document> 上", attr(stRoot, "DocGuid"), doc.properties.docGuid);
+  ok(
+    "Properties 用的是亿图的子节点 <X V/> 写法",
+    stProps.children.length >= 10 && stProps.children.every((c) => c.attrs.V !== undefined),
+    `子节点 ${stProps.children.length} 个`
+  );
+  eq("Platform 保持源写法而不是 Windows", vnode(stProps, "Platform"), "win");
+  eq(
+    "CreatedDate 没有被写成 CreatedData",
+    vnode(stProps, "CreatedDate"),
+    doc.properties.createdDate
+  );
+  eq("ModifiedDate 写的是保存那一刻", vnode(stProps, "ModifiedDate"), "2026-01-02 03:04:05");
+  eq("Dpi 按亿图的标签名读回来了", vnode(stProps, "Dpi"), String(doc.properties.dpi));
+  ok("没有建模的 ModifyPlatform 原样带回", vnode(stProps, "ModifyPlatform") === "win");
+  ok("没有建模的 ChangeMinor 原样带回", vnode(stGantt, "ChangeMinor") === "0");
+  const stNames = new Set(stEntries.map((e) => e.name));
+  const lost = [...new Set(entries.map((e) => e.name))].filter((n) => !stNames.has(n));
+  ok("保存没有丢掉任何一个 entry", lost.length === 0, `丢了 ${lost.join("、")}`);
+
+  // 亿图还会在包里放一张 thumbnail.jpeg 给"打开"对话框做预览。它不属于任何 Shape，
+  // 但整条 entry 消失就是消失 —— doc1 恰好没有，只能自己拼一份。
+  const withThumb = await writeZip([
+    ...entries,
+    { name: "thumbnail.jpeg", data: new Uint8Array([255, 216, 255, 217]) },
+  ]);
+  const thumbSaved = await readZip(await writeEmmx((await parseEmmx(withThumb)).doc));
+  const thumbEntry = thumbSaved.find((e) => e.name === "thumbnail.jpeg");
+  ok("thumbnail 按原字节带回", thumbEntry?.data.length === 4, String(thumbEntry?.data.length));
 
   // --- 再解析一次，模型语义等价
   const again = await parseEmmx(saved);
