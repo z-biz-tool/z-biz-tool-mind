@@ -6,7 +6,8 @@
  * 唯一的例外是"未保存就换文档"那道确认 —— 它同时需要脏标记和用户意志，只有外壳两个都有。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { App as AntdApp, Button, Input, Modal, Segmented, Tabs, Tooltip } from "antd";
+import { App as AntdApp, Button, Dropdown, Input, Modal, Segmented, Tabs, Tooltip } from "antd";
+import type { MenuProps } from "antd";
 import {
   AppErrorBoundary,
   AppShell,
@@ -478,37 +479,83 @@ function Shell() {
 
   /* ---------------- 渲染 ---------------- */
 
-  const toolbar = (
+  /* 工具栏按"手上有没有一份能改的文档"分两套。开始页摆一整排灰按钮，读起来像是这些
+     功能坏了，而不是"这里还没打开文档"；有文档时把低频项收进「更多」。
+     收进菜单只是换个地方点：每条命令的键盘入口一个都没动（见 utils/shortcuts）。 */
+  const atStart = !hasDoc || startPage;
+  const cycleTheme = () =>
+    void patchSettings("general", {
+      theme: THEME_ORDER[(THEME_ORDER.indexOf(mode) + 1) % THEME_ORDER.length],
+    });
+  const menuItem = (text: string, cmd?: string) => (
+    <span style={{ display: "flex", gap: 24, justifyContent: "space-between" }}>
+      {text}
+      {cmd ? <span style={{ color: "var(--zm-text-2)" }}>{shortcutLabel(cmd)}</span> : null}
+    </span>
+  );
+  const moreItems: MenuProps["items"] = [
+    { key: "saveAs", label: menuItem("另存为", "saveAs"), onClick: () => void doSaveAs() },
+    { type: "divider" },
+    {
+      key: "search",
+      label: menuItem("查找", "search"),
+      onClick: () => (dialog === "search" ? closeDialog() : openDialog("search")),
+    },
+    {
+      key: "history",
+      label: menuItem("历史版本"),
+      onClick: () => (dialog === "history" ? closeDialog() : openDialog("history")),
+    },
+    { type: "divider" },
+    { key: "export", label: menuItem("导出", "export"), onClick: () => openDialog("export") },
+    { key: "print", label: menuItem("打印", "print"), onClick: () => openDialog("print") },
+    {
+      key: "theme",
+      label: `界面主题：${THEME_LABEL[mode]}（点击切换）`,
+      onClick: cycleTheme,
+    },
+  ];
+  const fileButtons = (
     <>
+      <Button size="small" onClick={doNew} title={shortcutLabel("newDoc")}>
+        新建
+      </Button>
+      <Button size="small" onClick={() => void doOpen()} title={shortcutLabel("open")}>
+        打开
+      </Button>
+      <Tooltip
+        title={`导入缩进文本 / Markdown / FreeMind / OPML / CSV（${IMPORT_EXTENSIONS.join("、")}）`}
+      >
+        <Button size="small" onClick={() => void doImport()}>
+          导入
+        </Button>
+      </Tooltip>
+    </>
+  );
+  const optionsButton = (
+    <Button size="small" onClick={() => openDialog("options")} title={shortcutLabel("options")}>
+      选项
+    </Button>
+  );
+
+  const toolbar = atStart ? (
+    <>
+      <ToolGroup>{fileButtons}</ToolGroup>
       <ToolGroup>
-        <Button size="small" onClick={doNew} title={shortcutLabel("newDoc")}>
-          新建
-        </Button>
-        <Button size="small" onClick={() => void doOpen()} title={shortcutLabel("open")}>
-          打开
-        </Button>
-        <Tooltip
-          title={`导入缩进文本 / Markdown / FreeMind / OPML / CSV（${IMPORT_EXTENSIONS.join("、")}）`}
-        >
-          <Button size="small" onClick={() => void doImport()}>
-            导入
+        {optionsButton}
+        <Tooltip title={`界面主题：${THEME_LABEL[mode]}，点击切换下一个`}>
+          <Button size="small" onClick={cycleTheme}>
+            主题
           </Button>
         </Tooltip>
-        <Button
-          size="small"
-          disabled={!hasDoc}
-          onClick={() => void saveNow()}
-          title={shortcutLabel("save")}
-        >
+      </ToolGroup>
+    </>
+  ) : (
+    <>
+      <ToolGroup>
+        {fileButtons}
+        <Button size="small" onClick={() => void saveNow()} title={shortcutLabel("save")}>
           保存
-        </Button>
-        <Button
-          size="small"
-          disabled={!hasDoc}
-          onClick={() => void doSaveAs()}
-          title={shortcutLabel("saveAs")}
-        >
-          另存为
         </Button>
       </ToolGroup>
 
@@ -529,7 +576,7 @@ function Shell() {
         >
           重做
         </Button>
-        <Button size="small" disabled={!hasDoc} onClick={() => void doAi()}>
+        <Button size="small" onClick={() => void doAi()}>
           AI 生成
         </Button>
       </ToolGroup>
@@ -541,75 +588,27 @@ function Shell() {
           options={PROJECTIONS.map((p) => ({ label: p.label, value: p.id }))}
           onChange={(v) => setProjection(v as Projection)}
         />
-        <Button size="small" disabled={!hasDoc} onClick={() => stepZoom(-1)} title="缩小">
+        <Button size="small" onClick={() => stepZoom(-1)} title="缩小">
           －
         </Button>
-        <Button size="small" disabled={!hasDoc} onClick={() => fitZoom()} title="适应画布">
+        <Button size="small" onClick={() => fitZoom()} title="适应画布">
           {Math.round(zoom * 100)}%
         </Button>
-        <Button size="small" disabled={!hasDoc} onClick={() => stepZoom(1)} title="放大">
+        <Button size="small" onClick={() => stepZoom(1)} title="放大">
           ＋
         </Button>
       </ToolGroup>
 
       <ToolGroup>
-        <Button
-          size="small"
-          disabled={!hasDoc}
-          onClick={() => (dialog === "search" ? closeDialog() : openDialog("search"))}
-          title={shortcutLabel("search")}
-        >
-          查找
-        </Button>
-        <Button
-          size="small"
-          disabled={!hasDoc}
-          onClick={() => (dialog === "history" ? closeDialog() : openDialog("history"))}
-        >
-          历史版本
-        </Button>
-        <Button
-          size="small"
-          disabled={!hasDoc}
-          onClick={() => openDialog("export")}
-          title={shortcutLabel("export")}
-        >
-          导出
-        </Button>
-        <Button
-          size="small"
-          disabled={!hasDoc}
-          onClick={() => openDialog("print")}
-          title={shortcutLabel("print")}
-        >
-          打印
-        </Button>
-        <Button size="small" onClick={() => openDialog("options")} title={shortcutLabel("options")}>
-          选项
-        </Button>
-      </ToolGroup>
-
-      <ToolGroup>
-        <Tooltip title={`界面主题：${THEME_LABEL[mode]}，点击切换下一个`}>
-          <Button
-            size="small"
-            onClick={() =>
-              void patchSettings("general", {
-                theme: THEME_ORDER[(THEME_ORDER.indexOf(mode) + 1) % THEME_ORDER.length],
-              })
-            }
-          >
-            主题
-          </Button>
-        </Tooltip>
-        <Button
-          size="small"
-          type={sidebar ? "primary" : "default"}
-          disabled={!hasDoc}
-          onClick={toggleSidebar}
-        >
+        {optionsButton}
+        <Button size="small" type={sidebar ? "primary" : "default"} onClick={toggleSidebar}>
           侧栏
         </Button>
+        <Dropdown menu={{ items: moreItems }} trigger={["click"]} placement="bottomRight">
+          <Button size="small" title="另存为 · 查找 · 历史版本 · 导出 · 打印 · 主题">
+            ⋯ 更多
+          </Button>
+        </Dropdown>
       </ToolGroup>
     </>
   );
