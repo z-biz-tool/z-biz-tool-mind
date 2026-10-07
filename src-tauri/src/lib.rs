@@ -1,6 +1,7 @@
 mod backup;
 mod commands;
 mod config;
+mod openfile;
 mod paths;
 mod recent;
 mod secret;
@@ -23,9 +24,10 @@ fn lock_config_env() -> std::sync::MutexGuard<'static, ()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(openfile::Pending::default())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::config_get,
@@ -60,13 +62,36 @@ pub fn run() {
             commands::secret_exists,
             commands::reveal_in_folder,
             commands::history_list,
+            openfile::open_take_pending,
         ])
-        .setup(|_| {
+        .setup(|app| {
             // 启动即保证配置目录存在：后续所有读写都假设它可用。
             let dir = config::get_config_dir();
             std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
+            // Windows / Linux 双击 .emmx：路径就在命令行里，趁前端开始渲染之前收进队列。
+            openfile::seed_from_args(app.handle());
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("z-biz-tool-mind 启动失败");
+
+    app.run(|app_handle, event| {
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            // macOS 上第二次双击不发新进程，只投这一条事件；转成本地路径后进同一条队列。
+            // 这个变体在 Windows/ Linux 上根本不存在，所以判据也只能在那两个平台上编进去。
+            if let tauri::RunEvent::Opened { urls } = event {
+                openfile::push(
+                    app_handle,
+                    urls.iter()
+                        .filter_map(|u| u.to_file_path().ok())
+                        .map(|p| p.to_string_lossy().to_string()),
+                );
+            }
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        {
+            let _ = (app_handle, event);
+        }
+    });
 }

@@ -89,9 +89,7 @@ const RECENT_MAX = 20;
 
 /** 浏览器后备要与 Rust 同规格：固定项排最前、其余按打开时间倒序。 */
 function sortRecent(list: RecentItem[]): RecentItem[] {
-  return [...list].sort(
-    (a, b) => Number(b.pinned) - Number(a.pinned) || b.openedAt - a.openedAt,
-  );
+  return [...list].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.openedAt - a.openedAt);
 }
 
 /** 淘汰只裁未固定的，固定的不因容量被挤掉（照 recent.rs 的 trim）。 */
@@ -233,7 +231,7 @@ export const native = {
   async recentSetPinned(path: string, pinned: boolean): Promise<RecentItem[]> {
     if (!isTauri) {
       const list = lsGet<RecentItem[]>(LS_RECENT, []).map((r) =>
-        r.path === path ? { ...r, pinned } : r,
+        r.path === path ? { ...r, pinned } : r
       );
       lsSet(LS_RECENT, list);
       return sortRecent(list);
@@ -262,7 +260,11 @@ export const native = {
       if (await writeHandle(path, bytes)) return { path, bytes: bytes.length, replaced: true };
       return browserWrite(path, bytes, overwrite);
     }
-    return call<WriteResult>("file_write_bytes", { path, contentBase64: toBase64(bytes), overwrite });
+    return call<WriteResult>("file_write_bytes", {
+      path,
+      contentBase64: toBase64(bytes),
+      overwrite,
+    });
   },
 
   async fileExists(path: string): Promise<boolean> {
@@ -280,7 +282,14 @@ export const native = {
       const bytes = memAutosave.get(path)?.bytes ?? new Uint8Array();
       const id = `trash-${Date.now()}`;
       memBackupBlobs.set(id, bytes);
-      memBackups.unshift({ id, docPath: path, title: path, size: bytes.length, createdAt: Date.now(), reason: "trash" });
+      memBackups.unshift({
+        id,
+        docPath: path,
+        title: path,
+        size: bytes.length,
+        createdAt: Date.now(),
+        reason: "trash",
+      });
       memAutosave.delete(path);
       handles.delete(path);
       return path;
@@ -298,7 +307,11 @@ export const native = {
 
   async autosaveList(): Promise<AutosaveItem[]> {
     if (!isTauri) {
-      return [...memAutosave.entries()].map(([p, v]) => ({ path: p, size: v.bytes.length, modifiedAt: v.at }));
+      return [...memAutosave.entries()].map(([p, v]) => ({
+        path: p,
+        size: v.bytes.length,
+        modifiedAt: v.at,
+      }));
     }
     return call<AutosaveItem[]>("autosave_list");
   },
@@ -312,7 +325,12 @@ export const native = {
     return call<number>("autosave_clear");
   },
 
-  async backupNow(path: string, title: string, reason: string, bytes: Uint8Array): Promise<BackupEntry> {
+  async backupNow(
+    path: string,
+    title: string,
+    reason: string,
+    bytes: Uint8Array
+  ): Promise<BackupEntry> {
     if (!isTauri) {
       const entry: BackupEntry = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -441,6 +459,17 @@ export const native = {
     if (!isTauri) throw new Error("浏览器模式打不开所在目录，请在桌面版里使用");
     await call<void>("reveal_in_folder", { path });
   },
+
+  /**
+   * 取走"待打开路径"（双击 .emmx 交给我们的）。
+   *
+   * 出队即清空，所以启动取一次、收到 open-path 信号再取一次，同一份文件不会被开两遍。
+   * 浏览器模式没有命令行参数这条路，返回空数组就是真的空，不是假装成功。
+   */
+  async takeOpenPaths(): Promise<string[]> {
+    if (!isTauri) return [];
+    return call<string[]>("open_take_pending");
+  },
 };
 
 /** <input> 兜底路径没有 createWritable，写回失败就交回调用方下载。 */
@@ -465,10 +494,16 @@ export interface PickOptions {
 export async function pickOpenPath(opts: PickOptions): Promise<string | null> {
   if (isTauri) {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const r = await open({ title: opts.title, defaultPath: opts.defaultPath, filters: opts.filters });
+    const r = await open({
+      title: opts.title,
+      defaultPath: opts.defaultPath,
+      filters: opts.filters,
+    });
     return typeof r === "string" ? r : null;
   }
-  const w = window as unknown as { showOpenFilePicker?: (o: unknown) => Promise<FileSystemFileHandle[]> };
+  const w = window as unknown as {
+    showOpenFilePicker?: (o: unknown) => Promise<FileSystemFileHandle[]>;
+  };
   if (w.showOpenFilePicker) {
     try {
       const [h] = await w.showOpenFilePicker({
@@ -497,7 +532,9 @@ export async function pickSavePath(opts: PickOptions): Promise<string | null> {
     });
     return r ?? null;
   }
-  const w = window as unknown as { showSaveFilePicker?: (o: unknown) => Promise<FileSystemFileHandle> };
+  const w = window as unknown as {
+    showSaveFilePicker?: (o: unknown) => Promise<FileSystemFileHandle>;
+  };
   if (w.showSaveFilePicker) {
     try {
       const h = await w.showSaveFilePicker({
@@ -521,7 +558,10 @@ async function pickByInput(filters: PickOptions["filters"]): Promise<string | nu
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = filters.flatMap((f) => f.extensions).map((e) => `.${e}`).join(",");
+    input.accept = filters
+      .flatMap((f) => f.extensions)
+      .map((e) => `.${e}`)
+      .join(",");
     input.onchange = () => {
       const f = input.files?.[0];
       if (!f) return resolve(null);

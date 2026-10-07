@@ -36,7 +36,13 @@ import { canSave } from "./utils/entitlement.ts";
 import { humanSize, timestampName } from "./utils/id.ts";
 import { autosaveNote, newestPendingAutosave, startAutosave } from "./services/autosave.ts";
 import { runAiInsert } from "./services/ai.ts";
-import { native, pickOpenPath, pickSavePath, type AutosaveItem } from "./services/native.ts";
+import {
+  listen,
+  native,
+  pickOpenPath,
+  pickSavePath,
+  type AutosaveItem,
+} from "./services/native.ts";
 import {
   IMPORT_EXTENSIONS,
   docFromOutline,
@@ -216,6 +222,23 @@ function Shell() {
   }, [openPicked]);
 
   /**
+   * 关联打开：双击 .emmx 交给我们的路径由 Rust 那边排队（Windows/Linux 来自命令行，
+   * macOS 来自 RunEvent::Opened），这里只负责把队列取空。
+   *
+   * 走 openPicked 而不是自己调 openPath，是为了让"手上还有没存的改动"那道确认跟手动「打开」
+   * 一模一样 —— 同一件事不该有两个流程。
+   * 一次取到多份时只开第一份并说清楚：一个窗口装不下一堆文档，假装都开了才是坑。
+   */
+  const openQueued = useCallback(async () => {
+    const paths = await native.takeOpenPaths();
+    if (!paths.length) return;
+    openPicked(paths[0]);
+    if (paths.length > 1) {
+      message.warning(`收到 ${paths.length} 个文件，只打开了第 1 个：一个窗口只能放一份脑图。`);
+    }
+  }, [message, openPicked]);
+
+  /**
    * 导入。两族编码：XML/CSV 系列是文本，.emmx/.xmind 是 zip。
    * .xmind 目前只认不解析（sniff 认得它，codec 不认），如实报错，不要谎报"导入成功"。
    */
@@ -291,6 +314,31 @@ function Shell() {
   useEffect(() => startAutosave(), []);
   useEffect(() => startRecentListeners(), []);
 
+  /**
+   * 关联打开的两个触发点：启动时取一次队列（双击新进程那条路），
+   * 以及收到 open-path 信号时再取一次（macOS 复用同一进程那条路）。
+   * 两条路共用同一次出队，所以谁先到都不影响"只开一遍"。
+   *
+   * assocDone 是"这一轮问过了"：恢复上次会话那段效果必须等它，
+   * 否则双击 B 文件冷启动时，会先被"上次打开的 A"顶回来，把用户的明确意图藏掉。
+   */
+  const [assocDone, setAssocDone] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    let un: (() => void) | null = null;
+    void openQueued().finally(() => {
+      if (alive) setAssocDone(true);
+    });
+    void listen("open-path", () => void openQueued()).then((f) => {
+      if (alive) un = f;
+      else f();
+    });
+    return () => {
+      alive = false;
+      un?.();
+    };
+  }, [openQueued]);
+
   /** 启动时问一句"有没有没存下来的东西"；判定与格式化都在 services/autosave，这里只负责打断。 */
   useEffect(() => {
     let alive = true;
@@ -308,6 +356,7 @@ function Shell() {
    * 三条退让：崩溃快照的恢复询问优先（那是没存下来的东西，压着它开文件等于把改动藏起来）；
    * 已经有文档就不插手（用户可能是自己挑的文件）；整个进程只做一次，之后他回起始页是自愿的，
    * 不能每次回起始页都被一份"上次会话"顶回去。
+   * 第四条：关联打开问过了再说（assocDone）—— 双击的是 B，就不能先把 A 顶上来。
    */
   const settingsLoaded = useSettings((s) => s.loaded);
   const recentItems = useRecent((s) => s.recent);
@@ -316,7 +365,7 @@ function Shell() {
   useEffect(() => {
     if (autoOpened.current) return;
     const restore = useSettings.getState().settings.general.restoreLastSession;
-    if (!settingsLoaded || !restore || recentLoading || snapshot) return;
+    if (!settingsLoaded || !restore || recentLoading || snapshot || !assocDone) return;
     if (!useDoc.getState().hist) {
       const last = [...recentItems].sort((a, b) => b.openedAt - a.openedAt)[0];
       if (last) {
@@ -326,7 +375,7 @@ function Shell() {
       }
     }
     autoOpened.current = true;
-  }, [settingsLoaded, recentLoading, recentItems, snapshot, openPicked]);
+  }, [settingsLoaded, recentLoading, recentItems, snapshot, assocDone, openPicked]);
 
   const restoreSnapshot = useCallback(async () => {
     const item = snapshot;
