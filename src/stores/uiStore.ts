@@ -32,7 +32,14 @@ interface UiState {
   exportFormat: ExportFormat;
   searchOpen: boolean;
   searchQuery: string;
+  /** 查找目标：主题正文 / 备注与评论 / 标签（§3.18 的三类）。 */
+  inText: boolean;
   inNote: boolean;
+  inLabel: boolean;
+  /** 关掉时折叠遮住的主题不参与搜索，也不参与替换。 */
+  includeHidden: boolean;
+  /** false = 只搜当前页，true = 整份文件所有画布。 */
+  searchAllPages: boolean;
   caseSensitive: boolean;
   wholeWord: boolean;
   /** 搜索结果里的当前项下标；-1 表示还没跳过。 */
@@ -50,7 +57,19 @@ interface UiState {
   closeDialog: () => void;
   setExportFormat: (f: ExportFormat) => void;
   setSearch: (
-    patch: Partial<Pick<UiState, "searchQuery" | "inNote" | "caseSensitive" | "wholeWord">>
+    patch: Partial<
+      Pick<
+        UiState,
+        | "searchQuery"
+        | "inText"
+        | "inNote"
+        | "inLabel"
+        | "includeHidden"
+        | "searchAllPages"
+        | "caseSensitive"
+        | "wholeWord"
+      >
+    >
   ) => void;
   setActiveMatch: (i: number) => void;
   setStartPage: (v: boolean) => void;
@@ -65,7 +84,11 @@ export const useUi = create<UiState>((set, get) => ({
   exportFormat: "png",
   searchOpen: false,
   searchQuery: "",
+  inText: true,
   inNote: false,
+  inLabel: false,
+  includeHidden: false,
+  searchAllPages: false,
   caseSensitive: false,
   wholeWord: false,
   activeMatch: -1,
