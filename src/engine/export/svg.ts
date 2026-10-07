@@ -177,17 +177,43 @@ export function esc(s: string): string {
   return s.replace(/[&<>"]/g, (c) => XML_ESC[c]);
 }
 
+/**
+ * 视口：viewBox 的那一块内容坐标，加上把它放大到设备像素的倍率。
+ * width = w * scale，所以"一页装不装得下、字有多大"由 scale 一个数决定，
+ * 形状坐标本身一个都不动 —— 打印分页只是换视口，不是第二次布局（P-2）。
+ */
+export interface SvgView {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  scale?: number;
+}
+
+/** 整图导出用的默认视口：paint 算出来的那张外框。 */
+export function fullView(p: Paint): SvgView {
+  return { x: p.minX, y: p.minY, w: p.width, h: p.height };
+}
+
 /** SVG 导出。矢量、可编辑，也是 PNG / 位图 PDF 的中间产物。 */
 export function buildSvg(page: Page, opts: RenderOptions = {}): string {
-  const p = paintPage(page, opts);
+  return renderSvg(paintPage(page, opts));
+}
+
+/**
+ * 已经把 Paint 算出来了的那些调用者（打印分页要先过滤形状）走这一条：
+ * 图形部分与 buildSvg 逐字相同，只是外面的 <svg> 换了视口。
+ */
+export function renderSvg(p: Paint, view: SvgView = fullView(p)): string {
+  const s = view.scale ?? 1;
   const out: string[] = [];
   out.push(`<?xml version="1.0" encoding="UTF-8" standalone="no"?>`);
   out.push(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${round(p.width)}" height="${round(p.height)}" ` +
-      `viewBox="${round(p.minX)} ${round(p.minY)} ${round(p.width)} ${round(p.height)}" font-family="${FONT_STACK}">`
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${round(view.w * s)}" height="${round(view.h * s)}" ` +
+      `viewBox="${round(view.x)} ${round(view.y)} ${round(view.w)} ${round(view.h)}" font-family="${FONT_STACK}">`
   );
   out.push(
-    `<rect x="${round(p.minX)}" y="${round(p.minY)}" width="${round(p.width)}" height="${round(p.height)}" fill="${p.background}"/>`
+    `<rect x="${round(view.x)}" y="${round(view.y)}" width="${round(view.w)}" height="${round(view.h)}" fill="${p.background}"/>`
   );
   // 外框在连线和主题之下：它是给一组主题"围个圈"的底色，压在上面就会把内容糊掉。
   for (const o of p.overlays) {

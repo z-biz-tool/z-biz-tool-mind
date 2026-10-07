@@ -20,7 +20,8 @@ export const PROJECTIONS: { id: Projection; label: string }[] = [
   { id: "traverse", label: "浏览" },
 ];
 
-export type DialogKind = "export" | "options" | "search" | "history" | "share" | "topicInfo" | null;
+export type DialogKind =
+  "export" | "print" | "options" | "search" | "history" | "share" | "topicInfo" | null;
 
 interface UiState {
   projection: Projection;

@@ -20,6 +20,7 @@ import { StartView } from "./views/StartView.tsx";
 import { SearchPanel } from "./views/SearchPanel.tsx";
 import { HistoryPanel } from "./views/HistoryPanel.tsx";
 import { ExportDialog } from "./views/ExportDialog.tsx";
+import { PrintDialog } from "./views/PrintDialog.tsx";
 import { TopicInfoDialog } from "./views/TopicInfoDialog.tsx";
 import { OptionsView } from "./views/OptionsView.tsx";
 import { activeDoc, activePage, depthOf, dirtyOf, useDoc } from "./stores/docStore.ts";
@@ -403,8 +404,11 @@ function Shell() {
 
   // 注册表里放一个"永远指向最新闭包"的转发对象：命令实现每次渲染都是新函数，
   // 而注册只该发生一次 —— 这两件事由一个 ref 来调和。
+  // 必须是"改同一个对象"（Object.assign），不能"换一个新对象"：注册进去的是引用本身，
+  // 重新赋值会让注册表永远停在首屏那一份闭包 —— 那里 hasDoc 恒为 false，
+  // 实测 Ctrl+E / Ctrl+P 按下去什么都不发生，而工具栏上的按钮明明是亮着的。
   const commands = useRef<ShortcutHandlers>({});
-  commands.current = {
+  Object.assign(commands.current, {
     newDoc: doNew,
     open: () => void doOpen(),
     save: () => void saveNow(),
@@ -415,9 +419,12 @@ function Shell() {
     export: () => {
       if (hasDoc) openDialog("export");
     },
+    print: () => {
+      if (hasDoc) openDialog("print");
+    },
     options: () => openDialog("options"),
     closeDialog,
-  };
+  });
   useEffect(() => registerShortcuts(commands.current), []);
   useGlobalShortcuts();
 
@@ -557,6 +564,14 @@ function Shell() {
         >
           导出
         </Button>
+        <Button
+          size="small"
+          disabled={!hasDoc}
+          onClick={() => openDialog("print")}
+          title={shortcutLabel("print")}
+        >
+          打印
+        </Button>
         <Button size="small" onClick={() => openDialog("options")} title={shortcutLabel("options")}>
           选项
         </Button>
@@ -651,6 +666,7 @@ function Shell() {
       </AppShell>
 
       <ExportDialog open={dialog === "export"} onClose={closeDialog} />
+      <PrintDialog open={dialog === "print"} onClose={closeDialog} />
       <OptionsView open={dialog === "options"} onClose={closeDialog} />
       <TopicInfoDialog page={page} onClose={closeDialog} />
 

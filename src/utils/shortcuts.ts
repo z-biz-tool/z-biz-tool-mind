@@ -17,6 +17,7 @@ type ShortcutCommand =
   | "undo"
   | "redo"
   | "export"
+  | "print"
   | "options"
   | "closeDialog";
 
@@ -30,6 +31,7 @@ export interface ShortcutHandlers {
   undo?: () => void;
   redo?: () => void;
   export?: () => void;
+  print?: () => void;
   options?: () => void;
   closeDialog?: () => void;
 }
@@ -48,6 +50,7 @@ const CHORDS: Record<string, ShortcutCommand> = {
   "ctrl+shift+z": "redo",
   "ctrl+y": "redo",
   "ctrl+e": "export",
+  "ctrl+p": "print",
   f1: "options",
   esc: "closeDialog",
 };
@@ -76,7 +79,7 @@ const IGNORED_KEYS = new Set([
  * 但保存/导出这类动作针对的是文档而不是光标 —— 新建标注会立刻进入文字编辑态，
  * 那时按 Ctrl+S 存不下东西，用户只会以为软件没反应。
  */
-const TYPING_SAFE = new Set<ShortcutCommand>(["save", "saveAs", "export", "options"]);
+const TYPING_SAFE = new Set<ShortcutCommand>(["save", "saveAs", "export", "print", "options"]);
 
 const registry: Partial<ShortcutHandlers>[] = [];
 
