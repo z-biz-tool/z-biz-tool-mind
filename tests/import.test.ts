@@ -14,6 +14,7 @@
  */
 import { done, eq, ok, rejects, throws } from "./_harness.ts";
 import { encodeText, writeZip } from "../src/engine/emmx/zip.ts";
+import { parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
 import {
   IMPORT_EXTENSIONS,
   docFromOutline,
@@ -203,5 +204,18 @@ await rejects(
   importBytes("e.csv", utf8("\uFEFF")),
   "CSV 是空的"
 );
+
+// ---------- 导进来要存得回去：多页 .xmind → .emmx → 再读回来 ----------
+const roundTrip = await parseEmmx(await writeEmmx(doc));
+eq("存成 .emmx 没有告警", roundTrip.warnings, []);
+eq("读回来还是两页", roundTrip.doc.pages.length, 2);
+eq(
+  "页名跟着走",
+  roundTrip.doc.pages.map((p) => p.name),
+  ["第一页", "画布2"]
+);
+eq("第 1 页内容不变", pageText(roundTrip.doc, 0), "中心\n\t甲\n\t\t浮动\n\t乙");
+eq("第 2 页内容不变", pageText(roundTrip.doc, 1), "另一张\n\t丙");
+eq("activePageId 仍指第 1 页", roundTrip.doc.activePageId, roundTrip.doc.pages[0].id);
 
 done();
