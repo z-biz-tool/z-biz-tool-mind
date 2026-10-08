@@ -186,20 +186,25 @@ export function insertParent(page: Page, id: string): InsertResult {
   return { page: next, id: newId };
 }
 
-/** 删除主题及其子树；中心主题不可删（返回原 page）。 */
+/**
+ * 删除主题及其子树；中心主题不可删（返回原 page）。
+ * 浮动主题根同样没有 parentId，但它是用户建出来的，必须删得掉 —— 判据是 floating，不是 parentId。
+ */
 export function removeShape(page: Page, id: string): Page {
   const s = page.shapes[id];
-  if (!s || !s.parentId) return page;
+  if (!s) return page;
+  if (!s.parentId && !s.floating) return page;
   const doomed = new Set(subtreeIds(page, id));
   // 标注不在主题树上（子树顺着 childIds 走），删宿主时得另顺着 calloutIds 把它一起带走
   for (const d of [...doomed])
     for (const c of page.shapes[d]?.extras.calloutIds ?? []) doomed.add(c);
-  const parent = page.shapes[s.parentId];
-  let next = setChildren(
-    page,
-    s.parentId,
-    (parent?.childIds ?? []).filter((c) => c !== id)
-  );
+  let next = s.parentId
+    ? setChildren(
+        page,
+        s.parentId,
+        (page.shapes[s.parentId]?.childIds ?? []).filter((c) => c !== id)
+      )
+    : page;
   const shapes = { ...next.shapes };
   for (const d of doomed) delete shapes[d];
   // 指向被删主题的关系线 / 双向链接要一起清掉，否则投影层会读到 undefined

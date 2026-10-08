@@ -153,6 +153,11 @@ eq("挂回主树即不再是浮动主题", back.shapes[B].floating, false);
 eq("类型跟着层级重算", back.shapes[B].type, "SubTopic");
 eq("父的 childIds 补上", back.shapes[A].childIds.includes(B), true);
 ok("回到主树后仍在布局里", Boolean(computeLayout(back).boxes[B]));
+// 浮动根没有 parentId，但它是用户建的：必须删得掉，并连带自己的整枝子树
+const flDel = removeShape(dragged, B);
+ok("删掉浮动根与它的子树", !flDel.shapes[B] && !flDel.shapes[bk]);
+eq("删浮动根不动主树", flDel.shapes[root].childIds.join(","), p.shapes[root].childIds.join(","));
+ok("中心主题仍然删不掉（同样没有 parentId，但不是浮动）", removeShape(fl, root) === fl);
 
 // --- 脏数据自愈
 const dirty = { ...p, shapes: { ...p.shapes, [A]: { ...p.shapes[A], parentId: "99999" } } };

@@ -672,7 +672,11 @@ export function MindCanvas({ page }: MindCanvasProps) {
     const layers = ids.filter((id) =>
       ["Callout", "Boundary", "Summary"].includes(pg.shapes[id]?.type ?? "")
     );
-    const doomed = ids.filter((id) => Boolean(pg.shapes[id]?.parentId));
+    // 浮动主题根也没有 parentId，但它是用户建的，不属于"中心主题不可删"那一档
+    const doomed = ids.filter((id) => {
+      const sh = pg.shapes[id];
+      return Boolean(sh?.parentId) || Boolean(sh?.floating);
+    });
     if (!doomed.length && !layers.length) return; // 中心主题不可删（removeShape 也会拒）
     const gone = new Set([...doomed, ...layers]);
     let back: string | null = pg.shapes[doomed[0]]?.parentId ?? null;
@@ -745,7 +749,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (!sel.some((id) => Boolean(pg.shapes[id]?.parentId))) return;
+        // 这条挡的是中心主题（既没 parentId 也不浮动）；浮动根没有 parentId 但删得掉
+        const canDel = (id: string) => {
+          const sh = pg.shapes[id];
+          return Boolean(sh?.parentId) || Boolean(sh?.floating);
+        };
+        if (!sel.some(canDel)) return;
         e.preventDefault();
         removeTopics(sel);
         return;
@@ -843,7 +852,7 @@ export function MindCanvas({ page }: MindCanvasProps) {
             tip: "折叠 / 展开这条分支（F4）",
             run: () => toggleFold(id),
           });
-        if (only.parentId)
+        if (only.parentId || only.floating)
           out.push({
             k: "del",
             label: "删除",
