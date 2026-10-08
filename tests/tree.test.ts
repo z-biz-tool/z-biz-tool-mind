@@ -2,6 +2,7 @@
  * 树原语（一条树六个投影里"树"的那一半）。
  * 覆盖的缺陷形状：删根、把父节点拖进自己的子树、第一个分支无处降级、
  * 浮动主题脱离主树、拖浮动主题改位置后布局要认、挂回主树时浮动标记必须一起摘下、
+ * 浮动根虽然没有父也必须删得掉、
  * 脏数据（parentId 指向不存在的节点）自愈但不能丢内容。
  */
 import { done, eq, ok } from "./_harness.ts";
@@ -156,7 +157,7 @@ ok("回到主树后仍在布局里", Boolean(computeLayout(back).boxes[B]));
 // 浮动根没有 parentId，但它是用户建的：必须删得掉，并连带自己的整枝子树
 const flDel = removeShape(dragged, B);
 ok("删掉浮动根与它的子树", !flDel.shapes[B] && !flDel.shapes[bk]);
-eq("删浮动根不动主树", flDel.shapes[root].childIds.join(","), p.shapes[root].childIds.join(","));
+eq("删浮动根不动主树", flDel.shapes[root].childIds.join(","), fl.shapes[root].childIds.join(","));
 ok("中心主题仍然删不掉（同样没有 parentId，但不是浮动）", removeShape(fl, root) === fl);
 
 // --- 脏数据自愈
