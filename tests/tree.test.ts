@@ -3,6 +3,7 @@
  * 覆盖的缺陷形状：删根、把父节点拖进自己的子树、第一个分支无处降级、
  * 浮动主题脱离主树、拖浮动主题改位置后布局要认、挂回主树时浮动标记必须一起摘下、
  * 浮动根虽然没有父也必须删得掉、
+ * 自由布局里新建的主题要落在父主题外侧（位置在这一版归用户，留 (0,0) 就是叠在中心主题上），
  * 脏数据（parentId 指向不存在的节点）自愈但不能丢内容。
  */
 import { done, eq, ok } from "./_harness.ts";
@@ -55,7 +56,11 @@ let A0: string;
   const r = insertSibling(p, A, "before", "A0");
   return [r.page, r.id] as const;
 })();
-eq("before 插到 A 前面", p.shapes[root].childIds.indexOf(A0), p.shapes[root].childIds.indexOf(A) - 1);
+eq(
+  "before 插到 A 前面",
+  p.shapes[root].childIds.indexOf(A0),
+  p.shapes[root].childIds.indexOf(A) - 1
+);
 eq("兄弟序号", siblingIndex(p, A), 2);
 
 // --- 深层类型
@@ -92,7 +97,11 @@ ok("第一个分支无处降级", demote(demoted.page, first).ok === false);
 const promoted = promote(demoted.page, two);
 ok("升级成功", promoted.ok);
 eq("two 回到根下", promoted.page.shapes[two].parentId, root);
-eq("升级后紧跟 one", promoted.page.shapes[root].childIds.indexOf(two), promoted.page.shapes[root].childIds.indexOf(one) + 1);
+eq(
+  "升级后紧跟 one",
+  promoted.page.shapes[root].childIds.indexOf(two),
+  promoted.page.shapes[root].childIds.indexOf(one) + 1
+);
 ok("一级分支无法再升", promote(promoted.page, one).ok === false);
 
 // --- 插入父主题
@@ -113,10 +122,18 @@ eq("禁止自移", moveShape(mv, x, x).shapes[x].parentId, mv.shapes[x].parentId
 // --- 兄弟互换：A 原本排第三，两次上移才到最前
 const sw = swapSibling(swapSibling(p, A, -1), A, -1);
 eq("两次上移后 A 在最前", sw.shapes[root].childIds[0], A);
-eq("首位再上移越界不动", swapSibling(sw, A, -1).shapes[root].childIds.join(","), sw.shapes[root].childIds.join(","));
-eq("末位再下移越界不动",
-  swapSibling(sw, sw.shapes[root].childIds[sw.shapes[root].childIds.length - 1], 1).shapes[root].childIds.join(","),
-  sw.shapes[root].childIds.join(","));
+eq(
+  "首位再上移越界不动",
+  swapSibling(sw, A, -1).shapes[root].childIds.join(","),
+  sw.shapes[root].childIds.join(",")
+);
+eq(
+  "末位再下移越界不动",
+  swapSibling(sw, sw.shapes[root].childIds[sw.shapes[root].childIds.length - 1], 1).shapes[
+    root
+  ].childIds.join(","),
+  sw.shapes[root].childIds.join(",")
+);
 
 // --- 折叠
 const col = setCollapsed(p, A, true);
@@ -167,9 +184,14 @@ ok("不丢节点", Object.keys(fixed.shapes).length === Object.keys(dirty.shapes
 eq("重挂到中心主题", fixed.shapes[A].parentId, fixed.rootId);
 ok(
   "双向索引自洽",
-  Object.values(fixed.shapes).every((sh) => sh.childIds.every((c) => fixed.shapes[c]?.parentId === sh.id))
+  Object.values(fixed.shapes).every((sh) =>
+    sh.childIds.every((c) => fixed.shapes[c]?.parentId === sh.id)
+  )
 );
-const cyc = normalize({ ...p, shapes: { ...p.shapes, [root]: { ...p.shapes[root], parentId: A } } });
+const cyc = normalize({
+  ...p,
+  shapes: { ...p.shapes, [root]: { ...p.shapes[root], parentId: A } },
+});
 ok("去环后根没有父", cyc.shapes[cyc.rootId].parentId === null);
 
 // --- 其它
@@ -178,5 +200,43 @@ eq("branchIndex 从 0 起", branchIndex(fixed, fixed.shapes[fixed.rootId].childI
 const noop = updateText(p, "不存在的id", "x");
 eq("updateText 对未知 id 是空操作", Object.keys(noop.shapes).length, Object.keys(p.shapes).length);
 eq("文本读回", plainText(updateText(p, A, "改过").shapes[A].text), "改过");
+
+// --- 自由布局：新建主题的位置是用户数据，不给位置就叠在中心主题上
+{
+  const fp = { ...p, layout: { ...p.layout, code: "free" as const } };
+  const one = insertChild(fp, root, "自由一");
+  const two = insertChild(one.page, root, "自由二");
+  const t1 = two.page.shapes[one.id].transform;
+  const t2 = two.page.shapes[two.id].transform;
+  ok(
+    "新主题落在父主题外侧，不是 (0,0)",
+    Math.abs(t1.x) > 1 || Math.abs(t1.y) > 1,
+    JSON.stringify(t1)
+  );
+  ok("同排两个孩子不叠在一起", t1.x !== t2.x || t1.y !== t2.y, JSON.stringify([t1, t2]));
+  eq("布局引擎重算时认这份位置", computeLayout(two.page).boxes[one.id].x, t1.x);
+  const up = insertParent(two.page, one.id);
+  const tp = up.page.shapes[up.id].transform;
+  ok("插入的父主题不盖住自己的孩子", tp.x !== t1.x || tp.y !== t1.y, JSON.stringify([tp, t1]));
+  // 别的版式位置归引擎：新建主题一律留空，等布局算
+  const bp = insertChild(
+    { ...p, layout: { ...p.layout, code: "balanced" as const } },
+    root,
+    "普通"
+  );
+  eq(
+    "非自由布局不写位置",
+    [bp.page.shapes[bp.id].transform.x, bp.page.shapes[bp.id].transform.y],
+    [0, 0]
+  );
+  // 浮动枝的子主题由浮动根现算，写了也没人读
+  const fpage = setFloating(fp, A, 300, -200);
+  const fchild = insertChild(fpage, A, "浮动子");
+  eq(
+    "浮动主题的孩子仍然留空位置",
+    [fchild.page.shapes[fchild.id].transform.x, fchild.page.shapes[fchild.id].transform.y],
+    [0, 0]
+  );
+}
 
 done();

@@ -8,6 +8,7 @@
 import { useMemo } from "react";
 import { Button, ColorPicker, Segmented, Select, Tooltip } from "antd";
 import { LAYOUT_LABELS } from "../model/constants.ts";
+import { toFreeLayout } from "../engine/layout.ts";
 import { countTopics, maxDepth, updateStyle } from "../engine/tree.ts";
 import { applyPalette, styleFor } from "../engine/style.ts";
 import { useDoc } from "../stores/docStore.ts";
@@ -102,7 +103,11 @@ export function MindMapView({ page }: { page: Page }) {
           value={page.layout.code}
           options={LAYOUT_OPTIONS}
           onChange={(code: LayoutCode) =>
-            mutate("改布局", (p) => ({ ...p, layout: { ...p.layout, code } }))
+            mutate("改布局", (p) =>
+              code === "free"
+                ? toFreeLayout(p, { displayLevel: displayLevels })
+                : { ...p, layout: { ...p.layout, code } }
+            )
           }
         />
         <Tooltip title="只显示前 N 级，深处的内容收起来但不删除">

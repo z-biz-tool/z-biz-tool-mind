@@ -15,6 +15,7 @@
 
 import type { Page, RelationshipShape, Shape } from "../types/model.ts";
 import { isTopic, makeText } from "../types/model.ts";
+import { DEFAULTS } from "../model/constants.ts";
 import { createShape, nextShapeId, topicTypeFor } from "../model/factory.ts";
 
 export function getShape(page: Page, id: string): Shape | undefined {
@@ -131,6 +132,34 @@ export function retypeSubtree(page: Page, rootId: string): Page {
 
 export type InsertResult = { page: Page; id: string };
 
+/**
+ * 自由布局里坐标是用户数据而不是布局结果：新建主题不给位置就以 (0,0) 叠在中心主题底下，
+ * 看上去像"按了没加上"。落点 = 顺着"父的父 → 父"这个方向再往外走一格，
+ * 同排的孩子沿垂直方向散开 —— 父竖着排时孩子就横着散，跟各版式排出来的样子一致。
+ */
+function freeSpot(page: Page, parentId: string, ix: number, count: number) {
+  const parent = page.shapes[parentId];
+  if (!parent) return { x: 0, y: 0 };
+  const gp = parent.parentId ? page.shapes[parent.parentId] : undefined;
+  let ux = 1;
+  let uy = 0;
+  if (gp) {
+    const dx = parent.transform.x - gp.transform.x;
+    const dy = parent.transform.y - gp.transform.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 1) {
+      ux = dx / len;
+      uy = dy / len;
+    }
+  }
+  const spread = DEFAULTS.topicMinH + DEFAULTS.vSpacing;
+  const k = ix - (count - 1) / 2;
+  return {
+    x: Math.round(parent.transform.x + ux * DEFAULTS.levelLength - uy * k * spread),
+    y: Math.round(parent.transform.y + uy * DEFAULTS.levelLength + ux * k * spread),
+  };
+}
+
 export function insertChild(page: Page, parentId: string, text = "", at?: number): InsertResult {
   const parent = page.shapes[parentId];
   if (!parent) return { page, id: "" };
@@ -143,6 +172,11 @@ export function insertChild(page: Page, parentId: string, text = "", at?: number
     0,
     id
   );
+  if (page.layout.code === "free" && !parent.floating)
+    shape.transform = {
+      ...shape.transform,
+      ...freeSpot(page, parentId, childIds.indexOf(id), childIds.length),
+    };
   let next: Page = { ...page, shapes: { ...page.shapes, [id]: shape } };
   next = setChildren(next, parentId, childIds);
   return { page: next, id };
@@ -170,6 +204,16 @@ export function insertParent(page: Page, id: string): InsertResult {
   if (ix < 0) return { page, id: "" };
 
   const parentShape = createShape(newId, s.type, "", grandfather);
+  // 自由布局里新父主题插在"外祖父 → 自己"这条线段的中点：既不叠在原点上，也不盖住自己的孩子。
+  if (page.layout.code === "free") {
+    const gp = page.shapes[grandfather];
+    if (gp)
+      parentShape.transform = {
+        ...parentShape.transform,
+        x: Math.round((gp.transform.x + s.transform.x) / 2),
+        y: Math.round((gp.transform.y + s.transform.y) / 2),
+      };
+  }
   let next: Page = { ...page, shapes: { ...page.shapes, [newId]: parentShape } };
   // 先把 s 从 grandfather 摘掉，接到 newId 下
   next = setChildren(

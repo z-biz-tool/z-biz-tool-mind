@@ -15,6 +15,12 @@
  * 8) 交叉树是反过来的一族：线本来就是一条斜穿过去的直线段，交叉是它的目的。
  *    它同样"没有 C"，所以不能塞进第 7 条的筛子里 —— 得单独一族判定"每条线恰好两点"，
  *    并要求层与层之间真的出现交叉。
+ * 9) 顺/逆时针两码的唯一差别就是绕向：判定要把角度折成"从 12 点起、顺时针 0..360"再比单调，
+ *    直接比 atan2 会在 ±180° 处断掉（-135° 看着比 135°"小"，其实是顺时针更靠后）。
+ *    双向平衡向下 名字属于"平衡"一族、几何却是两条向下的条带，连线判定跟着几何走而不是跟着名字走。
+ * 10) 自由布局是 P-2"位置是算出来的"那条规矩的完整例外（不再只有浮动根例外）：
+ *    切进去要把屏幕上的位置钉进 transform，被折叠或"显示层级"挡在布局外的主题也得补一份，
+ *    否则用户放开折叠就看到一整枝叠在中心主题上。
  */
 import { done, eq, near, ok } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
@@ -23,6 +29,7 @@ import {
   computeLayout,
   measureShape,
   textWidth,
+  toFreeLayout,
   wrapText,
 } from "../src/engine/layout.ts";
 import { paintPage, renderSvg } from "../src/engine/export/svg.ts";
@@ -34,6 +41,7 @@ import {
   setFloating,
   updateStyle,
   updateText,
+  updateTransform,
 } from "../src/engine/tree.ts";
 import { DEFAULTS, LAYOUT_LABELS } from "../src/model/constants.ts";
 import { plainText } from "../src/types/model.ts";
@@ -224,6 +232,83 @@ function add(parentId: string, text: string): string {
   ok("孙主题排在子的右侧", L.boxes[gk].x > L.boxes[fk].x, "");
 }
 
+// ---------------------------------------------------------------- 自由布局：整张图的位置都归用户
+{
+  cur = createPage("自由布局");
+  const a = add(root(), "甲");
+  const a1 = add(a, "甲一");
+  const a2 = add(a, "甲二");
+  const b = add(root(), "乙");
+  const ids = [a, a1, a2, b];
+  const before = computeLayout(cur);
+  let p = toFreeLayout(cur);
+  eq("切进去就改成了 free 码", p.layout.code, "free");
+  eq(
+    "钉住的位置 = 切进来那一刻屏幕上算出来的位置，一个像素都不差",
+    ids.map((id) => [p.shapes[id].transform.x, p.shapes[id].transform.y]),
+    ids.map((id) => [before.boxes[id].x, before.boxes[id].y])
+  );
+  eq(
+    "钉完再布局不许跳位（跳了就是引擎还在重算）",
+    ids.map((id) => {
+      const L = computeLayout(p).boxes[id];
+      return [L.x, L.y];
+    }),
+    ids.map((id) => [before.boxes[id].x, before.boxes[id].y])
+  );
+  eq("已经在这儿了就是空操作", toFreeLayout(p) === p, true);
+
+  // 画布上拖主题落进的就是这条 updateTransform（过去只有浮动根能用它）
+  p = updateTransform(p, a1, { x: 999, y: -77 });
+  eq(
+    "自由布局里主题停在哪就是哪",
+    (() => {
+      const L = computeLayout(p).boxes[a1];
+      return [L.x, L.y];
+    })(),
+    [999, -77]
+  );
+  eq("再切一次 free 也不把用户拖出来的位置冲掉", toFreeLayout(p).shapes[a1].transform.x, 999);
+
+  // 折叠着的分支不在布局里，不补一份位置的话用户放开折叠就看到一整枝叠在中心主题上
+  cur = createPage("自由布局含折叠");
+  const c = add(root(), "丙");
+  const c1 = add(c, "丙一");
+  const c2 = add(c, "丙二");
+  cur = setCollapsed(cur, c, true);
+  ok("折叠后这一枝确实不在布局里", !computeLayout(cur).boxes[c1]);
+  const pf = setCollapsed(toFreeLayout(cur), c, false);
+  const off = computeLayout(pf);
+  ok(
+    "放开折叠后主题不叠在原点上",
+    [c1, c2].every((id) => Math.abs(off.boxes[id].x) > 1 || Math.abs(off.boxes[id].y) > 1),
+    ""
+  );
+  ok(
+    "补出来的位置各算各的，同排两个主题不叠在一起",
+    off.boxes[c1].x !== off.boxes[c2].x || off.boxes[c1].y !== off.boxes[c2].y,
+    ""
+  );
+  ok("整枝都落在父主题外侧", off.boxes[c1].x > pf.shapes[c].transform.x, "");
+
+  // 被"显示层级"裁掉的主题走的是同一条补位置的路，而屏上看得见的那几层必须原位不动
+  cur = createPage("自由布局含深层");
+  const d = add(root(), "丁");
+  const d1 = add(d, "丁一");
+  const shown = computeLayout(cur, { displayLevel: 1 });
+  const pd = toFreeLayout(cur, { displayLevel: 1 });
+  eq(
+    "看得见的第一层钉的是屏幕上的位置",
+    [pd.shapes[d].transform.x, pd.shapes[d].transform.y],
+    [shown.boxes[d].x, shown.boxes[d].y]
+  );
+  ok(
+    "被裁掉的深处主题也有位置，放开层级不会叠回原点",
+    Math.abs(pd.shapes[d1].transform.x) > 1 || Math.abs(pd.shapes[d1].transform.y) > 1,
+    ""
+  );
+}
+
 // ---------------------------------------------------------------- 全码几何回归（03 §1.3-1：过去 20 码只有 2 码有断言）
 {
   cur = createPage("全码");
@@ -256,12 +341,24 @@ function add(parentId: string, text: string): string {
       }
     return bad;
   };
-  /** 整族折线的版式：树状图 / 组织结构图 / 矩阵图。 */
+  /** 整族折线的版式：树状图 / 组织结构图 / 矩阵图，加上条带向下的双向平衡向下。 */
   const isElbowFamily = (code: LayoutCode) =>
-    code.startsWith("tree") || code.startsWith("org") || code === "matrix";
-  /** 整族曲线的版式：横着推进的三条时间线（竖直主轴那条才是混用族）。 */
-  const isCurveFamily = (code: LayoutCode) =>
-    code === "timelineHorizontal" || code === "timelineLeft" || code === "timelineWinding";
+    code.startsWith("tree") ||
+    code.startsWith("org") ||
+    code === "matrix" ||
+    code === "balancedDown";
+  /** 整族曲线的版式：横着推进的三条时间线（竖直主轴那条才是混用族）+ 绕圈的一族。 */
+  const CURVE_FAMILY: LayoutCode[] = [
+    "timelineHorizontal",
+    "timelineLeft",
+    "timelineWinding",
+    "radial",
+    "sunburst",
+    "circlePacking",
+    "logicClockwise",
+    "logicCounterclockwise",
+  ];
+  const isCurveFamily = (code: LayoutCode) => CURVE_FAMILY.includes(code);
   /** 整族斜线的版式：交叉树两码，一条线段从父框直接穿到子框。 */
   const isSlantFamily = (code: LayoutCode) => code === "stagger" || code === "staggerUp";
   /** 逐条判定：路径里没有 C 才是直角折线。 */
@@ -307,7 +404,7 @@ function add(parentId: string, text: string): string {
     y > b.y - b.h / 2 + 0.5 &&
     y < b.y + b.h / 2 - 0.5;
 
-  ok("版式码表至少 29 码（蓝本 §3.3 的族与变体）", CODES.length >= 29, CODES.join(","));
+  ok("版式码表至少 32 码（蓝本 §3.3 的族与变体）", CODES.length >= 32, CODES.join(","));
   for (const code of CODES) {
     const L = computeLayout({ ...cur, layout: { ...cur.layout, code } });
     eq(`${code}：每个主题都算出盒子`, ids.filter((id) => !L.boxes[id]).length, 0);
@@ -460,6 +557,69 @@ function add(parentId: string, text: string): string {
       "上下双向：上行连线从中心主题顶边出、进子框底边",
       [upp[1], upp[upp.length - 1]],
       [rootBox.y - rootBox.h / 2, at(B).y + at(B).h / 2]
+    );
+  }
+
+  // 双向平衡向下：分侧照"双向平衡"（前半右、后半左），生长方向照组织结构图的条带（都朝下）
+  {
+    const { at } = box("balancedDown");
+    const rootBox = at(root());
+    eq(
+      "双向平衡向下：除中心主题外全在下方",
+      ids.filter((id) => id !== root() && at(id).y <= rootBox.y),
+      []
+    );
+    eq(
+      "双向平衡向下：主分支分到左右两半",
+      [at(A).x > 0, at(B).x > 0, at(C).x < 0],
+      [true, true, true]
+    );
+    ok(
+      "双向平衡向下：一级分支同排横铺（不是上下两排）",
+      Math.abs(at(A).y - at(B).y) < 0.01 && Math.abs(at(B).y - at(C).y) < 0.01,
+      `${at(A).y}/${at(B).y}/${at(C).y}`
+    );
+    // 分派的是一条带还是两条带：orgBoth 按奇偶上下分，本族按前半后半左右分 —— B 的位置正好相反
+    const ob = box("orgBoth");
+    eq("双向平衡向下 ≠ 上下双向：B 回到下排", [at(B).y > 0, ob.at(B).y < 0], [true, true]);
+    eq(
+      "双向平衡向下：条带内部仍按深度往下推进",
+      [at(A1).y > at(A).y, at(A11).y > at(A1).y],
+      [true, true]
+    );
+    ok(
+      "双向平衡向下：一级分支顶边在中心主题底边之下",
+      at(A).y - at(A).h / 2 >= rootBox.y + rootBox.h / 2,
+      `${at(A).y - at(A).h / 2} < ${rootBox.y + rootBox.h / 2}`
+    );
+  }
+
+  // 三条时左半只有一个分支，反着铺看不出来 —— 四枝才暴露"由内向外"的分支序
+  {
+    let p = createPage("平衡向下四枝");
+    const ins = (parentId: string, text: string) => {
+      const r = insertChild(p, parentId, text);
+      p = r.page;
+      return r.id;
+    };
+    const r0 = p.rootId;
+    const kA = ins(r0, "分支A");
+    const kB = ins(r0, "分支B");
+    const kC = ins(r0, "分支C");
+    const kD = ins(r0, "分支D");
+    const L = computeLayout({ ...p, layout: { ...p.layout, code: "balancedDown" } });
+    const at = (id: string) => L.boxes[id];
+    eq("四枝：右半按文档序由内向外铺", at(kA).x < at(kB).x && at(kA).x > 0, true);
+    eq("四枝：左半反过来铺，C 靠内、D 靠外", at(kC).x > at(kD).x && at(kC).x < 0, true);
+    ok(
+      "四枝：两半之间留出一条间距（不是肩并肩挤到 x=0）",
+      at(kA).x - at(kA).w / 2 - (at(kC).x + at(kC).w / 2) >= DEFAULTS.vSpacing - 0.01,
+      `实测间隙 ${at(kA).x - at(kA).w / 2 - (at(kC).x + at(kC).w / 2)}`
+    );
+    eq(
+      "四枝：左右两半互不越界",
+      [Math.max(at(kA).x, at(kB).x) > 0, Math.min(at(kC).x, at(kD).x) < 0],
+      [true, true]
     );
   }
 
@@ -640,6 +800,68 @@ function add(parentId: string, text: string): string {
       "圆形图：一级分支也成圈",
       Math.abs(Math.hypot(pack.at(A).x, pack.at(A).y) - Math.hypot(pack.at(B).x, pack.at(B).y)) < 1,
       ""
+    );
+    // 顺时针 / 逆时针：与放射图共用同一份半径表，差别全在"从 12 点起步"和绕向
+    const cw = box("logicClockwise");
+    const ccw = box("logicCounterclockwise");
+    /** 折成"从 12 点起、顺时针 0..360"：atan2 在 ±180° 处断掉，-135° 其实是顺时针更靠后。 */
+    const at12 = (at: (id: string) => NodeBox, id: string) => {
+      const r0 = at(root());
+      const q = at(id);
+      return (Math.round((Math.atan2(q.x - r0.x, -(q.y - r0.y)) * 180) / Math.PI) + 360) % 360;
+    };
+    const ringR = (at: (id: string) => NodeBox, id: string) =>
+      Math.round(Math.hypot(at(id).x - at(root()).x, at(id).y - at(root()).y));
+    const cwSeq = [A, B, C].map((id) => at12(cw.at, id));
+    const ccwSeq = [A, B, C].map((id) => at12(ccw.at, id));
+    ok(
+      "思维导图（顺时针）：文档序 = 从 12 点起顺时针绕",
+      cwSeq.every((v, i) => i === 0 || v > cwSeq[i - 1]),
+      cwSeq.join(",")
+    );
+    ok(
+      "思维导图（逆时针）：文档序 = 从 12 点起逆时针绕",
+      ccwSeq.every((v, i) => i === 0 || v < ccwSeq[i - 1]),
+      ccwSeq.join(",")
+    );
+    eq("两码的首枝都落在起步方向的前半圈", [cw.at(A).x > 0, ccw.at(A).x < 0], [true, true]);
+    eq(
+      "绕圈两码铺满一整圈（扇形放射图那族才只取半圈）",
+      [
+        [1, -1].every((s) => [A, B, C].some((id) => Math.sign(cw.at(id).y) === s)),
+        [1, -1].every((s) => [A, B, C].some((id) => Math.sign(cw.at(id).x) === s)),
+      ],
+      [true, true]
+    );
+    eq(
+      "绕圈两码：一级分支同处一圈",
+      [ringR(cw.at, A), ringR(cw.at, B), ringR(cw.at, C)],
+      [ringR(cw.at, A), ringR(cw.at, A), ringR(cw.at, A)]
+    );
+    // 半径必须是"以根为圆心的同心环"：链式那套（放射图在用）会把二三级一路甩出画布，
+    // 装机目检就是这么打回这两码的第一版的 —— 一级同圈抓不到，两层都得钉住。
+    eq(
+      "绕圈两码：二级分支也同处一圈，且比一级那圈更远",
+      [ringR(cw.at, A1), ringR(cw.at, A2), ringR(cw.at, B1), ringR(cw.at, A1) > ringR(cw.at, A)],
+      [ringR(cw.at, A1), ringR(cw.at, A1), ringR(cw.at, A1), true]
+    );
+    eq(
+      "绕圈两码共用同一份环半径",
+      [ringR(ccw.at, A), ringR(ccw.at, A1)],
+      [ringR(cw.at, A), ringR(cw.at, A1)]
+    );
+    ok(
+      "顺时针：更深的分支离中心更远",
+      ringR(cw.at, A1) > ringR(cw.at, A),
+      `${ringR(cw.at, A1)} ≤ ${ringR(cw.at, A)}`
+    );
+    eq(
+      "逆时针 = 顺时针沿纵轴镜像（x 反号、y 不动）",
+      ids.filter(
+        (id) =>
+          Math.abs(cw.at(id).x + ccw.at(id).x) > 1.01 || Math.abs(cw.at(id).y - ccw.at(id).y) > 1.01
+      ),
+      []
     );
     const fb = box("fishboneRight");
     eq(

@@ -118,6 +118,7 @@ const VERTICAL_LAYOUTS: LayoutCode[] = [
   "orgUp",
   "orgDown",
   "orgBoth",
+  "balancedDown",
   "stagger",
   "staggerUp",
   "matrix",
@@ -502,10 +503,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
     const from = { x: e.clientX, y: e.clientY };
     const start = toWorld(from.x, from.y);
     const dragged = live.current.page.shapes[id];
-    // 只有浮动根的位置属于用户（P-2 的唯一定位例外）：它落在空白处就是搬到那儿，
-    // 落在别的主题上才走"挂上去"。主树上的主题位置由布局引擎写回，拖了也白拖。
+    const freeLayout = live.current.page.layout.code === "free";
+    // 位置归用户的只有两种：自由布局（整张图都不重算），和浮动根（P-2 的例外）。
+    // 落在空白处就是搬到那儿，落在别的主题上才走"挂上去"。
+    // 其余版式的位置由布局引擎算出来，主树上的主题拖了也白拖。
     const ownBox =
-      dragged?.floating && !dragged.parentId
+      dragged && (freeLayout || (dragged.floating && !dragged.parentId))
         ? live.current.paint.boxes.find((b) => b.id === id)
         : undefined;
     let moving = false;
@@ -539,7 +542,11 @@ export function MindCanvas({ page }: MindCanvasProps) {
           // 不换算的话每拖一次就往左上偏半个盒子。取整：亚像素坐标存进文件只是噪声。
           const x = Math.round(t.x + t.w / 2);
           const y = Math.round(t.y + t.h / 2);
-          useDoc.getState().mutate("移动浮动主题", (p) => updateTransform(p, id, { x, y }));
+          useDoc
+            .getState()
+            .mutate(freeLayout ? "移动主题" : "移动浮动主题", (p) =>
+              updateTransform(p, id, { x, y })
+            );
           return;
         }
         // 移进自己子树这种非法落点由 moveShape 自己拒绝，这里只负责不崩

@@ -231,6 +231,9 @@ export type LayoutCode =
   | "logicRight" // 思维导图（右）
   | "logicLeft" // 思维导图（左）
   | "rightOnly" // 单向导图
+  | "logicClockwise" // 思维导图（顺时针）
+  | "logicCounterclockwise" // 思维导图（逆时针）
+  | "balancedDown" // 双向平衡向下
   | "treeRight" // 树状图（右下）
   | "treeLeft" // 树状图（左下）
   | "treeUpRight" // 树状图（右上）

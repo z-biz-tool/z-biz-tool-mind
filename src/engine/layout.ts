@@ -816,16 +816,16 @@ function layoutRadial(root: TreeNode, spacing: number): void {
     for (let i = 1; i < level; i += 1) r += spacing * 2 + 60;
     return r;
   };
-  const fill = (node: TreeNode, a0: number, a1: number) => {
+  const fill = (node: TreeNode, lo: number, hi: number) => {
     if (!node.children.length) return;
     // 权重 = 子树叶子数，保证密集分支拿到更大的扇区，节点不会挤在一起。
     const leaves = (n: TreeNode): number =>
       n.children.length ? n.children.reduce((s, c) => s + leaves(c), 0) : 1;
     const weights = node.children.map(leaves);
     const sum = weights.reduce((s, w) => s + w, 0) || 1;
-    let a = a0;
+    let a = lo;
     node.children.forEach((c, i) => {
-      const span = ((a1 - a0) * weights[i]) / sum;
+      const span = ((hi - lo) * weights[i]) / sum;
       const mid = a + span / 2;
       const r = radiusOf(c.level);
       c.x = node.x + Math.cos(mid) * r;
@@ -1000,24 +1000,26 @@ function layoutCircle(root: TreeNode, spacing: number): void {
 }
 
 /**
- * 扇形放射图：上半圈 + **以中心主题为圆心的同心环**。
+ * 绕圈一族（扇形放射图 / 思维导图顺逆时针）：**以中心主题为圆心的同心环** + 一段角区间。
  * 不能沿用 `layoutRadial` 的"半径从各自父节点量"：那是一串链式偏移，越深越往一个方向甩，
- * 装机目检出来是一坨斜着的串，不是扇形（扇形的定义就是同一层的主题踩在同一道弧上）。
+ * 装机目检出来是一坨斜着的串，不是扇形（扇形的定义就是同一层的主题踩在同一道弧上）——
+ * 顺时针那两码第一版就是踩的同一个坑，二三级直接甩出画布外。
  * 扇区仍按子树叶子数加权分配，所以密集分支占的弧更长，同环上不会挤到一起。
+ * 跨度写成正的是顺时针、负的是逆时针（从 12 点起算），半圈就是扇形。
  */
-function layoutSunburst(root: TreeNode, spacing: number): void {
+function layoutRingFan(root: TreeNode, spacing: number, a0: number, a1: number): void {
   root.x = 0;
   root.y = 0;
   const radiusOf = (level: number) => DEFAULTS.levelLength + (level - 1) * (spacing * 2 + 90);
   const leaves = (n: TreeNode): number =>
     n.children.length ? n.children.reduce((s, c) => s + leaves(c), 0) : 1;
-  const put = (node: TreeNode, a0: number, a1: number) => {
+  const put = (node: TreeNode, lo: number, hi: number) => {
     if (!node.children.length) return;
     const weights = node.children.map(leaves);
     const sum = weights.reduce((s, w) => s + w, 0) || 1;
-    let a = a0;
+    let a = lo;
     node.children.forEach((c, i) => {
-      const span = ((a1 - a0) * weights[i]) / sum;
+      const span = ((hi - lo) * weights[i]) / sum;
       const mid = a + span / 2;
       const r = radiusOf(c.level);
       c.x = Math.cos(mid) * r;
@@ -1026,7 +1028,7 @@ function layoutSunburst(root: TreeNode, spacing: number): void {
       a += span;
     });
   };
-  put(root, -Math.PI, 0);
+  put(root, a0, a1);
 }
 
 export interface LayoutInput {
@@ -1076,6 +1078,10 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
     switch (s.code) {
       case "balanced": {
         layoutHorizontalTreeWith(root, hs, halves);
+        break;
+      }
+      case "balancedDown": {
+        layoutBalancedDown(root, halves, vs);
         break;
       }
       case "logicRight":
@@ -1132,8 +1138,19 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
         layoutCircle(root, vs);
         break;
       }
+      case "logicClockwise": {
+        // 整圈同心环，起点 12 点、按文档序顺时针铺开
+        layoutRingFan(root, vs, -Math.PI / 2, Math.PI * 1.5);
+        break;
+      }
+      case "logicCounterclockwise": {
+        // 负跨度 = 逆时针：一整圈要走到 -450°（-π/2 - 2π），写成 -3π/2 就只剩半圈，
+        // 镜像也不再成立。角度分配公式不必写第二套。
+        layoutRingFan(root, vs, -Math.PI / 2, -Math.PI * 2.5);
+        break;
+      }
       case "sunburst": {
-        layoutSunburst(root, vs);
+        layoutRingFan(root, vs, -Math.PI, 0);
         break;
       }
       case "fishboneLeft": {
@@ -1297,6 +1314,42 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
   };
 }
 
+/**
+ * 切进自由布局：把此刻算出来的位置当成用户位置写回 transform。
+ * 自由布局的坐标是唯一由用户说了算的一份（P-2 的正式版，而不只是浮动根），
+ * 而本地新建的主题 transform 全是 (0,0) —— 不先钉一份，一进这一版整张图就叠回原点。
+ *
+ * 被折叠或"显示层级"挡在布局外的主题也要一起钉：它们此刻看不见，
+ * 但用户回头放开层级时，没有位置的主题会全叠在中心主题上。
+ */
+export function toFreeLayout(page: Page, input: LayoutInput = {}): Page {
+  if (page.layout.code === "free") return page;
+  const { boxes } = computeLayout(page, input);
+  const pos = new Map<string, { x: number; y: number }>();
+  for (const [id, b] of Object.entries(boxes)) pos.set(id, { x: b.x, y: b.y });
+  if (!pos.has(page.rootId)) return { ...page, layout: { ...page.layout, code: "free" } };
+  const spill = (id: string) => {
+    const s = page.shapes[id];
+    if (!s || s.floating) return; // 浮动子树的位置由浮动根现算，transform 用不上
+    const at = pos.get(id)!;
+    s.childIds.forEach((c, i) => {
+      if (!pos.has(c))
+        pos.set(c, {
+          x: at.x + DEFAULTS.levelLength,
+          y: at.y + i * (DEFAULTS.topicMinH + DEFAULTS.vSpacing),
+        });
+      spill(c);
+    });
+  };
+  spill(page.rootId);
+  const shapes: Record<string, Shape> = { ...page.shapes };
+  for (const [id, p] of pos) {
+    const s = shapes[id];
+    if (s) shapes[id] = { ...s, transform: { ...s.transform, x: p.x, y: p.y } };
+  }
+  return { ...page, shapes, layout: { ...page.layout, code: "free" } };
+}
+
 function collectOutside(page: Page, keep: string[]): string[] {
   const allow = new Set<string>();
   for (const id of keep) {
@@ -1329,10 +1382,10 @@ function ancestorsOf(page: Page, id: string): string[] {
   return out;
 }
 
-/** 双向平衡的主分支分侧：右先、左右交替，右侧拿奇偶中的前半 —— 与 MindMaster 默认观感一致。 */
+/** 双向平衡系的主分支分侧：右先、左右交替，右侧拿奇偶中的前半 —— 与 MindMaster 默认观感一致。 */
 function splitSides(root: TreeNode, code: LayoutCode): { right: TreeNode[]; left: TreeNode[] } {
   const kids = root.children;
-  if (code !== "balanced") return { right: kids, left: [] };
+  if (code !== "balanced" && code !== "balancedDown") return { right: kids, left: [] };
   const rightCount = Math.ceil(kids.length / 2);
   return { right: kids.slice(0, rightCount), left: kids.slice(rightCount) };
 }
@@ -1450,6 +1503,41 @@ function assignSubtreeY(
   setY(node, 0);
 }
 
+/**
+ * 双向平衡向下：主分支照"双向平衡"分左右的办法切成两半（splitSides），但两半都朝下展开，
+ * 各自成一条组织结构图条带 —— 名字里的"双向"是分两侧，"向下"是生长方向。
+ * 与 组织结构图（上下双向） 的分别是哪一半朝下（那是一上一下）、与 双向平衡 的分别是往哪儿长
+ * （那是左右铺开）。三条都复用同一套条带几何，只是 dir/side/inset 的组合不同。
+ * 左半的分支序被倒过来排：靠中心主题的那一侧才是文档序的第一条，读起来才与右半对称。
+ */
+function layoutBalancedDown(
+  root: TreeNode,
+  halves: { right: TreeNode[]; left: TreeNode[] },
+  spacing: number
+): void {
+  root.x = 0;
+  root.y = 0;
+  // 一级分支的上沿要从中心主题的底边起算，从圆心起就把分支摞进根框自己（orgBoth 实测压住 25x18）
+  const inset = root.h / 2 + spacing;
+  const widthOf = (nodes: TreeNode[]) =>
+    nodes.reduce((s, n) => s + estimateWidth(n, spacing) + spacing, 0) -
+    (nodes.length ? spacing : 0);
+  const band = (nodes: TreeNode[], start: number, side: 1 | -1) => {
+    let cursor = start;
+    for (const n of nodes) {
+      const w = estimateWidth(n, spacing);
+      layoutVerticalTree(n, cursor, spacing, 1);
+      assignSubtreeY(n, cursor + w / 2, 1, spacing, inset);
+      n.side = side;
+      cursor += w + spacing;
+    }
+  };
+  // 两半之间留出间距：条带各自贴到 x=0 会肩并肩挤成一条缝
+  const gap = spacing / 2;
+  band(halves.right, gap, 1);
+  band([...halves.left].reverse(), -(widthOf(halves.left) + gap), -1);
+}
+
 /** S 型时间线：主轴按列折返，每列内部竖直排主分支。 */
 function layoutWinding(root: TreeNode, hs: number, vs: number): void {
   const perCol = Math.max(2, Math.ceil(root.children.length / 3));
@@ -1490,8 +1578,16 @@ function cornerPath(p: NodeBox, c: NodeBox, sideX: 1 | -1, dirY: 1 | -1): string
 /**
  * 上下生长的树/组织结构图：子树整体在父框的上方或下方，连线必须竖着进出，
  * 用横向折线会把斜线带进来（实测 树状图（向下对称） 的连线中间是一段斜线）。
+ * 双向平衡向下 名字属于"平衡"一族，几何却是两条向下的条带，所以归这里而不是曲线。
  */
-const DOWN_UP_LAYOUTS: LayoutCode[] = ["treeDownSym", "treeUpSym", "orgUp", "orgDown", "orgBoth"];
+const DOWN_UP_LAYOUTS: LayoutCode[] = [
+  "treeDownSym",
+  "treeUpSym",
+  "orgUp",
+  "orgDown",
+  "orgBoth",
+  "balancedDown",
+];
 
 /** 竖直主轴的时间轴：一级分支竖着进出、更深的子主题横着出去，是折线/曲线的混用族。 */
 const VERTICAL_SPINE_TIMELINES: LayoutCode[] = ["timelineVertical", "timelineUp"];
