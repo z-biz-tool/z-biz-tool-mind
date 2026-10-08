@@ -122,8 +122,8 @@ fn strip_verbatim(p: PathBuf) -> PathBuf {
 }
 
 /// 读出 (已存在的最深祖先, 尚未存在的第一级名字)。
-fn split_existing(abs: &PathBuf) -> (PathBuf, Option<std::ffi::OsString>) {
-    let mut cur = abs.clone();
+fn split_existing(abs: &Path) -> (PathBuf, Option<std::ffi::OsString>) {
+    let mut cur = abs.to_path_buf();
     let mut tail: Option<std::ffi::OsString> = None;
     loop {
         if cur.exists() {
@@ -134,10 +134,10 @@ fn split_existing(abs: &PathBuf) -> (PathBuf, Option<std::ffi::OsString>) {
                 tail = Some(name.to_os_string());
             }
             if !cur.pop() {
-                return (abs.clone(), None);
+                return (abs.to_path_buf(), None);
             }
         } else {
-            return (abs.clone(), None);
+            return (abs.to_path_buf(), None);
         }
     }
 }

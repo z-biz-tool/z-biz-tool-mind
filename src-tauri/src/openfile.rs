@@ -1,8 +1,10 @@
 //! 文件关联打开：双击 .emmx 要真的把那份文件开出来。
 //!
 //! 两个平台给的东西根本不是一回事：
+//!
 //! - Windows / Linux：每次双击新起一个进程，路径当成命令行参数塞进来（注册表里那条 `"%1"`）。
 //! - macOS：系统只让一个实例活着，后续双击不发新进程，而是投递一条 `RunEvent::Opened`。
+//!
 //! 所以只做 argv 的话，macOS 上"第一次双击能开、之后每次都当没看见"。
 //!
 //! 交付只走一条队列：命令 `open_take_pending` 取走即清空，`open-path` 事件只是"队列里有新东西"
@@ -79,7 +81,11 @@ pub fn open_take_pending(state: tauri::State<'_, Pending>) -> Vec<String> {
     let got = state.take();
     if !got.is_empty() {
         // 双击打不开时第一件要看的事就是"队列里到底有没有这条路径"。
-        crate::log::log("info", "open", &format!("待打开路径交给前端: {}", got.join(" | ")));
+        crate::log::log(
+            "info",
+            "open",
+            &format!("待打开路径交给前端: {}", got.join(" | ")),
+        );
     }
     got
 }

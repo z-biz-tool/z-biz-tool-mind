@@ -125,7 +125,7 @@ pub fn create(
         .and_then(|v| serde_json::from_value::<Vec<BackupEntry>>(v.clone()).ok())
         .unwrap_or_default();
     list.push(entry.clone());
-    list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    list.sort_by_key(|e| std::cmp::Reverse(e.created_at));
     let keep = history_count().max(1);
     // 淘汰的是最旧的物理文件：只裁索引不删文件会让磁盘无限膨胀。
     // drain(keep..) 在 keep > len 时直接 panic（第一份备份 len=1、keep=10 就是这条），
@@ -156,7 +156,7 @@ pub fn list(doc_path: Option<&str>) -> Vec<BackupEntry> {
             }
         }
     }
-    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    out.sort_by_key(|e| std::cmp::Reverse(e.created_at));
     out
 }
 
@@ -266,7 +266,7 @@ pub fn autosave_list() -> Vec<(String, u64, i64)> {
             }
         }
     }
-    out.sort_by(|a, b| b.2.cmp(&a.2));
+    out.sort_by_key(|x| std::cmp::Reverse(x.2));
     out
 }
 

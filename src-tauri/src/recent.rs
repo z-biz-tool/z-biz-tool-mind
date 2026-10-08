@@ -102,7 +102,7 @@ fn trim(items: Vec<RecentItem>, max: usize) -> Vec<RecentItem> {
     // 判新旧必须看 opened_at，不能看向量位置：本函数的返回值会原样存回 recent.json，
     // 固定项被提到了最前，等它被取消固定时就顶着"最新"的位置赖着不走，
     // 真正更旧的那条反而先被裁掉。
-    others.sort_by(|a, b| b.opened_at.cmp(&a.opened_at));
+    others.sort_by_key(|e| std::cmp::Reverse(e.opened_at));
     let slots = max.saturating_sub(pinned.len());
     let kept_others = others.into_iter().take(slots).collect::<Vec<_>>();
     let mut out = pinned;

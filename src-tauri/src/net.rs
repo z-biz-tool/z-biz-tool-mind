@@ -87,7 +87,7 @@ pub fn proxy_arg(mode: &str, host: &str, port: u16) -> Result<Option<String>, St
             if bare_host.is_empty() || port == 0 {
                 return Ok(None);
             }
-            let (scheme, bare) = split_scheme(&bare_host);
+            let (scheme, bare) = split_scheme(bare_host);
             if !host_is_safe(&bare) {
                 return Err(format!(
                     "代理地址不合法: {bare_host}（只允许字母、数字、. - _ :，不能有空格或引号）"
@@ -115,11 +115,7 @@ pub fn status(cfg: &Value) -> Result<ProxyStatus, String> {
     let message = if incomplete {
         format!(
             "代理：选了手动，但{}还没填，现在按跟随系统走。",
-            if host.is_empty() {
-                "地址"
-            } else {
-                "端口"
-            }
+            if host.is_empty() { "地址" } else { "端口" }
         )
     } else {
         match arg.as_deref() {
@@ -232,7 +228,9 @@ mod tests {
     #[test]
     fn scheme_prefix_is_preserved() {
         assert_eq!(
-            proxy_arg("manual", "socks5://10.0.0.1", 1080).unwrap().as_deref(),
+            proxy_arg("manual", "socks5://10.0.0.1", 1080)
+                .unwrap()
+                .as_deref(),
             Some("--proxy-server=socks5://10.0.0.1:1080")
         );
         // 认不出的协议名不当成 scheme，也别把前缀留在地址里
@@ -252,10 +250,7 @@ mod tests {
             "127.0.0.1:8;127.0.0.1:9",
             "a b",
         ] {
-            assert!(
-                proxy_arg("manual", bad, 8080).is_err(),
-                "应拒绝: {bad:?}"
-            );
+            assert!(proxy_arg("manual", bad, 8080).is_err(), "应拒绝: {bad:?}");
             assert!(
                 validate(&cfg("manual", bad, 8080)).is_err(),
                 "落盘前也要拦住: {bad:?}"
@@ -268,7 +263,10 @@ mod tests {
         // 这是实测出来的回归：坏地址在手动档被 validate 拦住，切回跟随系统时却整个存进了文件。
         let mut v = cfg("manual", "127.0.0.1 --disable-web-security", 7890);
         v["network"]["proxyMode"] = Value::String("system".into());
-        assert!(validate(&v).is_ok(), "非手动档 validate 不看地址，所以拦不住");
+        assert!(
+            validate(&v).is_ok(),
+            "非手动档 validate 不看地址，所以拦不住"
+        );
         assert!(sanitize(&mut v), "切走档位要把地址端口清掉");
         assert_eq!(v["network"]["proxyHost"], Value::String(String::new()));
         assert_eq!(port_of(&v), 0);
@@ -306,24 +304,27 @@ mod tests {
 
     #[test]
     fn port_from_json_is_clamped_and_never_illegal() {
-        let float: Value =
-            serde_json::from_str(r#"{"network":{"proxyMode":"manual","proxyHost":"a.b","proxyPort":7890.0}}"#)
-                .unwrap();
+        let float: Value = serde_json::from_str(
+            r#"{"network":{"proxyMode":"manual","proxyHost":"a.b","proxyPort":7890.0}}"#,
+        )
+        .unwrap();
         assert_eq!(
             status(&float).unwrap().arg.as_deref(),
             Some("--proxy-server=a.b:7890")
         );
-        let over: Value =
-            serde_json::from_str(r#"{"network":{"proxyMode":"manual","proxyHost":"a.b","proxyPort":99999}}"#)
-                .unwrap();
+        let over: Value = serde_json::from_str(
+            r#"{"network":{"proxyMode":"manual","proxyHost":"a.b","proxyPort":99999}}"#,
+        )
+        .unwrap();
         // 越界的输入夹回边界，产出的仍然是一条合法开关
         assert_eq!(
             status(&over).unwrap().arg.as_deref(),
             Some("--proxy-server=a.b:65535")
         );
-        let neg: Value =
-            serde_json::from_str(r#"{"network":{"proxyMode":"manual","proxyHost":"a.b","proxyPort":-5}}"#)
-                .unwrap();
+        let neg: Value = serde_json::from_str(
+            r#"{"network":{"proxyMode":"manual","proxyHost":"a.b","proxyPort":-5}}"#,
+        )
+        .unwrap();
         assert_eq!(port_of(&neg), 0, "负数端口当没填");
         assert_eq!(status(&neg).unwrap().arg, None);
     }
