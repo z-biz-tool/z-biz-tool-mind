@@ -8,7 +8,9 @@
  * 5) 连线数量、包围盒与 order 自洽；
  * 6) 每个版式码都要有方向断言（曾经 24 码只有 2 码有断言，改 layout.ts 会静默改坏某一带），
  *    并且任何码都不许把两个主题画在同一个位置 —— 垂直时间线压回同一行、
- *    组织结构图（上下双向）压进中心主题，都是这么露出来的。
+ *    组织结构图（上下双向）压进中心主题，都是这么露出来的；
+ * 7) 折线族（树状图/组织结构图/矩阵图/竖向时间线）的连线一段斜线都不许有：
+ *    elbowPath 曾经把"横、斜、竖"当成直角折线，只有截图才看得出来。
  */
 import { done, eq, near, ok } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
@@ -249,6 +251,21 @@ function add(parentId: string, text: string): string {
       }
     return bad;
   };
+  /** 折线族：树状图 / 组织结构图 / 矩阵图 / 竖向与 S 型时间线（曲线族不在其中）。 */
+  const isPolyline = (code: LayoutCode) =>
+    code.startsWith("tree") ||
+    code.startsWith("org") ||
+    code === "matrix" ||
+    code === "timelineVertical" ||
+    code === "timelineWinding";
+  /** 数一条路径里有几段斜线：直角折线族出现斜线段就是画错了（组织结构图曾经中间一段是斜的）。 */
+  const slanted = (d: string) => {
+    const n = (d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+    let bad = 0;
+    for (let i = 2; i + 1 < n.length; i += 2)
+      if (n[i] !== n[i - 2] && n[i + 1] !== n[i - 1]) bad += 1;
+    return bad;
+  };
 
   ok("版式码表至少 24 码（蓝本 §3.3 的族与变体）", CODES.length >= 24, CODES.join(","));
   for (const code of CODES) {
@@ -256,6 +273,12 @@ function add(parentId: string, text: string): string {
     eq(`${code}：每个主题都算出盒子`, ids.filter((id) => !L.boxes[id]).length, 0);
     eq(`${code}：连线数 = 主题数 - 1`, L.connectors.length, ids.length - 1);
     if (code !== "free") eq(`${code}：主题互不压框`, overlaps(L), []);
+    if (isPolyline(code))
+      eq(
+        `${code}：连线一段斜线都没有`,
+        L.connectors.filter((c) => slanted(c.d) > 0).map((c) => c.id),
+        []
+      );
     ok(
       `${code}：包围盒包住每个盒子`,
       ids.every((id) => {
@@ -332,7 +355,7 @@ function add(parentId: string, text: string): string {
 
   // 组织结构图（上下双向）：一级分支要从中心主题的外缘起算
   {
-    const { at } = box("orgBoth");
+    const { L, at } = box("orgBoth");
     const rootBox = at(root());
     const first = Math.min(at(A).y, at(C).y);
     ok(
@@ -341,6 +364,20 @@ function add(parentId: string, text: string): string {
       `实际 ${first - at(A).h / 2} < ${rootBox.y + rootBox.h / 2}`
     );
     eq("上下双向：主分支分到上下两排", [at(A).y > 0, at(B).y < 0, at(C).y > 0], [true, true, true]);
+    // 连线进出的是哪条边：上行枝要从顶边出、从子框底边进，写死"底出顶进"会让线穿回中心主题
+    const nums = (d: string) => (d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+    const dn = nums(L.connectors.find((c) => c.toId === A)?.d ?? "");
+    const upp = nums(L.connectors.find((c) => c.toId === B)?.d ?? "");
+    eq(
+      "上下双向：下行连线从中心主题底边出、进子框顶边",
+      [dn[1], dn[dn.length - 1]],
+      [rootBox.y + rootBox.h / 2, at(A).y - at(A).h / 2]
+    );
+    eq(
+      "上下双向：上行连线从中心主题顶边出、进子框底边",
+      [upp[1], upp[upp.length - 1]],
+      [rootBox.y - rootBox.h / 2, at(B).y + at(B).h / 2]
+    );
   }
 
   // 时间轴：沿主轴必须单调，交替只发生在与主轴垂直的那根轴上

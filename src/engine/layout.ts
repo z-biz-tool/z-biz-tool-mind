@@ -1386,6 +1386,12 @@ function cornerPath(p: NodeBox, c: NodeBox, sideX: 1 | -1, dirY: 1 | -1): string
   return `M ${round(p.x)} ${round(y1)} L ${round(p.x)} ${round(c.y)} L ${round(x2)} ${round(c.y)}`;
 }
 
+/**
+ * 上下生长的树/组织结构图：子树整体在父框的上方或下方，连线必须竖着进出，
+ * 用横向折线会把斜线带进来（实测 树状图（向下对称） 的连线中间是一段斜线）。
+ */
+const DOWN_UP_LAYOUTS: LayoutCode[] = ["treeDownSym", "treeUpSym", "orgUp", "orgDown", "orgBoth"];
+
 export function buildConnectors(
   _page: Page,
   boxes: Record<string, NodeBox>,
@@ -1403,7 +1409,8 @@ export function buildConnectors(
     const vertical =
       code === "timelineVertical"
         ? b.level === 1
-        : code.startsWith("timeline") && code !== "timelineHorizontal";
+        : DOWN_UP_LAYOUTS.includes(code) ||
+          (code.startsWith("timeline") && code !== "timelineHorizontal");
     out.push({
       id: `c-${b.parentId}-${b.id}`,
       fromId: p.id,
@@ -1432,21 +1439,21 @@ function curvePath(p: NodeBox, c: NodeBox): string {
 
 function elbowPath(p: NodeBox, c: NodeBox, vertical: boolean): string {
   if (vertical) {
-    const y1 = p.y + p.h / 2;
-    const y2 = c.y - c.h / 2;
+    // 进出方向跟着"子节点在父节点的哪一侧"：向上生长的组织结构图得从父框顶边出、子框底边进，
+    // 写死底边出顶边进会把线穿进父框自己。
+    const dir = Math.sign(c.y - p.y) || 1;
+    const y1 = p.y + (dir * p.h) / 2;
+    const y2 = c.y - (dir * c.h) / 2;
     const my = (y1 + y2) / 2;
     return `M ${round(p.x)} ${round(y1)} L ${round(p.x)} ${round(my)} L ${round(c.x)} ${round(my)} L ${round(c.x)} ${round(y2)}`;
   }
-  const dir = Math.sign(c.y - p.y) || 1;
-  const x1 = p.x + ((Math.sign(c.x - p.x) || 1) * p.w) / 2;
+  const dir = Math.sign(c.x - p.x) || 1;
+  const x1 = p.x + (dir * p.w) / 2;
   const y1 = p.y;
-  const x2 = c.x;
-  const y2 = c.y - (dir * c.h) / 2;
-  const my = (y1 + y2) / 2;
-  return `M ${round(x1)} ${round(y1)} L ${round(x2)} ${round(my)} L ${round(x2)} ${round(y2)}`.replace(
-    `L ${round(x2)} ${round(my)}`,
-    `L ${round((x1 + x2) / 2)} ${round(y1)} L ${round(x2)} ${round(my)}`
-  );
+  const x2 = c.x - (dir * c.w) / 2;
+  const y2 = c.y;
+  const mx = (x1 + x2) / 2;
+  return `M ${round(x1)} ${round(y1)} L ${round(mx)} ${round(y1)} L ${round(mx)} ${round(y2)} L ${round(x2)} ${round(y2)}`;
 }
 
 function round(n: number): number {
