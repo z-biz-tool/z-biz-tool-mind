@@ -9,8 +9,9 @@
  * 6) 每个版式码都要有方向断言（曾经 24 码只有 2 码有断言，改 layout.ts 会静默改坏某一带），
  *    并且任何码都不许把两个主题画在同一个位置 —— 垂直时间线压回同一行、
  *    组织结构图（上下双向）压进中心主题，都是这么露出来的；
- * 7) 折线族（树状图/组织结构图/矩阵图/竖向时间线）的连线一段斜线都不许有：
+ * 7) 直角折线（树状图/组织结构图/矩阵图/竖向时间线的一级分支）一段斜线都不许有：
  *    elbowPath 曾经把"横、斜、竖"当成直角折线，只有截图才看得出来。
+ *    判定必须逐条连线看（路径里有没有 C），按版式码整族分类会在曲线上恒真。
  */
 import { done, eq, near, ok } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
@@ -22,6 +23,7 @@ import {
   wrapText,
 } from "../src/engine/layout.ts";
 import { paintPage } from "../src/engine/export/svg.ts";
+import type { NodeBox } from "../src/engine/layout.ts";
 import { defaultPalette, EDRAW_FONT_SIZES, styleFor } from "../src/engine/style.ts";
 import {
   insertChild,
@@ -251,13 +253,14 @@ function add(parentId: string, text: string): string {
       }
     return bad;
   };
-  /** 折线族：树状图 / 组织结构图 / 矩阵图 / 竖向与 S 型时间线（曲线族不在其中）。 */
-  const isPolyline = (code: LayoutCode) =>
-    code.startsWith("tree") ||
-    code.startsWith("org") ||
-    code === "matrix" ||
-    code === "timelineVertical" ||
-    code === "timelineWinding";
+  /** 整族折线的版式：树状图 / 组织结构图 / 矩阵图。 */
+  const isElbowFamily = (code: LayoutCode) =>
+    code.startsWith("tree") || code.startsWith("org") || code === "matrix";
+  /** 整族曲线的版式：两条时间线里只有竖向混用折线，S 型与水平全是曲线。 */
+  const isCurveFamily = (code: LayoutCode) =>
+    code === "timelineHorizontal" || code === "timelineWinding";
+  /** 逐条判定：路径里没有 C 才是直角折线。 */
+  const isElbow = (d: string) => !d.includes("C");
   /** 数一条路径里有几段斜线：直角折线族出现斜线段就是画错了（组织结构图曾经中间一段是斜的）。 */
   const slanted = (d: string) => {
     const n = (d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
@@ -266,6 +269,19 @@ function add(parentId: string, text: string): string {
       if (n[i] !== n[i - 2] && n[i + 1] !== n[i - 1]) bad += 1;
     return bad;
   };
+  /** 折线的顶点序列（M/L 都是绝对坐标，两两成点）。 */
+  const pts = (d: string): [number, number][] => {
+    const n = (d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+    const out: [number, number][] = [];
+    for (let i = 0; i + 1 < n.length; i += 2) out.push([n[i], n[i + 1]]);
+    return out;
+  };
+  /** 严格落在框内才算（贴边是连线的正常落点）。 */
+  const insideBox = (b: NodeBox, x: number, y: number) =>
+    x > b.x - b.w / 2 + 0.5 &&
+    x < b.x + b.w / 2 - 0.5 &&
+    y > b.y - b.h / 2 + 0.5 &&
+    y < b.y + b.h / 2 - 0.5;
 
   ok("版式码表至少 24 码（蓝本 §3.3 的族与变体）", CODES.length >= 24, CODES.join(","));
   for (const code of CODES) {
@@ -273,12 +289,46 @@ function add(parentId: string, text: string): string {
     eq(`${code}：每个主题都算出盒子`, ids.filter((id) => !L.boxes[id]).length, 0);
     eq(`${code}：连线数 = 主题数 - 1`, L.connectors.length, ids.length - 1);
     if (code !== "free") eq(`${code}：主题互不压框`, overlaps(L), []);
-    if (isPolyline(code))
+    const elbows = L.connectors.filter((c) => isElbow(c.d));
+    if (isElbowFamily(code))
       eq(
-        `${code}：连线一段斜线都没有`,
-        L.connectors.filter((c) => slanted(c.d) > 0).map((c) => c.id),
+        `${code}：整族连线都是直角折线`,
+        L.connectors.filter((c) => !isElbow(c.d)).map((c) => c.id),
         []
       );
+    if (isCurveFamily(code))
+      eq(
+        `${code}：整族连线都是曲线`,
+        elbows.map((c) => c.id),
+        []
+      );
+    if (code === "timelineVertical") {
+      // 两种走向混用：一级分支竖着接、更深的子主题横着接，缺一半就是改坏了分发
+      eq(
+        "timelineVertical：折线与曲线各占一半以上",
+        [elbows.length >= 3, L.connectors.length - elbows.length >= 3],
+        [true, true]
+      );
+    }
+    // 斜段与"出线后折回父框"只在折线上成立，曲线本来就该是斜的：逐条判定，别按码整族判。
+    eq(
+      `${code}：直角折线一段斜线都没有`,
+      elbows.filter((c) => slanted(c.d) > 0).map((c) => c.id),
+      []
+    );
+    // 垂直时间线的首枝曾经如此（根底边 17.5、首枝顶边 15，折线中线落在 16.25，
+    // 线从底边出来又钻回根框）。
+    eq(
+      `${code}：直角折线出线后不折回父框`,
+      elbows
+        .filter((c) => {
+          const p = L.boxes[L.boxes[c.toId].parentId ?? ""];
+          const v = pts(c.d);
+          return !p || v.length < 2 || insideBox(p, v[1][0], v[1][1]);
+        })
+        .map((c) => c.id),
+      []
+    );
     ok(
       `${code}：包围盒包住每个盒子`,
       ids.every((id) => {
@@ -398,6 +448,19 @@ function add(parentId: string, text: string): string {
       "水平时间线：一级分支沿 x 严格递增、上下交替",
       [h.at(A).x < h.at(B).x, h.at(B).x < h.at(C).x, h.at(A).y < 0 && h.at(B).y > 0],
       [true, true, true]
+    );
+    // 主轴推进从中心主题的外缘起算：首枝的近侧缘必须在根的对侧缘之外，否则折线会出框又折回框里。
+    const vr = v.at(root());
+    ok(
+      "垂直时间线：首枝顶边在中心主题底边之下",
+      v.at(A).y - v.at(A).h / 2 >= vr.y + vr.h / 2,
+      `实际 ${v.at(A).y - v.at(A).h / 2} < ${vr.y + vr.h / 2}`
+    );
+    const hr = h.at(root());
+    ok(
+      "水平时间线：首枝左缘在中心主题右缘之右",
+      h.at(A).x - h.at(A).w / 2 >= hr.x + hr.w / 2,
+      `实际 ${h.at(A).x - h.at(A).w / 2} < ${hr.x + hr.w / 2}`
     );
   }
 

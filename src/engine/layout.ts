@@ -760,6 +760,18 @@ function estimateWidth(node: TreeNode, spacing: number = DEFAULTS.hSpacing): num
   return Math.max(total - spacing, node.w);
 }
 
+/**
+ * 横向展开（`layoutHorizontalTreeSubtree`）真正吃掉的主轴长度：从自身中心到子树最外缘。
+ * estimateWidth 是"兄弟并排"那种展开的量法，用在沿主轴推进的时间线/鱼骨上会短一截
+ * （实测 水平时间线 的 A一一 右缘 296.5 撞进 分支C 左缘 293，压框 4x30）。
+ */
+function forwardReach(node: TreeNode, spacing: number): number {
+  let best = node.w / 2;
+  for (const c of node.children)
+    best = Math.max(best, hGap(node, c, spacing) + forwardReach(c, spacing));
+  return best;
+}
+
 /** 放射图：按子树"占用角度 = 该层弧长需求"分配角度，半径按层递增。 */
 function layoutRadial(root: TreeNode, spacing: number): void {
   root.x = 0;
@@ -804,11 +816,14 @@ function layoutSpine(
   root.x = 0;
   root.y = 0;
   const kids = root.children;
-  let cursor = 0;
+  // 推进坐标从中心主题的**外缘**起算，不是从圆心：从 0 起步时第一枝的近侧缘会落在
+  // 根的对侧缘之内（装机实测 垂直时间线 根底边 17.5、首枝顶边 15），
+  // 直角折线于是"从底边出来又折回根框里"。
+  let cursor = opts.axis === "h" ? root.w / 2 : root.h / 2;
   kids.forEach((k, i) => {
     const step =
       opts.axis === "h"
-        ? estimateWidth(k, spacing) + spacing
+        ? k.w / 2 + forwardReach(k, spacing) + spacing
         : estimateHeight(k, spacing) + spacing;
     const center = cursor + step / 2;
     cursor += step;
@@ -833,10 +848,12 @@ function layoutSpine(
       k.x = cross;
     }
     k.side = side;
-    // 子树贴到主轴的外侧：外侧是"与主轴垂直的那根轴的正负号"，
-    // 所以竖直主轴同样用横向展开的子树函数（早先按 axis 选函数，等于把
-    // 一级分支的左右符号当成上下符号用，子枝会顶到中心主题上）。
-    layoutHorizontalTreeSubtree(k, k.side, spacing);
+    // 子树展开方向：竖直主轴时外侧就是左右，`side`（交替/斜刺的偏移符号）正好能用，
+    // 所以竖直主轴也用横向展开的子树函数（早先按 axis 选函数，等于把一级分支的左右符号
+    // 当成上下符号用，子枝会顶到中心主题上）。
+    // 水平主轴反过来不行：那里的 `side` 是上下符号，拿它当左右用会把子枝甩回根框那一侧
+    // （实测 水平时间线 的 A一/A二 落在 x=-30，压住根框 31x16），得沿主轴向前 `dir` 展开。
+    layoutHorizontalTreeSubtree(k, opts.axis === "h" ? opts.dir : k.side, spacing);
   });
 }
 
@@ -864,15 +881,13 @@ function layoutHorizontalTreeSubtree(node: TreeNode, side: -1 | 0 | 1, spacing: 
   const top = node.y - node.h / 2;
   const ext = place(node, top);
   void ext;
-  const setX = (n: TreeNode, parent: TreeNode | null) => {
-    if (!parent) return;
+  const setX = (n: TreeNode, parent: TreeNode) => {
     n.x = parent.x + side * hGap(parent, n, spacing);
     for (const c of n.children) setX(c, n);
   };
-  for (const c of node.children) {
-    c.x = node.x + side * hGap(node, c, spacing);
-    setX(c, c);
-  }
+  // 曾经写成 setX(c, c)：函数体第一行就是 n.x = parent.x + …，自己当自己的父节点，
+  // 每个子节点被平白多推了一格（自身宽 + 间距），子树因此压到下一个主分支身上。
+  for (const c of node.children) setX(c, node);
 }
 
 /** 同 estimateWidth：spacing 要显式 number，否则推成 DEFAULTS 的字面量类型。 */
@@ -1404,13 +1419,13 @@ export function buildConnectors(
     if (!b.parentId) continue;
     const p = boxes[b.parentId];
     if (!p) continue;
-    // 垂直时间轴是折线走向的混合体：一级分支从轴上"往下探"（竖着接），
-    // 挂在一级分支外侧的子主题却是横着长出去的（横着接），一套规则盖不住两种走向。
+    // 只有两条规则需要特判：
+    // ① 垂直时间轴是折线走向的混合体 —— 一级分支从轴上"往下探"（竖折线），
+    //    挂在一级分支外侧的子主题却是横着长出去的（走曲线），一套规则盖不住两种走向；
+    // ② 上下生长的树/组织结构图必须竖着进出（见 DOWN_UP_LAYOUTS）。
+    // 水平时间线与 S 型时间线整族走曲线：主轴本身横着推进，折线反而会把线拧回父框里。
     const vertical =
-      code === "timelineVertical"
-        ? b.level === 1
-        : DOWN_UP_LAYOUTS.includes(code) ||
-          (code.startsWith("timeline") && code !== "timelineHorizontal");
+      code === "timelineVertical" ? b.level === 1 : DOWN_UP_LAYOUTS.includes(code);
     out.push({
       id: `c-${b.parentId}-${b.id}`,
       fromId: p.id,
