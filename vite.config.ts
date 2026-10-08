@@ -13,6 +13,15 @@ export default defineConfig({
     },
   },
   clearScreen: false,
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom", "antd"],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     strictPort: true,
