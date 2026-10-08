@@ -23,11 +23,173 @@ import { nodeEquals, parseXml, findAll, attr, numVnode, vnode } from "../src/eng
 import type { XmlNode } from "../src/engine/emmx/xparse.ts";
 import { modelEquals, parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
 import { insertChild, updateExtras, updateStyle, updateText } from "../src/engine/tree.ts";
+import { createDocument } from "../src/model/factory.ts";
 import { applyPalette } from "../src/engine/style.ts";
 import { plainText } from "../src/types/model.ts";
 import type { Page } from "../src/types/model.ts";
 
 const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
+
+// ---------------------------------------------------------------- 合成夹具（03 §1.3-2）
+// 真亿图文件没入库（345 KB 且是别人的作品），CI 里整份 emmx.test.ts 直接 skip → 0/0，
+// 绿得毫无意义。这一段用 factory 现造的文档跑同一批核心承诺，任何环境都会执行。
+{
+  const base = createDocument("合成往返", "logicRight");
+  let page = base.pages[0];
+  const kids: string[] = [];
+  for (const t of ["分支甲", "分支乙", "分支丙"]) {
+    const r = insertChild(page, page.rootId, t);
+    page = r.page;
+    kids.push(r.id);
+  }
+  const g = insertChild(page, kids[0], "孙一");
+  page = g.page;
+  const withPage = (p: Page) => ({
+    ...base,
+    pages: base.pages.map((x) => (x.id === p.id ? p : x)),
+  });
+  const pageXml = async (bytes: Uint8Array) =>
+    decodeBytes((await readZip(bytes)).find((e) => /page\/page\.xml$/.test(e.name)).data);
+  const layoutV = (xml: string) => /<Layout V="(\d+)"/.exec(xml)?.[1];
+  const node = (
+    tag: string,
+    attrs: Record<string, string> = {},
+    children: XmlNode[] = []
+  ): XmlNode => ({ tag, attrs, children, text: "" });
+
+  // --- 没编辑过的文档：写出去要能原样读回来
+  const rt0 = await parseEmmx(await writeEmmx(withPage(page)));
+  ok("合成文档解析无告警", rt0.warnings.length === 0, rt0.warnings.join(" | "));
+  eq("主题数", Object.keys(rt0.doc.pages[0].shapes).length, 5);
+  // 不能直接拿 factory 的文档跟解析结果比：读侧会补默认值（platform=win、bold=false、
+  // props.background、maxShapeId、layout.rawCode），factory 造的那几项是 undefined。
+  // 比第一次往返和第二次往返 —— 这才是"保存再保存不该变质"的承诺。
+  const rt1 = await parseEmmx(await writeEmmx(rt0.doc));
+  ok("write→parse 模型等价（往返幂等）", modelEquals(rt0.doc, rt1.doc));
+  eq("中心主题仍是 MainIdea", rt0.doc.pages[0].shapes[rt0.doc.pages[0].rootId].type, "MainIdea");
+  eq("子索引对得上", rt0.doc.pages[0].shapes[kids[0]].childIds.join(","), g.id);
+  eq("正文没丢", plainText(rt0.doc.pages[0].shapes[kids[2]].text), "分支丙");
+
+  // --- 陌生布局码不能被"降级"成我们认得的那个
+  // rawCode 只在"这个码映射出来的名字 == 页面现在的 code"时才原样带回，
+  // 所以合成页面得是 balanced（6），否则码表里的 8 会先把 7 顶掉。
+  const foreign: Page = {
+    ...page,
+    layout: { ...page.layout, rawCode: 7, code: "balanced" as const },
+  };
+  const fbytes = await writeEmmx(withPage(foreign));
+  eq("陌生码 V=7 原样写回，不降级成 6", layoutV(await pageXml(fbytes)), "7");
+  eq("重读时仍记得这个陌生码", (await parseEmmx(fbytes)).doc.pages[0].layout.rawCode, 7);
+  const switched: Page = {
+    ...foreign,
+    layout: { ...foreign.layout, code: "treeRight" as const },
+  };
+  eq(
+    "本地专属的新码不进交换格式，写回退值 6",
+    layoutV(await writeEmmx(withPage(switched)).then(pageXml)),
+    "6"
+  );
+
+  // --- 独立配色与 StyleMask 那一位
+  const pinned = kids[1];
+  const colored = updateStyle(page, pinned, {
+    fill: { type: "Solid", color: { v: "#c00000" } },
+    mask: (page.shapes[pinned].style.mask ?? 0) | 1,
+  });
+  const crt = (await parseEmmx(await writeEmmx(withPage(colored)))).doc.pages[0];
+  eq("自定义配色存住了", crt.shapes[pinned].style.fill?.color?.v, "#c00000");
+  ok(
+    "独立配色那一位存住了",
+    ((crt.shapes[pinned].style.mask ?? 0) & 1) !== 0,
+    String(crt.shapes[pinned].style.mask)
+  );
+  const after = applyPalette(crt);
+  eq("换主题盖不掉用户自己挑的颜色", after.shapes[pinned].style.fill?.color?.v, "#c00000");
+  ok(
+    "换主题会重算未独立配色的主题",
+    Object.keys(after.shapes).some(
+      (id) =>
+        ((crt.shapes[id].style.mask ?? 0) & 1) === 0 &&
+        after.shapes[id].style.fill?.color?.v !== crt.shapes[id].style.fill?.color?.v
+    ),
+    ""
+  );
+
+  // --- 批注 / 超链接 / 标签
+  const noted = updateExtras(
+    updateExtras(updateExtras(colored, kids[0], { note: "批注一" }), kids[1], {
+      hyperlink: { kind: "web", target: "https://example.com/a?b=1" },
+    }),
+    kids[2],
+    { labels: ["原型", "草稿"] }
+  );
+  const nrt = (await parseEmmx(await writeEmmx(withPage(noted)))).doc.pages[0];
+  eq("批注往返", nrt.shapes[kids[0]].extras.note, "批注一");
+  eq("超链接往返", nrt.shapes[kids[1]].extras.hyperlink?.target, "https://example.com/a?b=1");
+  eq("标签往返（亿图的尾分号不该多出空项）", (nrt.shapes[kids[2]].extras.labels ?? []).join(";"), "原型;草稿");
+  const dropped = updateExtras(nrt, kids[0], { note: undefined });
+  const droppedBack = (await parseEmmx(await writeEmmx(withPage(dropped)))).doc.pages[0];
+  eq("界面里删掉的批注不再写回", droppedBack.shapes[kids[0]].extras.note, undefined);
+
+  // --- 编辑正文会让整份 Shape 重新生成，我们没建模的标签不能被顺手抹掉
+  const parsed = await parseEmmx(await writeEmmx(withPage(noted)));
+  const raw = (parsed.doc.pages[0].rawUnknown as { nodes: Record<string, XmlNode> }).nodes;
+  const keyOf = (id: string) => Object.keys(raw).find((k) => k.endsWith(`:${id}`)) ?? "";
+  ok("读侧给每个主题存了原节点", keyOf(kids[0]).length > 0, kids[0]);
+  const seeded: Page = {
+    ...parsed.doc.pages[0],
+    rawUnknown: {
+      ...(parsed.doc.pages[0].rawUnknown as object),
+      nodes: {
+        ...raw,
+        [keyOf(kids[0])]: {
+          ...raw[keyOf(kids[0])],
+          children: [...raw[keyOf(kids[0])].children, node("FutureTag", { V: "9" })],
+        },
+      },
+    },
+  };
+  const touched = updateText(seeded, kids[0], "改了正文");
+  const txml = await pageXml(await writeEmmx({ ...parsed.doc, pages: [touched] }));
+  ok("重新生成的节点仍带 FutureTag", txml.includes("FutureTag"), txml.slice(0, 120));
+  ok("改过的正文写进去了", txml.includes("改了正文"));
+
+  // --- 发号：往返之后新增的主题不能撞上文件里任何已用 ID
+  const fileIds = (txml.match(/ID="(\d+)"/g) ?? []).map((s) => s.slice(4, -1));
+  const usedIds = new Set([...Object.keys(touched.shapes), ...fileIds]);
+  const fresh = insertChild(touched, touched.rootId, "新分支");
+  ok("新 ID 未与文件里任何 Shape 重号", !usedIds.has(fresh.id), fresh.id);
+
+  // --- 包里不属于任何 Shape 的东西：中文资源名 + 预览图
+  const withMedia = await writeEmmx({
+    ...withPage(page),
+    media: { "media/图片 1.png": new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]) },
+  });
+  const mNames = (await readZip(withMedia)).map((e) => e.name);
+  ok(
+    "中文资源名原样回来",
+    mNames.some((n) => n === "media/图片 1.png"),
+    mNames.join(",")
+  );
+  const withThumb = await writeZip([
+    ...(await readZip(withMedia)),
+    { name: "thumbnail.jpeg", data: new Uint8Array([255, 216, 255, 217]) },
+  ]);
+  const thumbSaved = await readZip(await writeEmmx((await parseEmmx(withThumb)).doc));
+  ok(
+    "thumbnail 按原字节带回",
+    thumbSaved.find((e) => e.name === "thumbnail.jpeg")?.data.length === 4,
+    ""
+  );
+
+  // --- 坏输入
+  await rejects("非 ZIP 报中文错误", parseEmmx(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])), "不是 ZIP 容器");
+  await rejects(
+    "ZIP 里缺 page.xml 报错",
+    writeZip([{ name: "document.xml", data: new Uint8Array([60, 63, 120]) }]).then(parseEmmx),
+    "page/"
+  );
+}
 
 if (!existsSync(FIXTURE)) {
   skip("emmx 往返", `找不到样本 ${FIXTURE}`);
@@ -334,22 +496,6 @@ if (!existsSync(FIXTURE)) {
     await parseEmmx(await writeEmmx(withPages(updateExtras(relabeled, labelId, { labels: [] }))))
   ).doc.pages[0];
   eq("界面里删掉的标签不再写回", delabeled.shapes[labelId].extras.labels, undefined);
-
-  // --- 坏输入
-  await rejects(
-    "非 ZIP 报中文错误",
-    parseEmmx(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])),
-    "不是 ZIP 容器"
-  );
-  await rejects(
-    "ZIP 里缺 page.xml 报错",
-    (async () => {
-      const { writeZip } = await import("../src/engine/emmx/zip.ts");
-      const fake = await writeZip([{ name: "document.xml", data: new Uint8Array([60, 63, 120]) }]);
-      return parseEmmx(fake);
-    })(),
-    "page/"
-  );
 }
 
 done();
