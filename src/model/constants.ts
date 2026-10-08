@@ -130,6 +130,7 @@ export const ANGEL_ACCENTS = [
   "#4dc7bc",
 ];
 
+/** 顺序即布局下拉框的顺序；叫法照参考软件的字符串（`_research/extract/qm-cn.tsv`）。 */
 export const LAYOUT_LABELS: Record<string, string> = {
   balanced: "双向平衡导图",
   logicRight: "思维导图（右）",
@@ -151,8 +152,10 @@ export const LAYOUT_LABELS: Record<string, string> = {
   braceRight: "括号图（右）",
   matrix: "矩阵图",
   circlePacking: "圆形图",
-  timelineVertical: "垂直时间线",
-  timelineHorizontal: "水平时间线",
-  timelineWinding: "S 型时间线",
+  timelineVertical: "时间轴（向下）",
+  timelineUp: "时间轴（向上）",
+  timelineHorizontal: "时间轴（向右）",
+  timelineLeft: "时间轴（向左）",
+  timelineWinding: "时间轴（S 形）",
   free: "自由布局",
 };

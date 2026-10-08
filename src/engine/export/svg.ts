@@ -227,6 +227,14 @@ export function renderSvg(p: Paint, view: SvgView = fullView(p)): string {
   for (const c of p.connectors) {
     out.push(`<path d="${esc(c.d)}" stroke="${strokeOf(p, c)}" stroke-width="1.6"/>`);
   }
+  // 主轴与连线同一个 <g>：线帽、无填充这些公共属性只写一次，屏上与导出也就少一处能错开
+  if (p.layout.axis) {
+    const a = p.layout.axis;
+    out.push(
+      `<path d="${esc(a.d)}" stroke="${a.line}" stroke-width="2"/>`,
+      `<path d="${esc(a.head)}" stroke="${a.line}" stroke-width="2"/>`
+    );
+  }
   out.push(`</g>`);
   for (const b of p.boxes) {
     const rx = Math.min(b.rounding, b.w / 2, b.h / 2);

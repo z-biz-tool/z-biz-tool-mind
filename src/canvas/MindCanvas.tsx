@@ -120,6 +120,7 @@ const VERTICAL_LAYOUTS: LayoutCode[] = [
   "orgBoth",
   "matrix",
   "timelineVertical",
+  "timelineUp",
 ];
 
 /** 子主题往下走的键向：水平布局看 side（左半树的子在左边），竖直布局一律向下。 */
@@ -299,6 +300,7 @@ export function MindCanvas({ page }: MindCanvasProps) {
     [page, displayLevels, topicWidthMode]
   );
   const lineOf = useMemo(() => new Map(paint.boxes.map((b) => [b.id, b.line])), [paint]);
+  const axis = paint.layout.axis;
   const picked = useMemo(
     () => selection.filter((id) => Boolean(page.shapes[id])),
     [selection, page]
@@ -1059,6 +1061,11 @@ export function MindCanvas({ page }: MindCanvasProps) {
                 strokeWidth={1.6}
               />
             ))}
+            {axis
+              ? [axis.d, axis.head].map((d, i) => (
+                  <path key={`axis-${i}`} d={d} stroke={axis.line} strokeWidth={2} />
+                ))
+              : null}
           </g>
 
           {paint.boxes.map((b) => (

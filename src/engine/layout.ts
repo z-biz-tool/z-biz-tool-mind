@@ -54,6 +54,8 @@ export interface LayoutResult {
   boxes: Record<string, NodeBox>;
   order: string[];
   connectors: ConnectorPath[];
+  /** 时间轴/鱼骨的主轴；其余版式为 null。画布与导出共用这一份。 */
+  axis: AxisPath | null;
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   width: number;
   height: number;
@@ -989,6 +991,7 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
       boxes,
       order,
       connectors: [],
+      axis: null,
       bounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 },
       width: 0,
       height: 0,
@@ -1071,8 +1074,16 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
         layoutSpine(root, hs, { axis: "h", alternate: true, oblique: false, dir: 1 });
         break;
       }
+      case "timelineLeft": {
+        layoutSpine(root, hs, { axis: "h", alternate: true, oblique: false, dir: -1 });
+        break;
+      }
       case "timelineVertical": {
         layoutSpine(root, vs, { axis: "v", alternate: true, oblique: false, dir: 1 });
+        break;
+      }
+      case "timelineUp": {
+        layoutSpine(root, vs, { axis: "v", alternate: true, oblique: false, dir: -1 });
         break;
       }
       case "timelineWinding": {
@@ -1205,6 +1216,7 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
     boxes,
     order,
     connectors,
+    axis: buildAxis(page, boxes, s.code, palette),
     bounds: { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad },
     width: Math.max(1, maxX - minX + pad * 2),
     height: Math.max(1, maxY - minY + pad * 2),
@@ -1407,6 +1419,9 @@ function cornerPath(p: NodeBox, c: NodeBox, sideX: 1 | -1, dirY: 1 | -1): string
  */
 const DOWN_UP_LAYOUTS: LayoutCode[] = ["treeDownSym", "treeUpSym", "orgUp", "orgDown", "orgBoth"];
 
+/** 竖直主轴的时间轴：一级分支竖着进出、更深的子主题横着出去，是折线/曲线的混用族。 */
+const VERTICAL_SPINE_TIMELINES: LayoutCode[] = ["timelineVertical", "timelineUp"];
+
 export function buildConnectors(
   _page: Page,
   boxes: Record<string, NodeBox>,
@@ -1424,8 +1439,9 @@ export function buildConnectors(
     //    挂在一级分支外侧的子主题却是横着长出去的（走曲线），一套规则盖不住两种走向；
     // ② 上下生长的树/组织结构图必须竖着进出（见 DOWN_UP_LAYOUTS）。
     // 水平时间线与 S 型时间线整族走曲线：主轴本身横着推进，折线反而会把线拧回父框里。
-    const vertical =
-      code === "timelineVertical" ? b.level === 1 : DOWN_UP_LAYOUTS.includes(code);
+    const vertical = VERTICAL_SPINE_TIMELINES.includes(code)
+      ? b.level === 1
+      : DOWN_UP_LAYOUTS.includes(code);
     out.push({
       id: `c-${b.parentId}-${b.id}`,
       fromId: p.id,
@@ -1439,6 +1455,57 @@ export function buildConnectors(
     });
   }
   return out.sort((a, b) => (a.id < b.id ? -1 : 1));
+}
+
+/** 画得出主轴的版式：一条直线穿过一级分支的锚点，末端一个开口箭头。 */
+const AXIS_SPINE: Partial<Record<LayoutCode, { axis: "h" | "v"; dir: 1 | -1 }>> = {
+  timelineHorizontal: { axis: "h", dir: 1 },
+  timelineLeft: { axis: "h", dir: -1 },
+  timelineVertical: { axis: "v", dir: 1 },
+  timelineUp: { axis: "v", dir: -1 },
+  fishboneRight: { axis: "h", dir: 1 },
+  fishboneLeft: { axis: "h", dir: -1 },
+};
+
+export interface AxisPath {
+  /** 轴身。 */
+  d: string;
+  /** 末端箭头：两条短线，不用 marker —— 导出与打印要拿到同一份 path。 */
+  head: string;
+  line: string;
+}
+
+/**
+ * 主轴类版式的轴：从中心主题的前缘起，伸过最后一个一级分支的远侧缘。
+ * S 形时间线不在这里 —— 它的主轴本身要折返，一条直线盖不住。
+ */
+export function buildAxis(
+  page: Page,
+  boxes: Record<string, NodeBox>,
+  code: LayoutCode,
+  palette: ThemePalette
+): AxisPath | null {
+  const spine = AXIS_SPINE[code];
+  if (!spine) return null;
+  const list = Object.values(boxes);
+  const root = list.find((b) => b.level === 0);
+  const kids = list.filter((b) => b.level === 1);
+  if (!root || !kids.length) return null;
+  const d = spine.dir;
+  const at = (b: NodeBox) => (spine.axis === "h" ? b.x : b.y);
+  const span = (b: NodeBox) => (spine.axis === "h" ? b.w : b.h) / 2;
+  // 先把坐标折成"沿主轴向前"的正数，四个方向就是同一条公式
+  const from = at(root) * d + span(root);
+  const to = Math.max(...kids.map((b) => at(b) * d + span(b))) + 16;
+  const cross = spine.axis === "h" ? root.y : root.x;
+  const pt = (along: number, c: number) =>
+    spine.axis === "h" ? `${round(along) * d} ${round(c)}` : `${round(c)} ${round(along) * d}`;
+  const shape = page.shapes[root.id];
+  return {
+    d: `M ${pt(from, cross)} L ${pt(to, cross)}`,
+    head: `M ${pt(to - 9, cross - 5)} L ${pt(to, cross)} L ${pt(to - 9, cross + 5)}`,
+    line: shape ? styleFor(page, shape, palette).line : DEFAULTS.lineColor,
+  };
 }
 
 function curvePath(p: NodeBox, c: NodeBox): string {

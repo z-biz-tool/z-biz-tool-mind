@@ -22,7 +22,7 @@ import {
   textWidth,
   wrapText,
 } from "../src/engine/layout.ts";
-import { paintPage } from "../src/engine/export/svg.ts";
+import { paintPage, renderSvg } from "../src/engine/export/svg.ts";
 import type { NodeBox } from "../src/engine/layout.ts";
 import { defaultPalette, EDRAW_FONT_SIZES, styleFor } from "../src/engine/style.ts";
 import {
@@ -256,9 +256,9 @@ function add(parentId: string, text: string): string {
   /** 整族折线的版式：树状图 / 组织结构图 / 矩阵图。 */
   const isElbowFamily = (code: LayoutCode) =>
     code.startsWith("tree") || code.startsWith("org") || code === "matrix";
-  /** 整族曲线的版式：两条时间线里只有竖向混用折线，S 型与水平全是曲线。 */
+  /** 整族曲线的版式：横着推进的三条时间线（竖直主轴那条才是混用族）。 */
   const isCurveFamily = (code: LayoutCode) =>
-    code === "timelineHorizontal" || code === "timelineWinding";
+    code === "timelineHorizontal" || code === "timelineLeft" || code === "timelineWinding";
   /** 逐条判定：路径里没有 C 才是直角折线。 */
   const isElbow = (d: string) => !d.includes("C");
   /** 数一条路径里有几段斜线：直角折线族出现斜线段就是画错了（组织结构图曾经中间一段是斜的）。 */
@@ -302,10 +302,10 @@ function add(parentId: string, text: string): string {
         elbows.map((c) => c.id),
         []
       );
-    if (code === "timelineVertical") {
+    if (code === "timelineVertical" || code === "timelineUp") {
       // 两种走向混用：一级分支竖着接、更深的子主题横着接，缺一半就是改坏了分发
       eq(
-        "timelineVertical：折线与曲线各占一半以上",
+        `${code}：折线与曲线各占一半以上`,
         [elbows.length >= 3, L.connectors.length - elbows.length >= 3],
         [true, true]
       );
@@ -462,6 +462,83 @@ function add(parentId: string, text: string): string {
       h.at(A).x - h.at(A).w / 2 >= hr.x + hr.w / 2,
       `实际 ${h.at(A).x - h.at(A).w / 2} < ${hr.x + hr.w / 2}`
     );
+    // 向上 / 向左是同一套 layoutSpine 把 dir 翻号，所以只该"沿主轴镜像"，另一根轴原样不动
+    const u = box("timelineUp");
+    eq(
+      "时间轴（向上）：一级分支沿 y 反向推进、左右交替与向下同侧",
+      [u.at(A).y > u.at(B).y, u.at(B).y > u.at(C).y, u.at(A).x < 0, u.at(B).x > 0],
+      [true, true, true, true]
+    );
+    // 镜像允许 ±1：坐标各自取整，-77 与 -78 是同一个位置（跨轴那根才是精确同值）
+    near("时间轴（向上）= 向下沿 y 镜像", u.at(A1).y, -v.at(A1).y, 1.01);
+    eq("时间轴（向上）的 x 与向下完全同值", u.at(A1).x, v.at(A1).x);
+    const le = box("timelineLeft");
+    eq(
+      "时间轴（向左）：一级分支沿 x 反向推进、上下交替与向右同侧",
+      [le.at(A).x > le.at(B).x, le.at(B).x > le.at(C).x, le.at(A).y < 0, le.at(B).y > 0],
+      [true, true, true, true]
+    );
+    near("时间轴（向左）= 向右沿 x 镜像", le.at(A1).x, -h.at(A1).x, 1.01);
+    eq("时间轴（向左）的 y 与向右完全同值", le.at(A1).y, h.at(A1).y);
+  }
+
+  // 主轴：时间轴四向 + 鱼骨左右要画出一条带箭头的轴，其余版式没有轴
+  {
+    const axisOf = (code: LayoutCode) =>
+      computeLayout({ ...cur, layout: { ...cur.layout, code } }).axis;
+    const noAxis = CODES.filter(
+      (c) =>
+        axisOf(c) &&
+        !["timelineHorizontal", "timelineLeft", "timelineVertical", "timelineUp"].includes(c) &&
+        c !== "fishboneRight" &&
+        c !== "fishboneLeft"
+    );
+    eq("只有主轴类版式给轴", noAxis, []);
+    const noAxis2 = CODES.filter(
+      (c) =>
+        !axisOf(c) &&
+        (c.startsWith("timeline") || c.startsWith("fishbone")) &&
+        c !== "timelineWinding"
+    );
+    eq("主轴类版式个个都有轴", noAxis2, []);
+    const ha = axisOf("timelineHorizontal")!;
+    const la = axisOf("timelineLeft")!;
+    const va = axisOf("timelineVertical")!;
+    const ua = axisOf("timelineUp")!;
+    // 轴身是一条 M/L，箭头是两条短线：三段都在，缺一段就是画了半条轴
+    eq("轴身是一条直线段", (ha.d.match(/L/g) ?? []).length, 1);
+    eq("箭头两条短线", (ha.head.match(/L/g) ?? []).length, 2);
+    const [h0, h1] = pts(ha.d);
+    const [l0, l1] = pts(la.d);
+    const [v0, v1] = pts(va.d);
+    const [u0, u1] = pts(ua.d);
+    ok("向右：轴往正方向伸", h1[0] > h0[0], ha.d);
+    ok("向左：轴往负方向伸", l1[0] < l0[0], la.d);
+    ok("向下：轴沿 y 正向伸", v1[1] > v0[1], va.d);
+    ok("向上：轴沿 y 负向伸", u1[1] < u0[1], ua.d);
+    near("向左 = 向右沿 x 镜像（轴身端点）", l1[0], -h1[0]);
+    eq("向左 = 向右沿 x 镜像（y 不动）", l1[1], h1[1]);
+    near("向上 = 向下沿 y 镜像（轴身端点）", u1[1], -v1[1], 1.01);
+    eq("向上 = 向下沿 y 镜像（x 不动）", u1[0], v1[0]);
+    const fb = pts(axisOf("fishboneRight")!.d);
+    // 轴穿过一级分支的锚点：水平主轴时锚点就在中心主题的中心线上
+    eq("水平主轴与中心主题同高", fb[0][1], fb[1][1]);
+    eq("竖直主轴与中心主题同列", v0[0], v1[0]);
+    // 轴不能从中心主题的圆心起画（会把根框压在轴下），要从它的前缘起
+    const rootBox = box("timelineHorizontal").at(root());
+    ok("向右：轴起点在中心主题右缘之外", h0[0] >= rootBox.x + rootBox.w / 2 - 0.5, `${h0[0]}`);
+    ok("轴终点越过最后一个一级分支", h1[0] > rootBox.x, `${h1[0]}`);
+    ok("轴色跟中心主题的线色同源", ha.line === va.line && ha.line.length > 3, ha.line);
+    // 画布与导出共用一份：轴进了布局结果，导出就必须原样抄一遍，不许有第二条画法
+    const axisSvg = renderSvg(
+      paintPage({ ...cur, layout: { ...cur.layout, code: "timelineHorizontal" } })
+    );
+    const plainSvg = renderSvg(
+      paintPage({ ...cur, layout: { ...cur.layout, code: "logicRight" } })
+    );
+    const strokes = (s: string) => (s.match(/ stroke-width="2"/g) ?? []).length;
+    eq("导出 SVG 里多出两条轴线（轴身 + 箭头）", strokes(axisSvg) - strokes(plainSvg), 2);
+    ok("导出的轴身与布局同一份 path", axisSvg.includes(ha.d), ha.d);
   }
 
   // 其余各族至少一条方向断言，重构 layout.ts 时不至于静默改坏某一带

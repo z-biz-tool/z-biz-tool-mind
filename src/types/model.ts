@@ -247,9 +247,11 @@ export type LayoutCode =
   | "braceRight" // 括号图（右）
   | "matrix" // 矩阵图
   | "circlePacking" // 圆形图
-  | "timelineVertical" // 垂直时间线
-  | "timelineHorizontal" // 水平时间线
-  | "timelineWinding" // S 型时间线
+  | "timelineVertical" // 时间轴（向下）
+  | "timelineUp" // 时间轴（向上）
+  | "timelineHorizontal" // 时间轴（向右）
+  | "timelineLeft" // 时间轴（向左）
+  | "timelineWinding" // 时间轴（S 形）
   | "free"; // 自由布局
 
 /** .emmx 的 `<Layout V="n">` 数字码。亿图自己的语料里只出现过 6 / 7 / 8，认不出的码由 codec 原样带回。 */
