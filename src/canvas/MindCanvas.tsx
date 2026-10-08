@@ -118,6 +118,8 @@ const VERTICAL_LAYOUTS: LayoutCode[] = [
   "orgUp",
   "orgDown",
   "orgBoth",
+  "stagger",
+  "staggerUp",
   "matrix",
   "timelineVertical",
   "timelineUp",

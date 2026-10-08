@@ -240,7 +240,10 @@ export type LayoutCode =
   | "orgUp" // 组织结构图（向上）
   | "orgDown" // 组织结构图（向下）
   | "orgBoth" // 组织结构图（上下双向）
+  | "stagger" // 交叉树
+  | "staggerUp" // 交叉树向上
   | "radial" // 放射图
+  | "sunburst" // 扇形放射图
   | "fishboneLeft" // 鱼骨图（左）
   | "fishboneRight" // 鱼骨图（右）
   | "braceLeft" // 括号图（左）

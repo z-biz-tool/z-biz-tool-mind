@@ -752,6 +752,38 @@ function layoutTreeCorner(root: TreeNode, spacing: number, sideX: 1 | -1, dirY: 
 }
 
 /**
+ * 交叉树：也按层分行，但每层不按"父节点居中于自己子树"排，而是先排完所有父节点的第 1 子、
+ * 再排第 2 子……父与子必然错位，连线交叉成 X —— 这一族的名字就来自这些交叉线
+ * （_research/extract/qm-cn.tsv `MainWindow / Stagger = 交叉树`、`Stagger Up = 交叉树向上`，
+ * 蓝本记的是"树形交叉线（非直角连线）"）。错位换来的代价是横向更省：每层宽度只取决于
+ * 该层节点数，不像对称树那样被最宽的子树带撑开。
+ * 盒子依然严格不压：同层按宽度贪心铺，层间按各自行高 + 间距分隔；交叉的只是线。
+ */
+function layoutStagger(root: TreeNode, spacing: number, dirY: 1 | -1): void {
+  const rows: TreeNode[][] = [[root]];
+  for (;;) {
+    const last = rows[rows.length - 1];
+    const next: TreeNode[] = [];
+    const maxKids = Math.max(0, ...last.map((n) => n.children.length));
+    for (let i = 0; i < maxKids; i++)
+      for (const n of last) next.push(...n.children.slice(i, i + 1));
+    if (!next.length) break;
+    rows.push(next);
+  }
+  let acc = 0;
+  for (const row of rows) {
+    const rowH = Math.max(...row.map((n) => n.h));
+    let x = -row.reduce((s, n) => s + n.w + spacing, 0) / 2 + spacing / 2;
+    for (const n of row) {
+      n.x = x + n.w / 2;
+      n.y = dirY * (acc + rowH / 2);
+      x += n.w + spacing;
+    }
+    acc += rowH + spacing;
+  }
+}
+
+/**
  * spacing 必须显式写成 number：DEFAULTS 是 as const 的，
  * 不标注的话参数会被推成字面量类型 30，调用方传任何别的间距都过不了类型检查。
  */
@@ -774,7 +806,7 @@ function forwardReach(node: TreeNode, spacing: number): number {
   return best;
 }
 
-/** 放射图：按子树"占用角度 = 该层弧长需求"分配角度，半径按层递增。 */
+/** 放射图：按子树"占用角度 = 该层弧长需求"分配角度，半径按层递增（从各自父节点量）。 */
 function layoutRadial(root: TreeNode, spacing: number): void {
   root.x = 0;
   root.y = 0;
@@ -967,6 +999,36 @@ function layoutCircle(root: TreeNode, spacing: number): void {
   layoutRadial(root, spacing * 2);
 }
 
+/**
+ * 扇形放射图：上半圈 + **以中心主题为圆心的同心环**。
+ * 不能沿用 `layoutRadial` 的"半径从各自父节点量"：那是一串链式偏移，越深越往一个方向甩，
+ * 装机目检出来是一坨斜着的串，不是扇形（扇形的定义就是同一层的主题踩在同一道弧上）。
+ * 扇区仍按子树叶子数加权分配，所以密集分支占的弧更长，同环上不会挤到一起。
+ */
+function layoutSunburst(root: TreeNode, spacing: number): void {
+  root.x = 0;
+  root.y = 0;
+  const radiusOf = (level: number) => DEFAULTS.levelLength + (level - 1) * (spacing * 2 + 90);
+  const leaves = (n: TreeNode): number =>
+    n.children.length ? n.children.reduce((s, c) => s + leaves(c), 0) : 1;
+  const put = (node: TreeNode, a0: number, a1: number) => {
+    if (!node.children.length) return;
+    const weights = node.children.map(leaves);
+    const sum = weights.reduce((s, w) => s + w, 0) || 1;
+    let a = a0;
+    node.children.forEach((c, i) => {
+      const span = ((a1 - a0) * weights[i]) / sum;
+      const mid = a + span / 2;
+      const r = radiusOf(c.level);
+      c.x = Math.cos(mid) * r;
+      c.y = Math.sin(mid) * r;
+      put(c, a, a + span);
+      a += span;
+    });
+  };
+  put(root, -Math.PI, 0);
+}
+
 export interface LayoutInput {
   /** "显示层级数"：超过这个层级的节点不布局（1..9）。 */
   displayLevel?: number;
@@ -1057,9 +1119,21 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
         layoutTreeFamilySide(root, down, up, vs);
         break;
       }
+      case "stagger": {
+        layoutStagger(root, vs, 1);
+        break;
+      }
+      case "staggerUp": {
+        layoutStagger(root, vs, -1);
+        break;
+      }
       case "radial":
       case "circlePacking": {
         layoutCircle(root, vs);
+        break;
+      }
+      case "sunburst": {
+        layoutSunburst(root, vs);
         break;
       }
       case "fishboneLeft": {
@@ -1422,6 +1496,12 @@ const DOWN_UP_LAYOUTS: LayoutCode[] = ["treeDownSym", "treeUpSym", "orgUp", "org
 /** 竖直主轴的时间轴：一级分支竖着进出、更深的子主题横着出去，是折线/曲线的混用族。 */
 const VERTICAL_SPINE_TIMELINES: LayoutCode[] = ["timelineVertical", "timelineUp"];
 
+/**
+ * 交叉树两码：一条直线从父框穿到子框。线线交叉是这一族的目的，不是缺陷 ——
+ * 层内错位排布（layoutStagger）让父与子对不上号，直角折线会把这种错位抹平成迷宫。
+ */
+const SLANT_LAYOUTS: LayoutCode[] = ["stagger", "staggerUp"];
+
 export function buildConnectors(
   _page: Page,
   boxes: Record<string, NodeBox>,
@@ -1429,6 +1509,7 @@ export function buildConnectors(
 ): ConnectorPath[] {
   const out: ConnectorPath[] = [];
   const elbow = code.startsWith("tree") || code.startsWith("org") || code === "matrix";
+  const slant = SLANT_LAYOUTS.includes(code);
   const corner = CORNER_LAYOUTS[code];
   for (const b of Object.values(boxes)) {
     if (!b.parentId) continue;
@@ -1449,9 +1530,11 @@ export function buildConnectors(
       side: b.side,
       d: corner
         ? cornerPath(p, b, corner.sideX, corner.dirY)
-        : vertical || elbow
-          ? elbowPath(p, b, vertical)
-          : curvePath(p, b),
+        : slant
+          ? slantPath(p, b)
+          : vertical || elbow
+            ? elbowPath(p, b, vertical)
+            : curvePath(p, b),
     });
   }
   return out.sort((a, b) => (a.id < b.id ? -1 : 1));
@@ -1517,6 +1600,12 @@ function curvePath(p: NodeBox, c: NodeBox): string {
   if (x1 === x2 && y1 === y2) return `M ${x1} ${y1}`;
   const mx = (x1 + x2) / 2;
   return `M ${round(x1)} ${round(y1)} C ${round(mx)} ${round(y1)} ${round(mx)} ${round(y2)} ${round(x2)} ${round(y2)}`;
+}
+
+/** 交叉树的连线：父框近侧边中点直穿到子框近侧边中点，一条线段，没有拐点。 */
+function slantPath(p: NodeBox, c: NodeBox): string {
+  const dir = Math.sign(c.y - p.y) || 1;
+  return `M ${round(p.x)} ${round(p.y + (dir * p.h) / 2)} L ${round(c.x)} ${round(c.y - (dir * c.h) / 2)}`;
 }
 
 function elbowPath(p: NodeBox, c: NodeBox, vertical: boolean): string {

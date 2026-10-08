@@ -12,6 +12,9 @@
  * 7) 直角折线（树状图/组织结构图/矩阵图/竖向时间线的一级分支）一段斜线都不许有：
  *    elbowPath 曾经把"横、斜、竖"当成直角折线，只有截图才看得出来。
  *    判定必须逐条连线看（路径里有没有 C），按版式码整族分类会在曲线上恒真。
+ * 8) 交叉树是反过来的一族：线本来就是一条斜穿过去的直线段，交叉是它的目的。
+ *    它同样"没有 C"，所以不能塞进第 7 条的筛子里 —— 得单独一族判定"每条线恰好两点"，
+ *    并要求层与层之间真的出现交叉。
  */
 import { done, eq, near, ok } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
@@ -259,6 +262,8 @@ function add(parentId: string, text: string): string {
   /** 整族曲线的版式：横着推进的三条时间线（竖直主轴那条才是混用族）。 */
   const isCurveFamily = (code: LayoutCode) =>
     code === "timelineHorizontal" || code === "timelineLeft" || code === "timelineWinding";
+  /** 整族斜线的版式：交叉树两码，一条线段从父框直接穿到子框。 */
+  const isSlantFamily = (code: LayoutCode) => code === "stagger" || code === "staggerUp";
   /** 逐条判定：路径里没有 C 才是直角折线。 */
   const isElbow = (d: string) => !d.includes("C");
   /** 数一条路径里有几段斜线：直角折线族出现斜线段就是画错了（组织结构图曾经中间一段是斜的）。 */
@@ -276,6 +281,25 @@ function add(parentId: string, text: string): string {
     for (let i = 0; i + 1 < n.length; i += 2) out.push([n[i], n[i + 1]]);
     return out;
   };
+  /** 严格相交的连线对数：共端点（同父的兄弟从同一个点出发）不算交叉。 */
+  const crossings = (L: ReturnType<typeof computeLayout>) => {
+    const cr = (o: number[], p: number[], q: number[]) =>
+      (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
+    let n = 0;
+    for (let i = 0; i < L.connectors.length; i += 1)
+      for (let j = i + 1; j < L.connectors.length; j += 1) {
+        const a = pts(L.connectors[i].d);
+        const b = pts(L.connectors[j].d);
+        for (let x = 0; x + 1 < a.length; x += 1)
+          for (let y = 0; y + 1 < b.length; y += 1)
+            if (
+              cr(a[x], a[x + 1], b[y]) * cr(a[x], a[x + 1], b[y + 1]) < 0 &&
+              cr(b[y], b[y + 1], a[x]) * cr(b[y], b[y + 1], a[x + 1]) < 0
+            )
+              n += 1;
+      }
+    return n;
+  };
   /** 严格落在框内才算（贴边是连线的正常落点）。 */
   const insideBox = (b: NodeBox, x: number, y: number) =>
     x > b.x - b.w / 2 + 0.5 &&
@@ -283,13 +307,22 @@ function add(parentId: string, text: string): string {
     y > b.y - b.h / 2 + 0.5 &&
     y < b.y + b.h / 2 - 0.5;
 
-  ok("版式码表至少 24 码（蓝本 §3.3 的族与变体）", CODES.length >= 24, CODES.join(","));
+  ok("版式码表至少 29 码（蓝本 §3.3 的族与变体）", CODES.length >= 29, CODES.join(","));
   for (const code of CODES) {
     const L = computeLayout({ ...cur, layout: { ...cur.layout, code } });
     eq(`${code}：每个主题都算出盒子`, ids.filter((id) => !L.boxes[id]).length, 0);
     eq(`${code}：连线数 = 主题数 - 1`, L.connectors.length, ids.length - 1);
     if (code !== "free") eq(`${code}：主题互不压框`, overlaps(L), []);
-    const elbows = L.connectors.filter((c) => isElbow(c.d));
+    // 斜线族"没有 C"但不是折线，混进下面的斜段检测会把自己判挂
+    const elbows = isSlantFamily(code) ? [] : L.connectors.filter((c) => isElbow(c.d));
+    if (isSlantFamily(code)) {
+      eq(
+        `${code}：每条连线就是一段直线（两点）`,
+        L.connectors.filter((c) => pts(c.d).length !== 2).map((c) => c.id),
+        []
+      );
+      eq(`${code}：连线之间真的交叉`, crossings(L) >= 1, true);
+    }
     if (isElbowFamily(code))
       eq(
         `${code}：整族连线都是直角折线`,
@@ -430,6 +463,36 @@ function add(parentId: string, text: string): string {
     );
   }
 
+  // 交叉树：同层错位排（先排完各家第 1 子再排第 2 子），线因此穿起来
+  {
+    const st = box("stagger");
+    eq(
+      "交叉树：一层一行，A二 被 B一 挤到右边去",
+      [st.at(A1).x < st.at(B1).x, st.at(B1).x < st.at(A2).x],
+      [true, true]
+    );
+    eq(
+      "交叉树：第二层三个主题同排",
+      [st.at(A1).y, st.at(A1).y - st.at(B1).y, st.at(A1).y - st.at(A2).y],
+      [st.at(A1).y, 0, 0]
+    );
+    eq("交叉树：向下生长", st.at(A).y > st.at(root()).y, true);
+    const symOrdered = box("treeDownSym").at(A2).x < box("treeDownSym").at(B1).x;
+    const stagOrdered = st.at(A2).x < st.at(B1).x;
+    ok(
+      "交叉树不是对称树：同一层的左右顺序不一样（对称式把 A二 排在 B一 左边）",
+      symOrdered !== stagOrdered,
+      ""
+    );
+    eq("交叉树：连线交叉数 > 0", crossings(st.L) >= 1, true);
+    const su = box("staggerUp");
+    eq("交叉树向上：向上生长", su.at(A).y < su.at(root()).y, true);
+    // 同一套 layoutStagger 只把 dirY 翻号：沿 y 镜像（各自取整，容 ±1），x 原样
+    near("交叉树向上 = 交叉树沿 y 镜像", su.at(A1).y, -st.at(A1).y, 1.01);
+    eq("交叉树向上的 x 不动", su.at(A1).x, st.at(A1).x);
+    eq("交叉树向上的连线也交叉", crossings(su.L) >= 1, true);
+  }
+
   // 时间轴：沿主轴必须单调，交替只发生在与主轴垂直的那根轴上
   {
     const v = box("timelineVertical");
@@ -554,6 +617,24 @@ function add(parentId: string, text: string): string {
     const rOf = (id: string) => Math.round(Math.hypot(rad.at(id).x, rad.at(id).y));
     eq("放射图：一级分支同处一圈", [rOf(A), rOf(B), rOf(C)], [rOf(A), rOf(A), rOf(A)]);
     ok("放射图：子分支比父分支离中心更远", rOf(A1) > rOf(A), `${rOf(A1)} ≤ ${rOf(A)}`);
+    // 扇形放射图 = 放射图只取上半圈：整张图压在中心主题之上，一级分支仍同处一圈
+    const sun = box("sunburst");
+    const rr = (id: string) =>
+      Math.round(Math.hypot(sun.at(id).x, sun.at(id).y - sun.at(root()).y));
+    eq(
+      "扇形放射图：除中心主题外全在上方",
+      ids.filter((id) => id !== root() && sun.at(id).y >= sun.at(root()).y),
+      []
+    );
+    eq("扇形放射图：一级分支同处一圈", [rr(A), rr(B), rr(C)], [rr(A), rr(A), rr(A)]);
+    // 第二层也必须踩在同一道弧上：半径一旦改成"从各自父节点量"（链式），这一层就散开，
+    // 整张图斜着甩成一坨 —— 装机目检就是这么发现的，靠上面那条一级分支的断言抓不到。
+    eq(
+      "扇形放射图：二级分支也同处一圈，且比一级那圈更远",
+      [rr(A1), rr(A2), rr(B1), rr(A1) < rr(A11)],
+      [rr(A1), rr(A1), rr(A1), true]
+    );
+    ok("扇形放射图：子分支离中心更远", rr(A1) > rr(A), `${rr(A1)} ≤ ${rr(A)}`);
     const pack = box("circlePacking");
     ok(
       "圆形图：一级分支也成圈",
