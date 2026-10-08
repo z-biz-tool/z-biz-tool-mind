@@ -32,6 +32,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # 根目录 .npmrc 把 registry 钉在 npmmirror 是给本地开发者省流量的，GitHub 的海外
+  # runner 走它又慢又不稳。npm 配置优先级 env > 项目 .npmrc，这里覆盖回官方源。
+  NPM_CONFIG_REGISTRY: https://registry.npmjs.org
 
 jobs:
   web:
