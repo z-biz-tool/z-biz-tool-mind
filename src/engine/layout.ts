@@ -653,7 +653,6 @@ function walk(nodes: TreeNode[], fn: (n: TreeNode) => void): void {
 }
 
 const hGap = (p: TreeNode, c: TreeNode, s: number) => p.w / 2 + s + c.w / 2;
-const vGap = (p: TreeNode, c: TreeNode, s: number) => p.h / 2 + s + c.h / 2;
 
 /**
  * 水平伸展的思维导图：子树占一个垂直"条带"，父节点在条带的垂直中心。
@@ -719,6 +718,38 @@ function layoutTreeFamily(root: TreeNode, spacing: number, dir: 1 | -1): void {
 }
 
 /**
+ * 树状图的角向式（右下 / 左下 / 右上 / 左上）：像文件目录那样逐级缩进 ——
+ * 同一深度共用一列，节点按前序一行一个推进，整枝被推向父节点所在的那个角。
+ * 与"对称"式的区别正在这里：对称式把子树摊平在父节点正下方，角向式让父节点
+ * 站在自己子树的角上。亿图把这两类当成六个不同的菜单项（_research/extract/qm-cn.tsv
+ * Tree Map (Bottom Right) / (Top Left) / (Down) / (Up)），不能共用一套几何。
+ */
+function layoutTreeCorner(root: TreeNode, spacing: number, sideX: 1 | -1, dirY: 1 | -1): void {
+  // 列宽取该深度最宽的那个节点，缩进才不会被下一列吃掉
+  const colW: number[] = [];
+  const bump = (n: TreeNode) => {
+    colW[n.level] = Math.max(colW[n.level] ?? 0, n.w);
+    for (const c of n.children) bump(c);
+  };
+  bump(root);
+  const colX: number[] = [];
+  let acc = 0;
+  for (let d = 0; d < colW.length; d++) {
+    colX[d] = acc;
+    acc += (colW[d] ?? 0) + spacing;
+  }
+  let row = 0;
+  const walk = (n: TreeNode) => {
+    n.x = sideX * (colX[n.level] + n.w / 2);
+    n.y = dirY * (row + n.h / 2);
+    n.side = n.level === 0 ? 0 : sideX;
+    row += n.h + spacing;
+    for (const c of n.children) walk(c);
+  };
+  walk(root);
+}
+
+/**
  * spacing 必须显式写成 number：DEFAULTS 是 as const 的，
  * 不标注的话参数会被推成字面量类型 30，调用方传任何别的间距都过不了类型检查。
  */
@@ -773,9 +804,6 @@ function layoutSpine(
   root.x = 0;
   root.y = 0;
   const kids = root.children;
-  kids.forEach((c) => {
-    c.side = opts.alternate ? ((kids.indexOf(c) % 2 === 0 ? 1 : -1) as -1 | 1) : opts.dir;
-  });
   let cursor = 0;
   kids.forEach((k, i) => {
     const step =
@@ -784,29 +812,31 @@ function layoutSpine(
         : estimateHeight(k, spacing) + spacing;
     const center = cursor + step / 2;
     cursor += step;
-    if (opts.axis === "h") {
-      k.x = opts.dir === 1 ? center : -center;
-      k.y = 0;
-    } else {
-      k.y = opts.dir === 1 ? center : -center;
-      k.x = 0;
-    }
+    // along 是沿主轴推进的坐标，cross 是"离轴多远"。交替与斜刺只能改 cross：
+    // 早先两者都写 y，竖直主轴时就把推进坐标抹了回去，一级分支于是叠在同一行上。
+    const along = opts.dir === 1 ? center : -center;
+    const arm = i % 2 === 0 ? -1 : 1;
+    let side = opts.alternate ? (arm as -1 | 1) : opts.dir;
+    let cross = 0;
     if (opts.oblique) {
       // 鱼骨：主分支从轴上的锚点斜向出去 45°，子分支再沿骨平行排。
-      const arm = i % 2 === 0 ? -1 : 1;
-      k.y = arm * (Math.abs(k.x) * 0.42 + 40);
-      k.side = arm as -1 | 1;
+      cross = arm * (Math.abs(along) * 0.42 + 40);
+      side = arm as -1 | 1;
     } else if (opts.alternate) {
-      const arm = i % 2 === 0 ? -1 : 1;
-      k.y = arm * (k.h / 2 + spacing * 2);
-      k.side = arm as -1 | 1;
+      cross = arm * ((opts.axis === "h" ? k.h : k.w) / 2 + spacing * 2);
     }
-    // 子树贴到主轴的外侧
     if (opts.axis === "h") {
-      layoutHorizontalTreeSubtree(k, k.side, spacing);
+      k.x = along;
+      k.y = cross;
     } else {
-      layoutVerticalTreeSubtree(k, k.side, spacing);
+      k.y = along;
+      k.x = cross;
     }
+    k.side = side;
+    // 子树贴到主轴的外侧：外侧是"与主轴垂直的那根轴的正负号"，
+    // 所以竖直主轴同样用横向展开的子树函数（早先按 axis 选函数，等于把
+    // 一级分支的左右符号当成上下符号用，子枝会顶到中心主题上）。
+    layoutHorizontalTreeSubtree(k, k.side, spacing);
   });
 }
 
@@ -843,35 +873,6 @@ function layoutHorizontalTreeSubtree(node: TreeNode, side: -1 | 0 | 1, spacing: 
     c.x = node.x + side * hGap(node, c, spacing);
     setX(c, c);
   }
-}
-
-/** 同 layoutHorizontalTreeSubtree：side 只做竖直方向的符号。 */
-function layoutVerticalTreeSubtree(node: TreeNode, side: -1 | 0 | 1, spacing: number): void {
-  const place = (n: TreeNode, cursorX: number): number => {
-    if (!n.children.length) {
-      n.x = cursorX + n.w / 2;
-      return n.w;
-    }
-    let x = cursorX;
-    let total = 0;
-    for (const c of n.children) {
-      const ext = place(c, x);
-      x += ext + spacing;
-      total += ext + spacing;
-    }
-    total -= spacing;
-    n.x = (n.children[0].x + n.children[n.children.length - 1].x) / 2;
-    return Math.max(total, n.w);
-  };
-  const left = node.x - estimateWidth(node, spacing) / 2;
-  place(node, left);
-  const setY = (n: TreeNode, depth: number) => {
-    for (const c of n.children) {
-      c.y = n.y + side * vGap(n, c, spacing);
-      setY(c, depth + 1);
-    }
-  };
-  setY(node, 0);
 }
 
 /** 同 estimateWidth：spacing 要显式 number，否则推成 DEFAULTS 的字面量类型。 */
@@ -1011,11 +1012,23 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
         break;
       }
       case "treeRight":
+        layoutTreeCorner(root, vs, 1, 1);
+        break;
+      case "treeLeft":
+        layoutTreeCorner(root, vs, -1, 1);
+        break;
+      case "treeUpRight":
+        layoutTreeCorner(root, vs, 1, -1);
+        break;
+      case "treeUpLeft":
+        layoutTreeCorner(root, vs, -1, -1);
+        break;
+      case "treeDownSym":
       case "orgDown": {
         layoutTreeFamily(root, vs, 1);
         break;
       }
-      case "treeLeft":
+      case "treeUpSym":
       case "orgUp": {
         layoutTreeFamily(root, vs, -1);
         break;
@@ -1294,6 +1307,9 @@ function layoutTreeFamilySide(
 ): void {
   root.x = 0;
   root.y = 0;
+  // 上下双向是"根在中间，两排分支一上一下"：一级分支要从中心主题的外缘起算，
+  // 从根的圆心起算就把分支摞进中心主题自己的框里（实测重叠 25x18）。
+  const inset = root.h / 2 + spacing;
   const row = (nodes: TreeNode[], dir: 1 | -1) => {
     let cursor = 0;
     const widths = nodes.map((n) => estimateWidth(n, spacing));
@@ -1305,14 +1321,20 @@ function layoutTreeFamilySide(
       const center = cursor + w / 2;
       cursor += w + spacing;
       n.side = dir as -1 | 1;
-      assignSubtreeY(n, center, dir, spacing);
+      assignSubtreeY(n, center, dir, spacing, inset);
     });
   };
   row(down, 1);
   row(up, -1);
 }
 
-function assignSubtreeY(node: TreeNode, centerX: number, dir: 1 | -1, spacing: number): void {
+function assignSubtreeY(
+  node: TreeNode,
+  centerX: number,
+  dir: 1 | -1,
+  spacing: number,
+  inset: number
+): void {
   const shift = centerX - node.x;
   const move = (n: TreeNode) => {
     n.x += shift;
@@ -1321,7 +1343,7 @@ function assignSubtreeY(node: TreeNode, centerX: number, dir: 1 | -1, spacing: n
   move(node);
   const setY = (n: TreeNode, depth: number) => {
     const rowH = Math.max(n.h, ...n.children.map((c) => c.h));
-    n.y = dir * (depth * (rowH + spacing) + (depth === 0 ? n.h / 2 : n.h / 2));
+    n.y = dir * (inset + depth * (rowH + spacing) + n.h / 2);
     for (const c of n.children) setY(c, depth + 1);
   };
   setY(node, 0);
@@ -1350,6 +1372,20 @@ function layoutWinding(root: TreeNode, hs: number, vs: number): void {
  * page 参数用不上（父子关系已经进了 NodeBox.parentId），但它是本模块导出的签名，
  * 下划线保留形参位而不是删掉，免得外部调用方跟着改。
  */
+/** 角向树的两个轴向往：横线从父列伸进子框的近侧缘，竖线贴着父列往下（上）走。 */
+const CORNER_LAYOUTS: Partial<Record<LayoutCode, { sideX: 1 | -1; dirY: 1 | -1 }>> = {
+  treeRight: { sideX: 1, dirY: 1 },
+  treeLeft: { sideX: -1, dirY: 1 },
+  treeUpRight: { sideX: 1, dirY: -1 },
+  treeUpLeft: { sideX: -1, dirY: -1 },
+};
+
+function cornerPath(p: NodeBox, c: NodeBox, sideX: 1 | -1, dirY: 1 | -1): string {
+  const y1 = p.y + (dirY * p.h) / 2;
+  const x2 = c.x - (sideX * c.w) / 2;
+  return `M ${round(p.x)} ${round(y1)} L ${round(p.x)} ${round(c.y)} L ${round(x2)} ${round(c.y)}`;
+}
+
 export function buildConnectors(
   _page: Page,
   boxes: Record<string, NodeBox>,
@@ -1357,17 +1393,27 @@ export function buildConnectors(
 ): ConnectorPath[] {
   const out: ConnectorPath[] = [];
   const elbow = code.startsWith("tree") || code.startsWith("org") || code === "matrix";
+  const corner = CORNER_LAYOUTS[code];
   for (const b of Object.values(boxes)) {
     if (!b.parentId) continue;
     const p = boxes[b.parentId];
     if (!p) continue;
-    const vertical = code.startsWith("timeline") && code !== "timelineHorizontal";
+    // 垂直时间轴是折线走向的混合体：一级分支从轴上"往下探"（竖着接），
+    // 挂在一级分支外侧的子主题却是横着长出去的（横着接），一套规则盖不住两种走向。
+    const vertical =
+      code === "timelineVertical"
+        ? b.level === 1
+        : code.startsWith("timeline") && code !== "timelineHorizontal";
     out.push({
       id: `c-${b.parentId}-${b.id}`,
       fromId: p.id,
       toId: b.id,
       side: b.side,
-      d: vertical || elbow ? elbowPath(p, b, vertical) : curvePath(p, b),
+      d: corner
+        ? cornerPath(p, b, corner.sideX, corner.dirY)
+        : vertical || elbow
+          ? elbowPath(p, b, vertical)
+          : curvePath(p, b),
     });
   }
   return out.sort((a, b) => (a.id < b.id ? -1 : 1));

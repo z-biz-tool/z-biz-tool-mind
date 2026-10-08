@@ -5,7 +5,10 @@
  * 2) 折叠与"显示层级"两套可见性必须少画同几笔；
  * 3) 下钻 only 之外整枝不进布局；
  * 4) 浮动主题保留用户拖出来的位置；
- * 5) 连线数量、包围盒与 order 自洽。
+ * 5) 连线数量、包围盒与 order 自洽；
+ * 6) 每个版式码都要有方向断言（曾经 24 码只有 2 码有断言，改 layout.ts 会静默改坏某一带），
+ *    并且任何码都不许把两个主题画在同一个位置 —— 垂直时间线压回同一行、
+ *    组织结构图（上下双向）压进中心主题，都是这么露出来的。
  */
 import { done, eq, near, ok } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
@@ -25,8 +28,9 @@ import {
   updateStyle,
   updateText,
 } from "../src/engine/tree.ts";
-import { DEFAULTS } from "../src/model/constants.ts";
+import { DEFAULTS, LAYOUT_LABELS } from "../src/model/constants.ts";
 import { plainText } from "../src/types/model.ts";
+import type { LayoutCode } from "../src/types/model.ts";
 
 const PAD = DEFAULTS.topicPadX * 2;
 
@@ -211,6 +215,200 @@ function add(parentId: string, text: string): string {
     [root(), f]
   );
   ok("孙主题排在子的右侧", L.boxes[gk].x > L.boxes[fk].x, "");
+}
+
+// ---------------------------------------------------------------- 全码几何回归（03 §1.3-1：过去 20 码只有 2 码有断言）
+{
+  cur = createPage("全码");
+  const A = add(root(), "分支A");
+  const B = add(root(), "分支B");
+  const C = add(root(), "分支C");
+  const A1 = add(A, "A一");
+  const A2 = add(A, "A二");
+  const A11 = add(A1, "A一一");
+  const B1 = add(B, "B一");
+  const ids = [root(), A, B, C, A1, A2, A11, B1];
+  const CODES = Object.keys(LAYOUT_LABELS) as LayoutCode[];
+  const box = (code: LayoutCode) => {
+    const L = computeLayout({ ...cur, layout: { ...cur.layout, code } });
+    return { L, at: (id: string) => L.boxes[id] };
+  };
+  /** 两两压框检测。自由布局不分派位置（本来就是叠在一起等用户拖），不参与。 */
+  const overlaps = (L: ReturnType<typeof computeLayout>) => {
+    const bs = ids.map((id) => L.boxes[id]);
+    const bad: string[] = [];
+    for (let i = 0; i < bs.length; i += 1)
+      for (let j = i + 1; j < bs.length; j += 1) {
+        const ox =
+          Math.min(bs[i].x + bs[i].w / 2, bs[j].x + bs[j].w / 2) -
+          Math.max(bs[i].x - bs[i].w / 2, bs[j].x - bs[j].w / 2);
+        const oy =
+          Math.min(bs[i].y + bs[i].h / 2, bs[j].y + bs[j].h / 2) -
+          Math.max(bs[i].y - bs[i].h / 2, bs[j].y - bs[j].h / 2);
+        if (ox > 1 && oy > 1) bad.push(`${bs[i].lines.join("")}×${bs[j].lines.join("")}`);
+      }
+    return bad;
+  };
+
+  ok("版式码表至少 24 码（蓝本 §3.3 的族与变体）", CODES.length >= 24, CODES.join(","));
+  for (const code of CODES) {
+    const L = computeLayout({ ...cur, layout: { ...cur.layout, code } });
+    eq(`${code}：每个主题都算出盒子`, ids.filter((id) => !L.boxes[id]).length, 0);
+    eq(`${code}：连线数 = 主题数 - 1`, L.connectors.length, ids.length - 1);
+    if (code !== "free") eq(`${code}：主题互不压框`, overlaps(L), []);
+    ok(
+      `${code}：包围盒包住每个盒子`,
+      ids.every((id) => {
+        const b = L.boxes[id];
+        return (
+          b.x - b.w / 2 >= L.bounds.minX - 0.01 &&
+          b.x + b.w / 2 <= L.bounds.maxX + 0.01 &&
+          b.y - b.h / 2 >= L.bounds.minY - 0.01 &&
+          b.y + b.h / 2 <= L.bounds.maxY + 0.01
+        );
+      }),
+      ""
+    );
+  }
+
+  // 树状图角向式：父节点站在自己子树的角上，同深度共用一列
+  {
+    const r = box("treeRight");
+    eq(
+      "树状图（右下）：子在父的下方且缩进向右",
+      [r.at(A1).y > r.at(A).y, r.at(A1).x > r.at(A).x],
+      [true, true]
+    );
+    ok("树状图（右下）：同深度共用一列", Math.abs(r.at(A1).x - r.at(A2).x) < 0.01, "");
+    ok("树状图（右下）：再深一层继续向右缩进", r.at(A11).x > r.at(A1).x, "");
+    eq(
+      "树状图（右下）：一级分支按前序竖着堆",
+      [r.at(A).y, r.at(B).y, r.at(C).y].map((v) => v > 0),
+      [true, true, true]
+    );
+    const l = box("treeLeft");
+    eq(
+      "树状图（左下）：仍然向下，只把缩进翻到左边",
+      [l.at(A1).y > l.at(A).y, l.at(A1).x < l.at(A).x],
+      [true, true]
+    );
+    eq(
+      "树状图（左下）不是向上：与向上对称式的 y 反号",
+      l.at(A1).y > 0 && box("treeUpSym").at(A1).y < 0,
+      true
+    );
+    const ur = box("treeUpRight");
+    eq(
+      "树状图（右上）：向上且向右",
+      [ur.at(A1).y < ur.at(A).y, ur.at(A1).x > ur.at(A).x],
+      [true, true]
+    );
+    const ul = box("treeUpLeft");
+    eq(
+      "树状图（左上）：向上且向左",
+      [ul.at(A1).y < ul.at(A).y, ul.at(A1).x < ul.at(A).x],
+      [true, true]
+    );
+    // 对称式：子树摊在父节点正下方，一级分支横着铺开
+    const ds = box("treeDownSym");
+    ok(
+      "树状图（向下对称）：一级分支同排横铺",
+      Math.abs(ds.at(A).y - ds.at(C).y) < 0.01 &&
+        ds.at(A).x < ds.at(B).x &&
+        ds.at(B).x < ds.at(C).x,
+      ""
+    );
+    ok(
+      "角向式与对称式不是同一套几何（亿图把它们分成六个菜单项）",
+      Math.abs(ds.at(A).x - r.at(A).x) > 1,
+      ""
+    );
+    ok(
+      "组织结构图（向下）沿用居中摊开的对称几何",
+      Math.abs(box("orgDown").at(A).x - ds.at(A).x) < 0.01,
+      ""
+    );
+  }
+
+  // 组织结构图（上下双向）：一级分支要从中心主题的外缘起算
+  {
+    const { at } = box("orgBoth");
+    const rootBox = at(root());
+    const first = Math.min(at(A).y, at(C).y);
+    ok(
+      "上下双向：下行分支的顶边在中心主题底边之下",
+      first - at(A).h / 2 >= rootBox.y + rootBox.h / 2,
+      `实际 ${first - at(A).h / 2} < ${rootBox.y + rootBox.h / 2}`
+    );
+    eq("上下双向：主分支分到上下两排", [at(A).y > 0, at(B).y < 0, at(C).y > 0], [true, true, true]);
+  }
+
+  // 时间轴：沿主轴必须单调，交替只发生在与主轴垂直的那根轴上
+  {
+    const v = box("timelineVertical");
+    eq(
+      "垂直时间线：一级分支沿 y 严格递增",
+      [v.at(A).y < v.at(B).y, v.at(B).y < v.at(C).y],
+      [true, true]
+    );
+    eq(
+      "垂直时间线：一级分支左右交替",
+      [v.at(A).x < 0, v.at(B).x > 0, v.at(C).x < 0],
+      [true, true, true]
+    );
+    const h = box("timelineHorizontal");
+    eq(
+      "水平时间线：一级分支沿 x 严格递增、上下交替",
+      [h.at(A).x < h.at(B).x, h.at(B).x < h.at(C).x, h.at(A).y < 0 && h.at(B).y > 0],
+      [true, true, true]
+    );
+  }
+
+  // 其余各族至少一条方向断言，重构 layout.ts 时不至于静默改坏某一带
+  {
+    eq("思维导图（右）：分支都在右侧", box("logicRight").at(A).x > 0, true);
+    eq("思维导图（左）：分支都在左侧", box("logicLeft").at(A).x < 0, true);
+    eq("单向导图与向右同构", box("rightOnly").at(A).x, box("logicRight").at(A).x);
+    eq("括号图（右）：分支在右侧", box("braceRight").at(A).x > 0, true);
+    eq("括号图（左）镜像", box("braceLeft").at(A).x, -box("braceRight").at(A).x);
+    const bal = box("balanced");
+    eq("双向平衡：主分支分到两侧", [bal.at(A).x > 0, bal.at(C).x < 0], [true, true]);
+    const rad = box("radial");
+    const rOf = (id: string) => Math.round(Math.hypot(rad.at(id).x, rad.at(id).y));
+    eq("放射图：一级分支同处一圈", [rOf(A), rOf(B), rOf(C)], [rOf(A), rOf(A), rOf(A)]);
+    ok("放射图：子分支比父分支离中心更远", rOf(A1) > rOf(A), `${rOf(A1)} ≤ ${rOf(A)}`);
+    const pack = box("circlePacking");
+    ok(
+      "圆形图：一级分支也成圈",
+      Math.abs(Math.hypot(pack.at(A).x, pack.at(A).y) - Math.hypot(pack.at(B).x, pack.at(B).y)) < 1,
+      ""
+    );
+    const fb = box("fishboneRight");
+    eq(
+      "鱼骨图（右）：主分支沿 x 递增且上下分列",
+      [fb.at(A).x < fb.at(B).x, fb.at(A).y < 0, fb.at(B).y > 0],
+      [true, true, true]
+    );
+    eq("鱼骨图（左）镜像", Math.round(box("fishboneLeft").at(A).x), Math.round(-fb.at(A).x));
+    const mx = box("matrix");
+    eq(
+      "矩阵图：主分支落进不同象限",
+      [
+        `${Math.sign(mx.at(A).x)},${Math.sign(mx.at(A).y)}`,
+        `${Math.sign(mx.at(B).x)},${Math.sign(mx.at(B).y)}`,
+      ],
+      ["1,-1", "1,1"]
+    );
+    const wd = box("timelineWinding");
+    eq(
+      "S 型时间线：折返列在下一列才换 x",
+      [Math.abs(wd.at(A).x - wd.at(B).x) < 0.01, wd.at(C).x > wd.at(B).x],
+      [true, true]
+    );
+    // 自由布局不分派：位置就是 Shape.transform 存的那一份
+    const fr = box("free");
+    eq("自由布局：主题位置原样不动", fr.at(A).x, cur.shapes[A].transform.x);
+  }
 }
 
 // ---------------------------------------------------------------- 文本测量原语

@@ -111,6 +111,10 @@ const NEW_TOPIC = "新建主题";
 const VERTICAL_LAYOUTS: LayoutCode[] = [
   "treeRight",
   "treeLeft",
+  "treeUpRight",
+  "treeUpLeft",
+  "treeDownSym",
+  "treeUpSym",
   "orgUp",
   "orgDown",
   "orgBoth",
