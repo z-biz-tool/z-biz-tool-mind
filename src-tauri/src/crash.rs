@@ -92,7 +92,12 @@ pub fn write_report(kind: &str, message: &str, detail: &str) -> Result<Option<Pa
     crate::log::log(
         "error",
         "crash",
-        &format!("{}: {} → {}", one_line(kind, 40), one_line(message, 200), path.display()),
+        &format!(
+            "{}: {} → {}",
+            one_line(kind, 40),
+            one_line(message, 200),
+            path.display()
+        ),
     );
     Ok(Some(path))
 }
@@ -264,7 +269,11 @@ mod tests {
         assert!(text.contains("消息: index out of bounds"));
         assert!(text.contains("src/x.rs:12:3"));
         assert!(text.contains("z-biz-tool-mind v"));
-        assert!(path.file_name().unwrap().to_string_lossy().starts_with("crash-"));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("crash-"));
         assert_eq!(info().files, 1);
         assert!(info().latest.ends_with(".txt"));
         let _ = std::fs::remove_dir_all(&root);
@@ -276,9 +285,14 @@ mod tests {
         let root = isolated("flat");
         let _ = std::fs::remove_dir_all(&root);
         configure_from(&cfg(true));
-        let path = write_report("window", "第一行\n第二行\t带制表", "at a\nat b\nat c").unwrap().unwrap();
+        let path = write_report("window", "第一行\n第二行\t带制表", "at a\nat b\nat c")
+            .unwrap()
+            .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        let 消息行 = text.lines().find(|l| l.starts_with("消息:")).unwrap_or_default();
+        let 消息行 = text
+            .lines()
+            .find(|l| l.starts_with("消息:"))
+            .unwrap_or_default();
         assert!(
             消息行.contains("第一行 第二行 带制表") && !消息行.contains('\n'),
             "消息必须压成一行，实际 {消息行:?}"
@@ -322,7 +336,9 @@ mod tests {
         let root = isolated("default");
         let _ = std::fs::remove_dir_all(&root);
         assert!(!configure_from(&serde_json::json!({})), "缺键就是关");
-        assert!(!configure_from(&serde_json::json!({"advanced":{"crashReport":"yes"}})));
+        assert!(!configure_from(
+            &serde_json::json!({"advanced":{"crashReport":"yes"}})
+        ));
         assert!(configure_from(&cfg(true)));
         let _ = std::fs::remove_dir_all(&root);
     }

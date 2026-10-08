@@ -37,12 +37,20 @@ pub fn run() {
         Ok(st) => log::log("info", "net", &st.message),
         // 用户手改过的 config.json 里可能有非法代理地址：拦不住的话就退回跟随系统，
         // 并把这件事写进日志，而不是让整个应用起不来。
-        Err(e) => log::log("error", "net", &format!("代理设置无法应用，已按跟随系统启动: {e}")),
+        Err(e) => log::log(
+            "error",
+            "net",
+            &format!("代理设置无法应用，已按跟随系统启动: {e}"),
+        ),
     }
     // 崩溃记录要在任何可能 panic 的代码之前就位：开关读配置，hook 只装一次。
     let crash_on = crash::configure_from(&cfg);
     crash::install_panic_hook();
-    log::log("debug", "config", &format!("崩溃记录 = {}", if crash_on { "开" } else { "关" }));
+    log::log(
+        "debug",
+        "config",
+        &format!("崩溃记录 = {}", if crash_on { "开" } else { "关" }),
+    );
     log::prune();
 
     let app = tauri::Builder::default()

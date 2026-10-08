@@ -311,8 +311,14 @@ mod tests {
         let text = body();
         assert!(!text.contains("不该出现"), "debug 不该写进 warn 档");
         assert!(!text.contains("也不该出现"), "info 不该写进 warn 档");
-        assert!(text.contains("[WARN ] [t] 警告在"), "warn 应在，实际 {text:?}");
-        assert!(text.contains("[ERROR] [t] 错误也在"), "error 应在，实际 {text:?}");
+        assert!(
+            text.contains("[WARN ] [t] 警告在"),
+            "warn 应在，实际 {text:?}"
+        );
+        assert!(
+            text.contains("[ERROR] [t] 错误也在"),
+            "error 应在，实际 {text:?}"
+        );
 
         set_level("off").ok();
         log("error", "t", "off 档什么都不写");
@@ -387,7 +393,10 @@ mod tests {
         assert_eq!(removed, 6, "多出的 6 份应被裁掉");
         assert_eq!(std::fs::read_dir(dir()).unwrap().count(), KEEP_FILES + 1);
         assert!(dir().join("z-mind-2026-14-01.log").exists(), "最新的要留着");
-        assert!(!dir().join("z-mind-2026-01-01.log").exists(), "最旧的应先删");
+        assert!(
+            !dir().join("z-mind-2026-01-01.log").exists(),
+            "最旧的应先删"
+        );
         assert!(dir().join("notes.txt").exists(), "不该动别的文件");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -402,10 +411,7 @@ mod tests {
         let got = info();
         assert_eq!(got.level, "debug");
         assert_eq!(got.files, 1);
-        assert_eq!(
-            got.bytes,
-            std::fs::metadata(current_file()).unwrap().len()
-        );
+        assert_eq!(got.bytes, std::fs::metadata(current_file()).unwrap().len());
         assert!(got.today, "今天的文件存在就该报 true");
         assert!(got.dir.ends_with("logs") || got.dir.ends_with("logs\\"));
         assert!(got.file.ends_with(".log"));

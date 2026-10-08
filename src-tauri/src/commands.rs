@@ -125,7 +125,11 @@ pub fn config_set(page: String, patch: Value) -> Result<Value, String> {
         .as_object()
         .map(|o| o.keys().cloned().collect())
         .unwrap_or_default();
-    log::log("debug", "config", &format!("更新 {page}: {}", keys.join(", ")));
+    log::log(
+        "debug",
+        "config",
+        &format!("更新 {page}: {}", keys.join(", ")),
+    );
     Ok(merged)
 }
 
@@ -221,7 +225,11 @@ pub fn file_write_bytes(
             "写入 {}（{} 字节，{}）",
             target.display(),
             bytes.len(),
-            if existed { "覆盖，原件已进历史版本" } else { "新建" }
+            if existed {
+                "覆盖，原件已进历史版本"
+            } else {
+                "新建"
+            }
         ),
     );
     Ok(WriteResult {
