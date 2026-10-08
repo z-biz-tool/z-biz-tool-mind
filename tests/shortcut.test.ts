@@ -58,7 +58,7 @@ setShortcutOverrides({ search: "ctrl+alt+f" });
 eq("搜索换成 Ctrl+Alt+F", chordOfCommand("search"), "ctrl+alt+f");
 eq("旧键 Ctrl+F 空出来了", commandOfChord("ctrl+f"), null);
 eq("新键归搜索", commandOfChord("ctrl+alt+f"), "search");
-eq("标签跟着改", shortcutLabel("search"), "Ctrl+Alt+F");
+eq("标签跟着改", shortcutLabel("search", false), "Ctrl+Alt+F");
 eq("改了别的键不牵连重做的别名", aliasChords("redo").join(","), "ctrl+y");
 
 // ---- 覆盖：改过的命令别名让位
@@ -100,8 +100,11 @@ setShortcutOverrides({ undo: "" });
 eq("快照里禁用记成空串", effectiveChords().undo, "");
 setShortcutOverrides({});
 
-// ---- 标签的平台写法（node 里没有 mac 的 platform，这里只断言非 mac 那一路）
-eq("Ctrl+Shift+S 的写法", chordLabel("ctrl+shift+s"), "Ctrl+Shift+S");
+// ---- 标签的平台写法（Node 21+ 自带全局 navigator，mac 宿主上不传平台参数会走 mac 布局；
+// 这里显式传参锁死两路，不依赖跑测试的环境）
+eq("Ctrl+Shift+S 的写法", chordLabel("ctrl+shift+s", false), "Ctrl+Shift+S");
+eq("修饰键的 mac 写法", chordLabel("ctrl+alt+f", true), "⌘⌥F");
+eq("Ctrl+Shift+S 的 mac 写法", chordLabel("ctrl+shift+s", true), "⇧⌘S");
 eq("单功能键不加修饰", chordLabel("f1"), "F1");
 eq("esc 显示成 Esc", chordLabel("esc"), "Esc");
 eq("不认识的命令原样返回", shortcutLabel("没这条命令"), "没这条命令");
