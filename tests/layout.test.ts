@@ -50,7 +50,7 @@ import {
 } from "../src/engine/tree.ts";
 import { DEFAULTS, LAYOUT_LABELS } from "../src/model/constants.ts";
 import { plainText } from "../src/types/model.ts";
-import type { LayoutCode } from "../src/types/model.ts";
+import type { LayoutCode, Page } from "../src/types/model.ts";
 
 const PAD = DEFAULTS.topicPadX * 2;
 
@@ -523,9 +523,12 @@ function add(parentId: string, text: string): string {
       }
     return bad;
   };
-  /** 整族折线的版式：树状图 / 组织结构图 / 矩阵图，加上条带向下的双向平衡向下。 */
+  /** 树形表格两码：层级靠"第几栏 + 跨几条槽"表达，格线本身就是父子边界，整族不画连线。 */
+  const TABLE_CODES: LayoutCode[] = ["treeTableLeft", "treeTableTop"];
+  /** 整族折线的版式：树状图 / 组织结构图 / 矩阵图，加上条带向下的双向平衡向下。
+   *  树形表格两码也以 tree 开头，必须先摘出去 —— 它们一条连线都没有，判据会绿得毫无意义。 */
   const isElbowFamily = (code: LayoutCode) =>
-    code.startsWith("tree") ||
+    (code.startsWith("tree") && !TABLE_CODES.includes(code)) ||
     code.startsWith("org") ||
     code === "matrix" ||
     code === "balancedDown";
@@ -587,11 +590,17 @@ function add(parentId: string, text: string): string {
     y > b.y - b.h / 2 + 0.5 &&
     y < b.y + b.h / 2 - 0.5;
 
-  ok("版式码表至少 33 码（蓝本 §3.3 的族与变体）", CODES.length >= 33, CODES.join(","));
+  ok("版式码表至少 35 码（蓝本 §3.3 的族与变体）", CODES.length >= 35, CODES.join(","));
   for (const code of CODES) {
     const L = computeLayout({ ...cur, layout: { ...cur.layout, code } });
     eq(`${code}：每个主题都算出盒子`, ids.filter((id) => !L.boxes[id]).length, 0);
-    eq(`${code}：连线数 = 主题数 - 1`, L.connectors.length, ids.length - 1);
+    if (TABLE_CODES.includes(code)) {
+      eq(`${code}：不画连线（层级由格线表达）`, L.connectors.length, 0);
+      ok(`${code}：给出表格线网格`, L.grid !== null && L.grid.lines.length > 0, "");
+    } else {
+      eq(`${code}：连线数 = 主题数 - 1`, L.connectors.length, ids.length - 1);
+      eq(`${code}：不产出表格网格（只有两码有）`, L.grid, null);
+    }
     if (code !== "free") eq(`${code}：主题互不压框`, overlaps(L), []);
     // 斜线族"没有 C"但不是折线，混进下面的斜段检测会把自己判挂
     const elbows = isSlantFamily(code) ? [] : L.connectors.filter((c) => isElbow(c.d));
@@ -655,6 +664,311 @@ function add(parentId: string, text: string): string {
       }),
       ""
     );
+  }
+
+  // -------------------------------------------- 树形表格：层级=栏、叶子=槽、父格跨住整棵子树（03 §1.3-14）
+  {
+    type Rect = { x: number; y: number; w: number; h: number };
+    /**
+     * 一套通用判据，套在五份形状不同的骨架上（深浅、宽扁、长标题、独子链）。
+     * 只拿一份树来验会漏：栏数与槽数相等时把两条轴整个打反也照样全绿，
+     * 而"跨槽的父格装得下自己那行字"这条只在父格比它盖住的行更壮时才成立，普通骨架碰不到。
+     */
+    const verifyTable = (code: LayoutCode, tag: string, page: Page) => {
+      const top = code === "treeTableTop";
+      const pageT = { ...page, layout: { ...page.layout, code } };
+      const L = computeLayout(pageT);
+      const g = L.grid!;
+      const nm = (s: string) => `${code}·${tag}：${s}`;
+      const kid = (id: string) => page.shapes[id].childIds;
+      const all: string[] = [];
+      const leaves: string[] = [];
+      const level = new Map<string, number>();
+      const dfs = (id: string, lv: number) => {
+        all.push(id);
+        level.set(id, lv);
+        if (!kid(id).length) leaves.push(id);
+        kid(id).forEach((c) => dfs(c, lv + 1));
+      };
+      dfs(page.rootId, 0);
+      const cell = (id: string): Rect => g.cells[id];
+      // 栏方向 = 层级推进的方向；顶部标题整张表转置，所以两码只是 x/y 对调。
+      const laneAt = (r: Rect) => (top ? r.y : r.x);
+      const laneLen = (r: Rect) => (top ? r.h : r.w);
+      const slotAt = (r: Rect) => (top ? r.x : r.y);
+      const slotLen = (r: Rect) => (top ? r.w : r.h);
+      const pos = (R: ReturnType<typeof computeLayout>) =>
+        all.map((id) => [R.boxes[id].x, R.boxes[id].y]);
+      const maxLevel = Math.max(...all.map((id) => level.get(id) ?? 0));
+
+      eq(nm("栏数 = 层数、槽数 = 叶子数"), [
+        new Set(all.map((id) => laneAt(cell(id)))).size,
+        new Set(all.map((id) => slotAt(cell(id)))).size,
+      ], [maxLevel + 1, leaves.length]);
+      eq(nm("每条栏都从头铺到尾、栏栏相贴"), [
+        all.filter((id) =>
+          kid(id).some((c) => laneAt(cell(c)) !== laneAt(cell(id)) + laneLen(cell(id)))
+        ).length,
+        0,
+      ], [0, 0]);
+      eq(nm("层级越深越往外推"), [
+        all.filter((id) => kid(id).some((c) => !(laneAt(cell(c)) > laneAt(cell(id))))).length,
+        0,
+      ], [0, 0]);
+      eq(nm("同一层共用一条栏（位置与宽窄都一样）"), [
+        all.filter((id) =>
+          all.some(
+            (j) =>
+              j !== id &&
+              level.get(j) === level.get(id) &&
+              (laneAt(cell(j)) !== laneAt(cell(id)) || laneLen(cell(j)) !== laneLen(cell(id)))
+          )
+        ).length,
+        0,
+      ], [0, 0]);
+      eq(nm("叶子按文档序排开、行行相贴"), [
+        leaves.filter((id, i) => i > 0 && !(slotAt(cell(id)) > slotAt(cell(leaves[i - 1])))).length,
+        leaves.filter(
+          (id, i) =>
+            i > 0 &&
+            slotAt(cell(id)) !== slotAt(cell(leaves[i - 1])) + slotLen(cell(leaves[i - 1]))
+        ).length,
+      ], [0, 0]);
+      // 合并格：父格在槽方向上正好盖住自己子树的那几条行，不多不少
+      const subtreeLeaves = (id: string): string[] =>
+        leaves.filter((l) => {
+          let p = l;
+          while (p !== page.rootId) {
+            if (p === id) return true;
+            p = page.shapes[p].parentId as string;
+          }
+          return p === id;
+        });
+      eq(nm("每个父格正好跨住自己子树的全部行"), [
+        all.filter((id) => {
+          const ls = subtreeLeaves(id);
+          const c = cell(id);
+          return (
+            slotAt(c) !== Math.min(...ls.map((k) => slotAt(cell(k)))) ||
+            slotAt(c) + slotLen(c) !== Math.max(...ls.map((k) => slotAt(cell(k)) + slotLen(cell(k))))
+          );
+        }).length,
+        0,
+      ], [0, 0]);
+      // 跨行的父格装得下自己那行字：行高不够就摊到盖住的每一行上（长标题 + 短子主题实测）
+      const spill = all.filter((id) => {
+        const b = L.boxes[id];
+        const c = cell(id);
+        return (
+          Math.abs(b.x - (c.x + c.w / 2)) > 1 ||
+          Math.abs(b.y - (c.y + c.h / 2)) > 1 ||
+          b.w > c.w + 0.5 ||
+          b.h > c.h + 0.5
+        );
+      });
+      eq(nm("盒子在自己格内居中且不越界"), spill, []);
+      const crush: string[] = [];
+      for (let i = 0; i < all.length; i += 1)
+        for (let j = i + 1; j < all.length; j += 1) {
+          const a = cell(all[i]);
+          const b = cell(all[j]);
+          if (
+            Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 0.5 &&
+            Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 0.5
+          )
+            crush.push(`${all[i]}×${all[j]}`);
+        }
+      eq(nm("格子两两不压"), crush, []);
+      eq(
+        nm("格子也在包围盒里（导出与打印裁不掉线）"),
+        all.every((id) => {
+          const c = cell(id);
+          return (
+            c.x >= L.bounds.minX - 0.01 &&
+            c.x + c.w <= L.bounds.maxX + 0.01 &&
+            c.y >= L.bounds.minY - 0.01 &&
+            c.y + c.h <= L.bounds.maxY + 0.01
+          );
+        }),
+        true
+      );
+      // 线只贴格子的边画；格子四条边又必须都被线盖住 —— 缺口与悬空一并抓到
+      const covers = (horizontal: boolean, at: number, from: number, to: number) => {
+        const segs = g.lines
+          .filter((l) =>
+            horizontal
+              ? Math.abs(l.y1 - l.y2) < 0.5 && Math.abs(l.y1 - at) < 0.5
+              : Math.abs(l.x1 - l.x2) < 0.5 && Math.abs(l.x1 - at) < 0.5
+          )
+          .map((l) =>
+            horizontal
+              ? [Math.min(l.x1, l.x2), Math.max(l.x1, l.x2)]
+              : [Math.min(l.y1, l.y2), Math.max(l.y1, l.y2)]
+          )
+          .sort((p, q) => p[0] - q[0]);
+        let reach = from;
+        for (const s of segs) {
+          if (s[0] > reach + 0.5) break;
+          reach = Math.max(reach, s[1]);
+        }
+        return reach >= to - 0.5;
+      };
+      const naked = all.filter((id) => {
+        const c = cell(id);
+        return !(
+          covers(true, c.y, c.x, c.x + c.w) &&
+          covers(true, c.y + c.h, c.x, c.x + c.w) &&
+          covers(false, c.x, c.y, c.y + c.h) &&
+          covers(false, c.x + c.w, c.y, c.y + c.h)
+        );
+      });
+      eq(nm("每个格子的四条边都有线盖住"), naked, []);
+      // 反过来：一条线都不许穿过格子的肚子（合并格内部没有线，行界也只画在该断的那一栏里）
+      const pierced = all.filter((id) => {
+        const c = cell(id);
+        return g.lines.some((l) => {
+          const vert = Math.abs(l.x1 - l.x2) < 0.5;
+          const fixed = vert ? l.x1 : l.y1;
+          const lo = vert ? Math.min(l.y1, l.y2) : Math.min(l.x1, l.x2);
+          const hi = vert ? Math.max(l.y1, l.y2) : Math.max(l.x1, l.x2);
+          return vert
+            ? fixed > c.x + 0.5 && fixed < c.x + c.w - 0.5 && lo < c.y + c.h - 0.5 && hi > c.y + 0.5
+            : fixed > c.y + 0.5 && fixed < c.y + c.h - 0.5 && lo < c.x + c.w - 0.5 && hi > c.x + 0.5;
+        });
+      });
+      eq(nm("没有一条线穿过格子的肚子"), pierced, []);
+      const onEdge = (horizontal: boolean, v: number) =>
+        all.some((id) => {
+          const c = cell(id);
+          return horizontal
+            ? Math.abs(c.y - v) < 0.5 || Math.abs(c.y + c.h - v) < 0.5
+            : Math.abs(c.x - v) < 0.5 || Math.abs(c.x + c.w - v) < 0.5;
+        });
+      eq(
+        nm("没有悬空的表格线、也没有斜线"),
+        g.lines.filter((l) =>
+          Math.abs(l.x1 - l.x2) < 0.5
+            ? !onEdge(false, l.x1)
+            : Math.abs(l.y1 - l.y2) < 0.5
+              ? !onEdge(true, l.y1)
+              : true
+        ),
+        []
+      );
+      eq(nm("表格线一条都不重复"), [
+        new Set(g.lines.map((l) => [l.x1, l.y1, l.x2, l.y2].join(","))).size,
+        g.lines.length,
+      ], [g.lines.length, g.lines.length]);
+      /**
+       * 行由叶子定价、父格的超额摊到它盖住的每一条行上：
+       * 同一父格下的两条等长叶子行必须一样高 —— 它们经历的祖先链一模一样。
+       * 把超额只记在起始那条行上（早先的写法）会当场破：第一条独吞超额、第二条挤成一条缝。
+       */
+      const rowMismatch = all.filter((id) => {
+        const ls = kid(id).filter((k) => !kid(k).length);
+        const own = (x: string) => (top ? L.boxes[x].w : L.boxes[x].h);
+        for (let i = 0; i < ls.length; i += 1)
+          for (let j = i + 1; j < ls.length; j += 1)
+            if (
+              Math.abs(own(ls[i]) - own(ls[j])) < 1 &&
+              Math.abs(slotLen(cell(ls[i])) - slotLen(cell(ls[j]))) > 1
+            )
+              return true;
+        return false;
+      });
+      eq(nm("同组等长的叶子行一样高"), rowMismatch, []);
+      // 格线是硬边界：整枝位移与拖动预览在这里都不该把盒子推出格子（与画布 dragTopic 同一口径）
+      const shift = kid(page.rootId).find((c) => kid(c).length) ?? kid(page.rootId)[0];
+      const offT = { ...shiftBranch(page, shift, 40, 20), layout: { ...page.layout, code } };
+      eq(nm("存档的分支位移不叠加"), pos(computeLayout(offT)), pos(L));
+      eq(
+        nm("拖动中的实时预览也不生效"),
+        pos(computeLayout(pageT, { liveBranch: { id: shift, x: 40, y: 20 } })),
+        pos(L)
+      );
+      // 只有一份网格：画布与 SVG / PDF / 打印都读 layout.grid
+      const P = paintPage(pageT);
+      eq(nm("paintPage 原样带走同一份网格"), P.layout.grid?.lines.length, g.lines.length);
+      eq(
+        nm("导出的 SVG 逐条画出格线"),
+        (renderSvg(P).match(/<path[^>]* stroke-width="1"\/>/g) ?? []).length,
+        g.lines.length
+      );
+      const tint = updateStyle(page, page.rootId, {
+        line: { fill: { type: "Solid", color: { v: "#123456" } } },
+      });
+      const gt = computeLayout({ ...tint, layout: { ...tint.layout, code } }).grid!;
+      eq(nm("格线跟着中心主题的描边色走"), gt.line, styleFor(tint, tint.shapes[page.rootId]).line);
+      ok(nm("格线不是写死的默认色"), gt.line !== g.line, `${gt.line} / ${g.line}`);
+    };
+
+    /** 局部建树，不碰模块级 cur（它后面还要给别的判据用）。 */
+    const mk = (
+      name: string,
+      build: (put: (parent: string, text: string) => string, root: string) => void
+    ) => {
+      let p = createPage(name);
+      const put = (parent: string, text: string) => {
+        const r = insertChild(p, parent, text);
+        p = r.page;
+        return r.id;
+      };
+      build(put, p.rootId);
+      return p;
+    };
+    const longText =
+      "这一格的标题比它盖住的每一条行都高，所以要靠把差额摊到那几条行上才装得下".repeat(3);
+    const fixtures: [string, Page][] = [
+      // 栏数（4）与槽数（3）故意不相等：相等时把两条轴整个打反也照样全绿
+      [
+        "骨架",
+        mk("表格骨架", (put, r) => {
+          const a = put(r, "甲");
+          const b = put(a, "乙比它两个子主题加起来还长");
+          put(b, "丙一");
+          put(b, "丙二");
+          put(r, "丁");
+        }),
+      ],
+      // 长标题 + 两条等长短子主题：父格盖住的行加起来装不下它自己，非走"摊到每行"那条路不可
+      [
+        "长标题",
+        mk("表格长标题", (put, r) => {
+          const u = put(r, longText);
+          put(u, "独子一");
+          put(u, "独子二");
+          const v = put(r, "另一枝");
+          put(v, "短一");
+          put(v, "短二");
+        }),
+      ],
+      [
+        "独子链",
+        mk("表格独子链", (put, r) => {
+          let at = r;
+          for (let i = 0; i < 4; i += 1) at = put(at, `第 ${i + 1} 层`);
+        }),
+      ],
+      [
+        "宽扁",
+        mk("表格宽扁", (put, r) => {
+          for (let i = 0; i < 5; i += 1) put(r, `枝${i + 1}`);
+        }),
+      ],
+      [
+        "混形",
+        mk("表格混形", (put, r) => {
+          const a = put(r, "横向很长的一级主题");
+          const a1 = put(a, "缩");
+          put(a1, "更深");
+          put(a1, "更深二");
+          const b = put(r, "另一枝");
+          put(b, "子");
+        }),
+      ],
+      ["全码树", cur],
+    ];
+    for (const code of TABLE_CODES) for (const [tag, page] of fixtures) verifyTable(code, tag, page);
   }
 
   // 树状图角向式：父节点站在自己子树的角上，同深度共用一列

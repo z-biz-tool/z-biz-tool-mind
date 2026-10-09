@@ -33,6 +33,7 @@ import {
   type ShapePaint,
 } from "../engine/export/svg.ts";
 import { fitView, quickBarAnchor } from "../engine/view.ts";
+import { TABLE_LAYOUTS } from "../engine/layout.ts";
 import type { NodeBox } from "../engine/layout.ts";
 import {
   descendants,
@@ -315,6 +316,7 @@ export function MindCanvas({ page }: MindCanvasProps) {
   );
   const lineOf = useMemo(() => new Map(paint.boxes.map((b) => [b.id, b.line])), [paint]);
   const axis = paint.layout.axis;
+  const grid = paint.layout.grid;
   const picked = useMemo(
     () => selection.filter((id) => Boolean(page.shapes[id])),
     [selection, page]
@@ -518,8 +520,10 @@ export function MindCanvas({ page }: MindCanvasProps) {
     // 位置归用户的有三种：自由布局（整张图都不重算）、浮动根（P-2 的例外），
     // 以及智慧版式里的二级主题 —— 后者挪的是"整枝"，落点在 Shape.offset 上而不是 transform（§3.3）。
     // 落在别的主题上仍然走"挂上去"；三级往上的主题拖了也白拖，枝内结构归引擎。
+    // 树形表格里格线是硬边界：把一整枝拖开会让格子和线对不上，引擎那边同样不叠位移。
     const branchDrag =
       !freeLayout &&
+      !TABLE_LAYOUTS.includes(live.current.page.layout.code) &&
       Boolean(dragged) &&
       !dragged?.floating &&
       dragged?.parentId === live.current.page.rootId;
@@ -1114,6 +1118,17 @@ export function MindCanvas({ page }: MindCanvasProps) {
             {axis
               ? [axis.d, axis.head].map((d, i) => (
                   <path key={`axis-${i}`} d={d} stroke={axis.line} strokeWidth={2} />
+                ))
+              : null}
+            {grid
+              ? grid.lines.map((l, i) => (
+                  <path
+                    key={`grid-${i}`}
+                    d={`M ${l.x1} ${l.y1} L ${l.x2} ${l.y2}`}
+                    stroke={grid.line}
+                    strokeWidth={1}
+                    pointerEvents="none"
+                  />
                 ))
               : null}
           </g>

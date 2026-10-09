@@ -260,6 +260,8 @@ export type LayoutCode =
   | "braceLeft" // 括号图（左）
   | "braceRight" // 括号图（右）
   | "matrix" // 矩阵图
+  | "treeTableLeft" // 树形表格（左侧标题）
+  | "treeTableTop" // 树形表格（顶部标题）
   | "circlePacking" // 圆形图
   | "bubbleMap" // 气泡图
   | "timelineVertical" // 时间轴（向下）

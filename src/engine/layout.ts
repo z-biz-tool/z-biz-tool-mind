@@ -56,6 +56,8 @@ export interface LayoutResult {
   connectors: ConnectorPath[];
   /** 时间轴/鱼骨的主轴；其余版式为 null。画布与导出共用这一份。 */
   axis: AxisPath | null;
+  /** 树形表格的表格线与格子；其余版式为 null。同样只有一份，画布与导出共用。 */
+  grid: TableGrid | null;
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   width: number;
   height: number;
@@ -1090,6 +1092,136 @@ function squareToBubble(n: TreeNode): void {
   n.h = side;
 }
 
+/** 树形表格的格内边距。hSpacing / vSpacing 是给树形连线留的通道，表格里用不上。 */
+const TABLE_PAD = 10;
+
+/** 两码共用一套投影，也共用一套"不画连线、不叠分支位移"的例外。 */
+export const TABLE_LAYOUTS: LayoutCode[] = ["treeTableLeft", "treeTableTop"];
+
+/**
+ * 表格线 + 格子矩形。线是**世界坐标的线段**，不是"一整条穿过画布的直线"：
+ * 父格跨几槽，那一栏里就只在该跨的地方断一次线，跨住的区间里没有横线。
+ * 画布与 SVG / PDF / 打印读这一份，和 axis 同一条路。
+ */
+export interface TableGrid {
+  lines: { x1: number; y1: number; x2: number; y2: number }[];
+  /** 表格线颜色：跟主轴同一口径（中心主题那一条描边色）。 */
+  line: string;
+  /** 每个主题所在格子的世界矩形：断言"盒子必须待在自已的格里"要用。 */
+  cells: Record<string, { x: number; y: number; w: number; h: number }>;
+}
+
+/**
+ * 树形表格（03 §1.2 最后一族）：把树投影成一张表。
+ * 层级 = 栏，叶子 = 槽（一个叶子一条槽，按文档序），父格跨住自己子树的那几条槽。
+ * 左侧标题：栏从左往右，第 0 栏就是中心主题那一竖列标题；顶部标题：同一份投影转置，
+ * 栏变成横排，第 0 行就是中心主题 + 一级主题那一横排。两码只在最后一步交换 x/y，
+ * 所以不存在"两套表格"——文字盒子本身不转置，只有格子的长短边对调。
+ */
+function layoutTable(root: TreeNode, top: boolean, line: string): TableGrid {
+  const laneOf = (n: TreeNode) => (top ? n.h : n.w);
+  const slotOf = (n: TreeNode) => (top ? n.w : n.h);
+  const cells: { node: TreeNode; lane: number; slot: number; span: number }[] = [];
+  const laneSize: number[] = [];
+  const slotSize: number[] = [];
+  let next = 0;
+  const assign = (n: TreeNode, lane: number): { slot: number; span: number } => {
+    laneSize[lane] = Math.max(laneSize[lane] ?? 0, laneOf(n) + TABLE_PAD * 2);
+    let slot = -1;
+    let span = 0;
+    for (const c of n.children) {
+      const r = assign(c, lane + 1);
+      if (slot < 0) slot = r.slot;
+      span += r.span;
+    }
+    if (!span) {
+      slot = next;
+      next += 1;
+      span = 1;
+    }
+    // 槽（左侧标题里的"行"）只由叶子定价：父格的超额宽度交给下面按跨度摊，
+    // 让它盖住的几条槽一起长高，同组的行为才一样高 —— 由父格独占起始那条槽的话，
+    // 一个长标题会把那一行顶出去、下面几条挤成一条缝。
+    if (!n.children.length)
+      slotSize[slot] = Math.max(slotSize[slot] ?? 0, slotOf(n) + TABLE_PAD * 2);
+    cells.push({ node: n, lane, slot, span });
+    return { slot, span };
+  };
+  assign(root, 0);
+  const sumSlot = (from: number, count: number) => {
+    let s = 0;
+    for (let i = from; i < from + count; i += 1) s += slotSize[i] ?? 0;
+    return s;
+  };
+  // 跨几条槽的父格要装得下自己的字：把不够的那一截摊到它盖住的每条槽上。
+  // 按跨度从小到大摊，先让短跨的定下来，长跨的再补；一次就够 —— 每轮把 span 条槽各加
+  // ceil(差额/span)，加完 have ≥ need，而后面的父格读到的已经是补过的尺寸。
+  for (const c of [...cells].sort((a, b) => a.span - b.span)) {
+    const need = slotOf(c.node) + TABLE_PAD * 2;
+    const have = sumSlot(c.slot, c.span);
+    if (have >= need) continue;
+    const add = Math.ceil((need - have) / c.span);
+    for (let i = c.slot; i < c.slot + c.span; i += 1) slotSize[i] = (slotSize[i] ?? 0) + add;
+  }
+  const laneOff: number[] = [];
+  let u = 0;
+  for (let i = 0; i < laneSize.length; i += 1) {
+    laneOff[i] = u;
+    u += laneSize[i];
+  }
+  const slotOff: number[] = [];
+  let v = 0;
+  for (let i = 0; i < slotSize.length; i += 1) {
+    slotOff[i] = v;
+    v += slotSize[i];
+  }
+  const totalU = u;
+  const totalV = v;
+  // 逻辑 (u=栏方向, v=槽方向) → 世界坐标。转置只发生在这里，上面整套算法两码共用。
+  const at = (uu: number, vv: number) => ({ x: top ? vv : uu, y: top ? uu : vv });
+  const box = (u0: number, v0: number, uw: number, vh: number) => {
+    const a = at(u0, v0);
+    const b = at(u0 + uw, v0 + vh);
+    return {
+      x: Math.min(a.x, b.x),
+      y: Math.min(a.y, b.y),
+      w: Math.abs(b.x - a.x),
+      h: Math.abs(b.y - a.y),
+    };
+  };
+  const out: TableGrid["cells"] = {};
+  for (const c of cells) {
+    const uw = laneSize[c.lane];
+    const vh = sumSlot(c.slot, c.span);
+    const r = box(laneOff[c.lane], slotOff[c.slot], uw, vh);
+    out[c.node.id] = r;
+    c.node.x = Math.round(r.x + r.w / 2);
+    c.node.y = Math.round(r.y + r.h / 2);
+  }
+  const lines: TableGrid["lines"] = [];
+  // 不需要去重：同栏里两个格子的下沿必然错开（同深度的两棵子树不共享叶子），
+  // 栏界线与外框又各自在不同的跨度上。测试那边仍然断言"一条都不重复"。
+  const add = (u0: number, v0: number, u1: number, v1: number) => {
+    const a = at(u0, v0);
+    const b = at(u1, v1);
+    lines.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+  };
+  // 外框
+  add(0, 0, totalU, 0);
+  add(0, totalV, totalU, totalV);
+  add(0, 0, 0, totalV);
+  add(totalU, 0, totalU, totalV);
+  // 栏界：整条贯通（表格里的合并格只跨槽，不跨栏，所以栏界线不会被盖住）
+  for (let l = 1; l < laneOff.length; l += 1) add(laneOff[l], 0, laneOff[l], totalV);
+  // 槽界：只画在该栏真的有格子断开的地方
+  for (const c of cells) {
+    const end = slotOff[c.slot] + sumSlot(c.slot, c.span);
+    if (end >= totalV) continue;
+    add(laneOff[c.lane], end, laneOff[c.lane] + laneSize[c.lane], end);
+  }
+  return { lines, line, cells: out };
+}
+
 export interface LayoutInput {
   /** "显示层级数"：超过这个层级的节点不布局（1..9）。 */
   displayLevel?: number;
@@ -1161,12 +1293,19 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
       order,
       connectors: [],
       axis: null,
+      grid: null,
       bounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 },
       width: 0,
       height: 0,
     };
 
   const s = page.layout;
+  let grid: TableGrid | null = null;
+  // 表格线跟主轴同一个取色口径：中心主题那一条描边色
+  const tableLine = () => {
+    const sh = page.shapes[page.rootId];
+    return sh ? (styleFor(page, sh, palette).line ?? DEFAULTS.lineColor) : DEFAULTS.lineColor;
+  };
   const hs = s.hSpacing || DEFAULTS.hSpacing;
   const vs = s.vSpacing || DEFAULTS.vSpacing;
   // 气泡图的盒子是圆而不是文字框：先按包围盒对角线钉成正方形，布局与绘制拿的是同一份尺寸
@@ -1296,6 +1435,14 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
         layoutMatrix(root, hs);
         break;
       }
+      case "treeTableLeft": {
+        grid = layoutTable(root, false, tableLine());
+        break;
+      }
+      case "treeTableTop": {
+        grid = layoutTable(root, true, tableLine());
+        break;
+      }
       case "free":
         break;
     }
@@ -1318,7 +1465,10 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
     order.push(n.id);
   };
   walk([root], collect);
-  if (page.layout.code !== "free") applyBranchOffsets(page, boxes, input.liveBranch);
+  // 表格里格线是硬边界：把一整枝挪开会让格子和线对不上，所以这两码不叠分支位移。
+  // 画布那边同样不许在表格版式里拖枝（dragTopic），两边一个口径。
+  if (page.layout.code !== "free" && !TABLE_LAYOUTS.includes(page.layout.code))
+    applyBranchOffsets(page, boxes, input.liveBranch);
   // 浮动主题（P-2 的例外）：根位置是用户拖出来的，整枝子树往右下堆。
   // 层级判据与 buildTree 一致 —— 浮动根自己算第 0 层，displayLevel 管它下面还能看几层；
   // 必须递归到底：只铺一层子的话，孙主题在大纲/看板/甘特里数得到，画布和 SVG 里却没有盒子（P-1）。
@@ -1408,6 +1558,11 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
     minY = Math.min(minY, b.y - b.h / 2);
     maxY = Math.max(maxY, b.y + b.h / 2);
   }
+  // 表格的四个外沿天然落在盒子外面 10~20px 内，被 pad=40 的包围盒盖住：
+  // 定价一条栏 / 一条槽的那个格子总是自己那一段里最壮的，它的盒子与格边只差一个 TABLE_PAD，
+  // 而只有从这段起点开始跨的父格才会补高这一段 —— 所以"最外面的线"总有一个紧挨着它的盒子。
+  // （早先由父格独占起始那条行时不是这样：一个长标题能把第一条行顶宽 76px，实机把外圈线裁掉了。
+  //  测试那边仍断着"格子也在包围盒里"，改坏了会红。）
   if (!Number.isFinite(minX)) {
     minX = 0;
     minY = 0;
@@ -1420,6 +1575,7 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
     order,
     connectors,
     axis: buildAxis(page, boxes, s.code, palette),
+    grid,
     bounds: { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad },
     width: Math.max(1, maxX - minX + pad * 2),
     height: Math.max(1, maxY - minY + pad * 2),
@@ -1716,6 +1872,9 @@ export function buildConnectors(
   code: LayoutCode
 ): ConnectorPath[] {
   const out: ConnectorPath[] = [];
+  // 树形表格不画连线：层级关系由"哪一栏 + 跨哪几条槽"表达，格线就是父子边界，
+  // 再叠一层连线只会盖在字上。注意这两码名字以 tree 开头，必须抢在下面那条判据之前摘出去。
+  if (TABLE_LAYOUTS.includes(code)) return out;
   const elbow = code.startsWith("tree") || code.startsWith("org") || code === "matrix";
   const slant = SLANT_LAYOUTS.includes(code);
   const corner = CORNER_LAYOUTS[code];

@@ -240,6 +240,14 @@ export function renderSvg(p: Paint, view: SvgView = fullView(p)): string {
       `<path d="${esc(a.head)}" stroke="${a.line}" stroke-width="2"/>`
     );
   }
+  // 树形表格的格线：读 layout.grid 这一份，与画布同一个来源，线在盒子底下
+  if (p.layout.grid) {
+    for (const l of p.layout.grid.lines)
+      out.push(
+        `<path d="M ${round(l.x1)} ${round(l.y1)} L ${round(l.x2)} ${round(l.y2)}" ` +
+          `stroke="${p.layout.grid.line}" stroke-width="1"/>`
+      );
+  }
   out.push(`</g>`);
   for (const b of p.boxes) {
     const rx = Math.min(b.rounding, b.w / 2, b.h / 2);
