@@ -22,6 +22,7 @@ import {
 } from "../layout.ts";
 import { descendants } from "../tree.ts";
 import {
+  EDRAW_FONT_FAMILY,
   contrastText,
   defaultPalette,
   styleFor,
@@ -82,6 +83,8 @@ export interface Paint {
   minX: number;
   minY: number;
   background: string;
+  /** 这一份用的字族（来自色板 = 文档的 ThemeText）。整页一个值：styleFor 的字族就取自色板。 */
+  fontFamily: string;
 }
 
 export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
@@ -166,6 +169,7 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
     minX: layout.bounds.minX - pad,
     minY: layout.bounds.minY - pad,
     background: opts.background ?? "#ffffff",
+    fontFamily: palette.fontFamily,
   };
 }
 
@@ -175,6 +179,14 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
  * 一旦走 <img src="data:image/svg+xml,..."> 这条路（PNG 与位图 PDF 的必经之路）就是解码失败。
  */
 export const FONT_STACK = `微软雅黑, 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', Verdana, sans-serif`;
+
+/**
+ * 文档自带字族（ThemeText）排在回落栈前面。
+ * 默认那套（微软雅黑）必须逐字等于 FONT_STACK —— 否则五份亿图样本的导出文件全都变了。
+ */
+export function fontStackOf(family: string): string {
+  return family && family !== EDRAW_FONT_FAMILY ? `${family}, ${FONT_STACK}` : FONT_STACK;
+}
 
 const XML_ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
 
@@ -215,7 +227,7 @@ export function renderSvg(p: Paint, view: SvgView = fullView(p)): string {
   out.push(`<?xml version="1.0" encoding="UTF-8" standalone="no"?>`);
   out.push(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${round(view.w * s)}" height="${round(view.h * s)}" ` +
-      `viewBox="${round(view.x)} ${round(view.y)} ${round(view.w)} ${round(view.h)}" font-family="${FONT_STACK}">`
+      `viewBox="${round(view.x)} ${round(view.y)} ${round(view.w)} ${round(view.h)}" font-family="${esc(fontStackOf(p.fontFamily))}">`
   );
   out.push(
     `<rect x="${round(view.x)}" y="${round(view.y)}" width="${round(view.w)}" height="${round(view.h)}" fill="${p.background}"/>`

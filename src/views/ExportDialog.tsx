@@ -28,6 +28,7 @@ import { native, pickSavePath } from "../services/native.ts";
 import { computeLayout } from "../engine/layout.ts";
 import { outlineRows } from "../engine/projections.ts";
 import { activeDoc, activePage, useDoc } from "../stores/docStore.ts";
+import { usePalette } from "../stores/usePalette.ts";
 import { useUi } from "../stores/uiStore.ts";
 import { isTopic } from "../types/model.ts";
 
@@ -67,6 +68,8 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
   const doc = useDoc((s) => activeDoc(s));
   const page = useDoc((s) => activePage(s));
   const title = useDoc((s) => s.title);
+  // 导出的颜色必须和屏幕上同源：这份色板来自文档自己的 theme.xml，与画布用的是同一个 hook。
+  const palette = usePalette();
 
   const [scale, setScale] = useState(2);
   const [quality, setQuality] = useState(0.92);
@@ -103,12 +106,12 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
   const visibleCount = useMemo(() => {
     if (!page) return 0;
     if (!GRAPHIC_FORMATS.has(format)) return outlineRows(page).length;
-    const layout = computeLayout(page, { displayLevel: levels });
+    const layout = computeLayout(page, { displayLevel: levels, palette });
     return layout.order.filter((id) => {
       const s = page.shapes[id];
       return s && isTopic(s.type);
     }).length;
-  }, [page, levels, format]);
+  }, [page, levels, format, palette]);
 
   const totalTopics = useMemo(
     () => (page ? Object.values(page.shapes).filter((s) => isTopic(s.type)).length : 0),
@@ -116,7 +119,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
   );
 
   function options(): ExportOptions {
-    const opts: ExportOptions = { scale, displayLevel: levels, padding };
+    const opts: ExportOptions = { scale, displayLevel: levels, padding, palette };
     if (background) opts.background = background;
     if (format === "pdf") {
       opts.quality = quality;

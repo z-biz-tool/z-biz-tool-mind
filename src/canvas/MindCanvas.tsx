@@ -62,6 +62,7 @@ import {
   addSummary,
 } from "../engine/tree.ts";
 import { useDoc } from "../stores/docStore.ts";
+import { usePalette } from "../stores/usePalette.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import { useUi } from "../stores/uiStore.ts";
 import { keepActions, type MenuAction } from "./menuActions.ts";
@@ -284,6 +285,9 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const showQuickBar = useSettings((s) => s.settings.general.showQuickBar);
   const topicWidthMode = useSettings((s) => s.settings.format.topicWidthMode);
   const menuEnabled = useSettings((s) => s.settings.rightMenu.enabled);
+  // 色板由文档自己说话（theme.xml 的 ColorScheme），不是写死的那十色。
+  // 画布与导出/打印必须同一个来源，否则"屏幕上对、导出的图换色"这种分叉只能靠肉眼发现。
+  const palette = usePalette();
 
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -311,8 +315,9 @@ export function MindCanvas({ page }: MindCanvasProps) {
         displayLevel: displayLevels,
         topicWidthMode,
         liveBranch: liveBranch ?? undefined,
+        palette,
       }),
-    [page, displayLevels, topicWidthMode, liveBranch]
+    [page, displayLevels, topicWidthMode, liveBranch, palette]
   );
   const lineOf = useMemo(() => new Map(paint.boxes.map((b) => [b.id, b.line])), [paint]);
   const axis = paint.layout.axis;

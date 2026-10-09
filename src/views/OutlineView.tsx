@@ -12,7 +12,8 @@ import { Alert, Button, Empty, Input, Modal, Segmented, Tooltip } from "antd";
 import { insertOutline } from "../engine/outline.ts";
 import type { InsertMode } from "../engine/outline.ts";
 import { outlineRows } from "../engine/projections.ts";
-import { accentAt, defaultPalette } from "../engine/style.ts";
+import { accentAt } from "../engine/style.ts";
+import { usePalette } from "../stores/usePalette.ts";
 import { branchIndex, demote, insertSibling, promote, removeShape, setCollapsed, updateText } from "../engine/tree.ts";
 import { useDoc } from "../stores/docStore.ts";
 import type { Page } from "../types/model.ts";
@@ -21,7 +22,6 @@ interface OutlineViewProps {
   page: Page;
 }
 
-const PALETTE = defaultPalette();
 /** 一层的缩进像素；行左缘的色条也按它内缩，保证"缩进 = 层级"读得出来。 */
 const INDENT = 20;
 
@@ -38,6 +38,8 @@ function looksLikeMarkdown(raw: string): boolean {
 
 export function OutlineView({ page }: OutlineViewProps) {
   const rows = useMemo(() => outlineRows(page), [page]);
+  // 行左缘的色条要跟画布同一支同色：色板来自文档自己的 theme.xml，不是写死的那十色。
+  const palette = usePalette();
   const mutate = useDoc((s) => s.mutate);
   const select = useDoc((s) => s.select);
   const setEditing = useDoc((s) => s.setEditing);
@@ -200,7 +202,7 @@ export function OutlineView({ page }: OutlineViewProps) {
           <Empty description="本页没有主题" style={{ marginTop: 40 }} />
         ) : (
           rows.map((row, i) => {
-            const color = accentAt(PALETTE, branchIndex(page, row.id));
+            const color = accentAt(palette, branchIndex(page, row.id));
             const value = draft && draft.id === row.id ? draft.text : row.text;
             return (
               <div

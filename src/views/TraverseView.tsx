@@ -10,9 +10,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Button, Empty, Progress, Tag, Tooltip } from "antd";
 import { traverseFocus, traverseSequence } from "../engine/projections.ts";
 import { ancestors, branchIndex, children, levelOf, setCollapsed } from "../engine/tree.ts";
-import { accentAt, defaultPalette } from "../engine/style.ts";
+import { accentAt } from "../engine/style.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { useUi } from "../stores/uiStore.ts";
+import { usePalette } from "../stores/usePalette.ts";
 import { plainText } from "../types/model.ts";
 import type { Page } from "../types/model.ts";
 
@@ -20,10 +21,10 @@ interface TraverseViewProps {
   page: Page;
 }
 
-const PALETTE = defaultPalette();
-
 export function TraverseView({ page }: TraverseViewProps) {
   const seq = useMemo(() => traverseSequence(page), [page]);
+  // 当前主题色条与画布同源：色板来自文档自己的 theme.xml。
+  const palette = usePalette();
   const focusId = useDoc((s) => s.focusId);
   const select = useDoc((s) => s.select);
   const mutate = useDoc((s) => s.mutate);
@@ -38,7 +39,7 @@ export function TraverseView({ page }: TraverseViewProps) {
   const path = useMemo(() => (id ? ancestors(page, id).reverse() : []), [page, id]);
   const kids = useMemo(() => (id ? children(page, id) : []), [page, id]);
   const branchId = id ? traverseFocus(page, id) : page.rootId;
-  const color = accentAt(PALETTE, branchIndex(page, id || page.rootId));
+  const color = accentAt(palette, branchIndex(page, id || page.rootId));
 
   function go(dir: 1 | -1) {
     const next = seq[Math.max(0, Math.min(seq.length - 1, ix + dir))];

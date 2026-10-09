@@ -12,6 +12,7 @@ import { toFreeLayout } from "../engine/layout.ts";
 import { countTopics, maxDepth, updateStyle } from "../engine/tree.ts";
 import { applyPalette, styleFor } from "../engine/style.ts";
 import { useDoc } from "../stores/docStore.ts";
+import { usePalette } from "../stores/usePalette.ts";
 import { useUi } from "../stores/uiStore.ts";
 import type { LayoutCode, Page, Shape, ShapeStyle } from "../types/model.ts";
 import { MindCanvas } from "../canvas/index.ts";
@@ -34,10 +35,13 @@ export function MindMapView({ page }: { page: Page }) {
   const setDisplayLevels = useUi((s) => s.setDisplayLevels);
   const deepest = useMemo(() => maxDepth(page), [page]);
   const selection = useDoc((s) => s.selection);
+  // 这一页的色板：回显、"恢复主题配色"和画布必须同一个来源，
+  // 否则色块显示一个色、画布画另一个色，用户点"恢复"还会把颜色恢复错。
+  const palette = usePalette();
   /** 回显取选中的第一个：多选时"混合值"没有稳定的显示法，显示第一个比显示空值更诚实。 */
   const picked = page.shapes[selection[0] ?? ""];
   /** 控件上显示的是**画出来的那个色**，不是 style 里存的那个：没独立配色时 style.fill 是空的。 */
-  const look = picked ? styleFor(page, picked) : undefined;
+  const look = picked ? styleFor(page, picked, palette) : undefined;
   /** 用户自己配过色 = StyleMask 的 bit0，此时换主题不再影响它，"跟随主题"才有意义。 */
   const pinned = (picked?.style.mask ?? 0) & 1 ? true : false;
 
@@ -77,7 +81,7 @@ export function MindMapView({ page }: { page: Page }) {
           })
         ),
       };
-      return applyPalette(cleared);
+      return applyPalette(cleared, palette);
     });
 
   /** 批量折叠只写 extras.collapsed，不动结构：撤销一步就能整套还原。 */

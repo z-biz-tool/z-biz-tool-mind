@@ -43,6 +43,7 @@ import type { PrintOptions, PrintRange, PrintScaleMode, Rect } from "../engine/e
 import { printHtmlDocument, printSupported } from "../services/print.ts";
 import { native, pickSavePath } from "../services/native.ts";
 import { activePage, useDoc } from "../stores/docStore.ts";
+import { usePalette } from "../stores/usePalette.ts";
 import { useUi } from "../stores/uiStore.ts";
 
 /** 缩略图最多四张：再多就不是"预览"而是"看幻灯片"了，而且首屏要算的 SVG 也白算。 */
@@ -79,6 +80,8 @@ interface PrintDialogProps {
 export function PrintDialog({ open, onClose }: PrintDialogProps) {
   const page = useDoc((s) => activePage(s));
   const selection = useDoc((s) => s.selection);
+  // 打出来的颜色要和屏幕上、与导出件同源：都取文档自己的 theme.xml。
+  const palette = usePalette();
 
   const [paperId, setPaperId] = useState("a4");
   const [landscape, setLandscape] = useState(true);
@@ -114,6 +117,7 @@ export function PrintDialog({ open, onClose }: PrintDialogProps) {
       keepIds: selection,
       bounds: bounded ? bounds : null,
       displayLevel: levels,
+      palette,
     }),
     [
       paperId,
@@ -129,6 +133,7 @@ export function PrintDialog({ open, onClose }: PrintDialogProps) {
       bounded,
       bounds,
       levels,
+      palette,
     ]
   );
 
