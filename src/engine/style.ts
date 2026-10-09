@@ -112,6 +112,20 @@ export interface Resolved {
 }
 
 /**
+ * 层级 → 底色推导（中心主题压暗、一级原色、往下逐级提亮）。
+ * 单独抽出来是为了主题预览：预览必须和画布同一条式子，抄第二遍的话预览会说假话。
+ */
+export function levelFill(base: string, level: number, isMainIdea: boolean): string {
+  return isMainIdea
+    ? shade(base, 10)
+    : level <= 1
+      ? base
+      : level === 2
+        ? tint(base, 35)
+        : tint(base, 60);
+}
+
+/**
  * 一个主题的最终样式 = 主题推导 → 用户覆盖。
  * `style.mask` 的 bit0 表示填充被用户独立配色（StyleMask 语义，待确认部分以实测为准）。
  */
@@ -121,8 +135,7 @@ export function styleFor(page: Page, shape: Shape, palette = defaultPalette()): 
   // 而 -1 取模会绕到色板最后一格，于是中心主题拿到的是 Accent10 而不是主色 Accent1。
   const branch = level <= 0 ? 0 : branchIndex(page, shape.id);
   const base = accentAt(palette, branch);
-  const derivedFill =
-    shape.type === "MainIdea" ? shade(base, 10) : level <= 1 ? base : level === 2 ? tint(base, 35) : tint(base, 60);
+  const derivedFill = levelFill(base, level, shape.type === "MainIdea");
   const ownFill = resolveColor(shape.style.fill?.color, palette.accents);
   const ownLine = resolveColor(shape.style.line?.fill?.color, palette.accents);
   const fill = ownFill ?? derivedFill;

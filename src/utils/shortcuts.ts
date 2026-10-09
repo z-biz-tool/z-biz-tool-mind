@@ -18,6 +18,7 @@ type ShortcutCommand =
   | "redo"
   | "export"
   | "print"
+  | "themes"
   | "options"
   | "quit"
   | "closeDialog";
@@ -36,6 +37,7 @@ export const SHORTCUT_COMMANDS: readonly { cmd: ShortcutCommand; label: string; 
     { cmd: "undo", label: "撤销", group: "编辑" },
     { cmd: "redo", label: "重做", group: "编辑" },
     { cmd: "search", label: "搜索", group: "视图" },
+    { cmd: "themes", label: "主题风格", group: "视图" },
     { cmd: "options", label: "选项", group: "视图" },
     { cmd: "quit", label: "退出应用", group: "文件" },
     { cmd: "closeDialog", label: "关闭对话框 / 菜单", group: "视图" },
@@ -52,6 +54,7 @@ export interface ShortcutHandlers {
   redo?: () => void;
   export?: () => void;
   print?: () => void;
+  themes?: () => void;
   options?: () => void;
   quit?: () => void;
   closeDialog?: () => void;
@@ -74,6 +77,7 @@ const DEFAULT_CHORDS: Record<ShortcutCommand, string> = {
   redo: "ctrl+shift+z",
   export: "ctrl+e",
   print: "ctrl+p",
+  themes: "ctrl+shift+t",
   options: "f1",
   quit: "ctrl+q",
   closeDialog: "esc",
@@ -116,6 +120,7 @@ const TYPING_SAFE = new Set<ShortcutCommand>([
   "saveAs",
   "export",
   "print",
+  "themes",
   "options",
   "quit",
 ]);

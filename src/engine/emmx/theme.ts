@@ -24,7 +24,7 @@ import {
   type ThemePalette,
 } from "../style.ts";
 import type { XmlNode } from "./xparse.ts";
-import { attr, find, findAll, numAttr } from "./xparse.ts";
+import { attr, el, find, findAll, numAttr } from "./xparse.ts";
 
 export interface ThemeColorEntry {
   name: string;
@@ -120,10 +120,20 @@ export function docThemes(root: XmlNode | undefined): {
   return hit;
 }
 
-/** 按 ID 选一套，认不出就取第一套（`<Theme>` 里通常各只有一个）。 */
+/**
+ * 按 ID 选一套，认不出就取第一套（`<Theme>` 里通常各只有一个）。
+ * 读写两侧共用这一条规矩（pickIndex）：各写一遍的话，"认不出取第一套"只会在一侧成立 ——
+ * 给一份没有那个 ID 的文件换主题，写进去的是第一套，读回来的却是另一套。
+ */
+function pickIndex<T>(list: readonly T[], idOf: (x: T) => number, id: number | undefined): number {
+  if (!list.length) return -1;
+  const hit = list.findIndex((x) => id !== undefined && idOf(x) === id);
+  return hit < 0 ? 0 : hit;
+}
+
 function pick<T extends { id: number }>(list: T[], id: number | undefined): T | undefined {
-  if (!list.length) return undefined;
-  return list.find((x) => id !== undefined && x.id === id) ?? list[0];
+  const i = pickIndex(list, (x) => x.id, id);
+  return i < 0 ? undefined : list[i];
 }
 
 export function paletteOf(
@@ -150,4 +160,123 @@ export function themeRootOf(doc: DocumentModel | undefined): XmlNode | undefined
 export function paletteForDoc(doc: DocumentModel, page?: Page): ThemePalette {
   const root = themeRootOf(doc);
   return paletteOf(root, page?.theme?.colorId, page?.theme?.textId);
+}
+
+/** 这一套在文件里叫什么名（列表里"本文档"那一行要说真话，不能只报一串色值）。 */
+export function colorNameOf(root: XmlNode | undefined, colorId?: number): string {
+  return pick(docThemes(root).colors, colorId)?.name ?? "";
+}
+
+// ---------------------------------------------------------------- 写回（主题库"应用"的那一半）
+
+/**
+ * XmlNode 深拷贝。写色板必须 copy-on-write：
+ * 原 root 是 codec 的解包缓存，也是撤销栈里那一份的同一个对象，就地改会把历史一起改掉。
+ */
+export function cloneNode(n: XmlNode): XmlNode {
+  return {
+    tag: n.tag,
+    attrs: { ...n.attrs },
+    children: n.children.map(cloneNode),
+    text: n.text,
+    selfShrink: n.selfShrink,
+  };
+}
+
+/** 色板 → `Accent1..N` 属性表。按序号写，读侧那条"顺序是打乱的"规矩反过来同样成立。 */
+export function accentAttrs(accents: readonly string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  accents.forEach((c, i) => {
+    out[`Accent${i + 1}`] = c;
+  });
+  return out;
+}
+
+/** 实测 doc1 里 `<Theme>` 下的书写顺序：ThemeColor → ThemeEffect → ThemeText → ThemeShape。 */
+const THEME_CHILD_ORDER = ["ThemeColor", "ThemeEffect", "ThemeText", "ThemeShape"];
+
+/** 补缺失的子主题时按亿图的顺序插，不能一律 append 到 ThemeShape 后面。 */
+function insertOrdered(theme: XmlNode, node: XmlNode): void {
+  const rank = THEME_CHILD_ORDER.indexOf(node.tag);
+  const after = theme.children.findIndex((c) => THEME_CHILD_ORDER.indexOf(c.tag) > rank);
+  if (after < 0) theme.children.push(node);
+  else theme.children.splice(after, 0, node);
+}
+
+export interface PaletteWriteOptions {
+  /** 写进哪一套 ThemeColor：与读侧同一个规矩，认不出就写第一套。 */
+  colorId?: number;
+  textId?: number;
+  /** 盖在 `ThemeColor/@Name` 上的名字。列表名不一定要进用户的文件，所以与显示名分开给。 */
+  themeName?: string;
+}
+
+/**
+ * 把一份色板写进文档的 theme.xml，返回**新的** root（原对象一个字节不动）。
+ *
+ * 只动 ColorScheme 的 Accent 条目和 FontSchemeLst 的字号/字名，其余（ThemeEffect 的
+ * Shade/Tint、ThemeShape 的连线方案、文件里我们根本不认识的节点）原样带走 ——
+ * 换一次配色不该把整份主题重写成我们认识的那一小截。
+ * ColorScheme 上非 Accent 的属性也保留：那是亿图写的，不是我们编的。
+ */
+export function withPalette(
+  root: XmlNode | undefined,
+  palette: ThemePalette,
+  opts: PaletteWriteOptions = {}
+): XmlNode {
+  const out = root ? cloneNode(root) : el("Themes");
+  let theme = find(out, "Theme");
+  if (!theme) {
+    theme = el("Theme", {
+      Effect: "0",
+      Name: opts.themeName || "Custom",
+      Rainbow: "0",
+      ID: "31",
+    });
+    out.children.push(theme);
+  }
+
+  const colors = findAll(theme, "ThemeColor");
+  const ci = pickIndex(colors, (c) => numAttr(c, "ID", -1), opts.colorId);
+  let tc = ci < 0 ? undefined : colors[ci];
+  if (!tc) {
+    tc = el("ThemeColor", { Name: opts.themeName || "Custom", ID: String(opts.colorId ?? 3) });
+    insertOrdered(theme, tc);
+  } else if (opts.themeName) {
+    tc.attrs.Name = opts.themeName;
+  }
+  const cs = find(tc, "ColorScheme");
+  if (!cs) {
+    tc.children.push(el("ColorScheme", accentAttrs(palette.accents)));
+  } else {
+    for (const k of Object.keys(cs.attrs)) if (ACCENT_RE.test(k)) delete cs.attrs[k];
+    Object.assign(cs.attrs, accentAttrs(palette.accents));
+  }
+
+  const family = palette.fontFamily;
+  const texts = findAll(theme, "ThemeText");
+  const ti = pickIndex(texts, (t) => numAttr(t, "ID", -1), opts.textId);
+  let tt = ti < 0 ? undefined : texts[ti];
+  if (!tt) {
+    tt = el("ThemeText", { Name: family, ID: String(opts.textId ?? 8) });
+    insertOrdered(theme, tt);
+  } else {
+    tt.attrs.Name = family;
+  }
+  let lst = find(tt, "FontSchemeLst");
+  if (!lst) {
+    lst = el("FontSchemeLst");
+    tt.children.push(lst);
+  }
+  // 逐档改写而不是整列重造：亿图在 FontScheme 上写的别的属性（我们不认识的那些）要留着。
+  const keep = lst.children.filter((c) => c.tag === "FontScheme");
+  lst.children = palette.fontSizes.map((size, i) => {
+    const old = keep[i];
+    const attrs: Record<string, string> = { ...(old?.attrs ?? {}) };
+    attrs.FontName = family;
+    attrs.FontSize = String(size);
+    if (!("Flag" in attrs)) attrs.Flag = "0";
+    return { tag: "FontScheme", attrs, children: [], text: "", selfShrink: true };
+  });
+  return out;
 }

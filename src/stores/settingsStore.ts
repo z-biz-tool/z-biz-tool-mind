@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { native } from "../services/native.ts";
 import { QUOTA } from "../model/constants.ts";
+import { sanitizeThemes, type StoredTheme } from "../engine/themelib.ts";
 
 export interface Settings {
   general: {
@@ -18,10 +19,13 @@ export interface Settings {
   };
   format: {
     defaultLayout: string;
+    /** 新文档用哪一套主题：主题库里的 id，"default" = 内置那套（views/ThemePanel.tsx）。 */
     defaultThemeId: string;
     autoFitOnOpen: boolean;
     topicWidthMode: "auto" | "fixed";
   };
+  /** 主题库（03 §1.3-17）：只有用户自己存的那几套，读出来先过一遍校验。 */
+  themes: { custom: StoredTheme[] };
   save: {
     autoSave: boolean;
     autoSaveIntervalMin: number;
@@ -43,6 +47,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   general: { theme: "system", language: "zh-CN", restoreLastSession: true, showQuickBar: true, canvasDragButton: "right", wheelZoom: "cursor" },
   format: { defaultLayout: "balanced", defaultThemeId: "default", autoFitOnOpen: true, topicWidthMode: "auto" },
+  themes: { custom: [] },
   save: { autoSave: true, autoSaveIntervalMin: 5, historyCount: QUOTA.historyMax, backupOnSave: true, backupDir: "", backupKeepDays: QUOTA.trashKeepDays },
   network: { proxyMode: "system", proxyHost: "", proxyPort: 0, timeoutSec: 20 },
   shortcut: { custom: {} },
@@ -83,6 +88,9 @@ export const useSettings = create<SettingsStore>((set, get) => ({
       for (const key of Object.keys(DEFAULT_SETTINGS) as Section[]) {
         merged[key] = { ...DEFAULT_SETTINGS[key], ...((raw[key] as object | undefined) ?? {}) };
       }
+      // 主题库是这份配置里唯一由用户（或老版本、或手改）往里塞数组的一节，
+      // 一个坏色值进列表就是画布上一块 NaN 底色：读出来先过一遍校验，认不出的整条丢。
+      merged.themes = { custom: sanitizeThemes((merged.themes as Settings["themes"]).custom) };
       set({ settings: merged as unknown as Settings, loaded: true, error: null });
     } catch (e) {
       set({ loaded: true, error: e instanceof Error ? e.message : String(e) });

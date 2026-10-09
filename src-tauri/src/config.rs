@@ -51,6 +51,12 @@ fn defaults() -> Map<String, Value> {
         }),
     );
     m.insert(
+        "themes".into(),
+        serde_json::json!({
+            "custom": []
+        }),
+    );
+    m.insert(
         "save".into(),
         serde_json::json!({
             "autoSave": true,
@@ -293,6 +299,39 @@ mod tests {
         let _dir = isolated("merge-bad");
         assert!(merged_page("save", &Value::Number(1.into())).is_err());
         assert!(merged_page("save", &Value::Null).is_err());
+    }
+
+    /// 主题库存的是一个对象数组：这一节能穿过 merge_defaults / merged_page 原样回来，
+    /// 用户存的配色才活得过重启（前端只在读的时候做校验，这里保证不吞）。
+    #[test]
+    fn theme_list_survives_write_and_read() {
+        let _g = crate::lock_config_env();
+        let dir = isolated("themes");
+        let _ = std::fs::remove_dir_all(&dir);
+        // 定界符要两层 `#`：颜色值里的 `"#` 会把 `r#"..."#` 提前关掉。
+        let patch: Value = serde_json::from_str(
+            r##"{"custom":[{"id":"t1","name":"我的配色","accents":["#111111"]}]}"##,
+        )
+        .unwrap();
+        let cfg = merged_page("themes", &patch).expect("merge 应成功");
+        write_config(&cfg).expect("写入应成功");
+        let reread = read_config();
+        assert_eq!(
+            reread["themes"]["custom"][0]["name"],
+            Value::String("我的配色".into())
+        );
+        assert_eq!(
+            reread["themes"]["custom"][0]["accents"][0],
+            Value::String("#111111".into())
+        );
+        // 动别的一节不会把主题库带走
+        let other: Value = serde_json::from_str(r#"{"autoSave":false}"#).unwrap();
+        write_config(&merged_page("save", &other).expect("merge 应成功")).expect("写入应成功");
+        assert_eq!(
+            read_config()["themes"]["custom"][0]["id"],
+            Value::String("t1".into())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

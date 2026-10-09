@@ -16,6 +16,7 @@ import { LAYOUT_LABELS } from "../model/constants.ts";
 import { canRedo, canUndo, commit, createHistory, currentDoc, redo, reset, stackDepth, undo, type HistoryState } from "../engine/history.ts";
 import { normalize } from "../engine/tree.ts";
 import { parseEmmx, writeEmmx } from "../engine/emmx/codec.ts";
+import { applyTheme, findTheme } from "../engine/themelib.ts";
 import { native } from "../services/native.ts";
 import { useSettings } from "./settingsStore.ts";
 import { useUi } from "./uiStore.ts";
@@ -28,6 +29,17 @@ import { useUi } from "./uiStore.ts";
 function defaultLayout(): LayoutCode {
   const v = useSettings.getState().settings.format.defaultLayout;
   return v in LAYOUT_LABELS ? (v as LayoutCode) : "balanced";
+}
+
+/**
+ * 新建文档按主题库里"当前默认"那套起手（03 §1.3-17）。
+ * 内置那一套什么都不用做 —— 没有 theme.xml 时 paletteOf 本来就回落到 Angel；
+ * 只有选了用户自己存的那套才真的种一棵 themeRoot，导出文件里带的就是那几档色。
+ */
+function withDefaultTheme(doc: DocumentModel): DocumentModel {
+  const s = useSettings.getState().settings;
+  const t = findTheme(s.themes.custom, s.format.defaultThemeId);
+  return t ? applyTheme(doc, doc.pages[0], t) : doc;
 }
 
 export interface DocStoreState {
@@ -126,7 +138,7 @@ export const useDoc = create<DocStore>((set, get) => ({
   warnings: [],
 
   async newDoc(title) {
-    const doc = createDocument(title ?? "中心主题", defaultLayout());
+    const doc = withDefaultTheme(createDocument(title ?? "中心主题", defaultLayout()));
     const now = Date.now();
     set({
       hist: createHistory(doc, "新建"),

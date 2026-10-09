@@ -121,7 +121,7 @@ eq("文件菜单项序", childIds(spec(), "文件"), [
 ]);
 eq("编辑菜单项序", childIds(spec(), "编辑"), ["edit-undo", "edit-redo", "edit-search"]);
 eq(
-  "视图菜单里六个投影 + 侧栏 + 三个缩放",
+  "视图菜单里六个投影 + 侧栏 + 三个缩放 + 主题风格",
   childIds(spec(), "视图").filter((id) => id.startsWith("view-")),
   [
     "view-proj-mindmap",
@@ -134,6 +134,7 @@ eq(
     "view-zoom-out",
     "view-zoom-in",
     "view-zoom-fit",
+    "view-themes",
     "view-theme",
   ]
 );
@@ -141,7 +142,14 @@ eq(
 // ---- 没有文档时：灰掉，不是删掉
 const noDoc = spec({ hasDoc: false });
 eq("开始页上文件菜单还是九项", childIds(noDoc, "文件").length, 9);
-for (const id of ["file-new", "file-open", "file-import", "help-options", "file-quit"])
+for (const id of [
+  "file-new",
+  "file-open",
+  "file-import",
+  "help-options",
+  "file-quit",
+  "view-themes",
+])
   ok(`${id} 没有文档时仍可用`, need(noDoc, id).enabled === true);
 for (const id of [
   "file-save",

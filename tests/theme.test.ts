@@ -206,7 +206,7 @@ const root = parseXml(CUSTOM);
   const b = insertChild(page, page.rootId, "竞品分析");
   page = b.page;
   page = { ...page, theme: { ...page.theme, colorId: 9, textId: 12 } };
-  doc = withActivePage({ ...doc, pages: [page] }, page.id);
+  doc = withActivePage({ ...doc, pages: [page] }, page);
   doc = { ...doc, rawUnknown: { ...(doc.rawUnknown ?? {}), themeRoot: parseXml(CUSTOM) } };
 
   const before = paletteForDoc(doc, page);

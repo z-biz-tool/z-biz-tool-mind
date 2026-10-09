@@ -123,6 +123,7 @@ export function menuSpec(state: MenuState): SpecMenu[] {
     item("view-zoom-in", "放大", hasDoc),
     item("view-zoom-fit", "适应画布", hasDoc),
     sep,
+    item("view-themes", chord("主题风格…", "themes")),
     sub(
       "view-theme",
       "界面主题",

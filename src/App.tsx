@@ -24,6 +24,7 @@ import { ExportDialog } from "./views/ExportDialog.tsx";
 import { PrintDialog } from "./views/PrintDialog.tsx";
 import { TopicInfoDialog } from "./views/TopicInfoDialog.tsx";
 import { OptionsView } from "./views/OptionsView.tsx";
+import { ThemePanel } from "./views/ThemePanel.tsx";
 import { activeDoc, activePage, depthOf, dirtyOf, useDoc } from "./stores/docStore.ts";
 import { countTopics } from "./engine/tree.ts";
 import { PROJECTIONS, useUi, type Projection } from "./stores/uiStore.ts";
@@ -424,6 +425,9 @@ function Shell() {
       if (hasDoc) openDialog("print");
     },
     options: () => openDialog("options"),
+    // 主题面板在没有文档时也要能打开（管理主题库、设新文档的默认那套都跟文档无关），
+    // 所以不像 export/print 那样加 hasDoc 门槛；面板自己会把"应用"这一钮收掉。
+    themes: () => (dialog === "themes" ? closeDialog() : openDialog("themes")),
     // 浏览器模式没有"退进程"这件事可做（脚本关不掉标签页），所以这条只在桌面端注册：
     // 注册成 undefined 就是不注册，Ctrl+Q 照常落回网页，而不是弹一道点了没用的确认。
     quit: native.available ? doQuit : undefined,
@@ -504,6 +508,9 @@ function Shell() {
         return;
       case "view-zoom-fit":
         fitZoom();
+        return;
+      case "view-themes":
+        dialog === "themes" ? closeDialog() : openDialog("themes");
         return;
       case "help-options":
         openDialog("options");
@@ -608,6 +615,11 @@ function Shell() {
     { key: "export", label: menuItem("导出", "export"), onClick: () => openDialog("export") },
     { key: "print", label: menuItem("打印", "print"), onClick: () => openDialog("print") },
     {
+      key: "themes",
+      label: menuItem("主题风格", "themes"),
+      onClick: () => (dialog === "themes" ? closeDialog() : openDialog("themes")),
+    },
+    {
       key: "theme",
       label: `界面主题：${THEME_LABEL[mode]}（点击切换）`,
       onClick: cycleTheme,
@@ -706,7 +718,10 @@ function Shell() {
             侧栏
           </Button>
           <Dropdown menu={{ items: moreItems }} trigger={["click"]} placement="bottomRight">
-            <Button size="small" title="另存为 · 查找 · 历史版本 · 导出 · 打印 · 主题">
+            <Button
+              size="small"
+              title="另存为 · 查找 · 历史版本 · 导出 · 打印 · 主题风格 · 界面主题"
+            >
               ⋯ 更多
             </Button>
           </Dropdown>
@@ -781,6 +796,7 @@ function Shell() {
       <ExportDialog open={dialog === "export"} onClose={closeDialog} />
       <PrintDialog open={dialog === "print"} onClose={closeDialog} />
       <OptionsView open={dialog === "options"} onClose={closeDialog} />
+      <ThemePanel open={dialog === "themes"} onClose={closeDialog} />
       <TopicInfoDialog page={page} onClose={closeDialog} />
 
       <Modal

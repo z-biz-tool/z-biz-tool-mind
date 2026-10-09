@@ -27,6 +27,7 @@ import {
 } from "antd";
 import { LoadingState } from "../_shared/index.ts";
 import { MENU_ACTION_GROUPS, MENU_PRESETS, keepActions } from "../canvas/menuActions.ts";
+import { BUILTIN_DEFAULT, BUILTIN_DEFAULT_ID } from "../engine/themelib.ts";
 import { LAYOUT_LABELS, QUOTA } from "../model/constants.ts";
 import { native } from "../services/native.ts";
 import {
@@ -47,6 +48,7 @@ import {
   chordLabel,
   commandOfChord,
   defaultChordOf,
+  shortcutLabel,
 } from "../utils/shortcuts.ts";
 import type { ShortcutCommand } from "../utils/shortcuts.ts";
 
@@ -443,6 +445,21 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
     );
   }
 
+  /**
+   * 新文档默认主题的可选项 = 内置那套 + 主题库里存下来的。
+   * 选中的那套已经被删掉时补一条"（已删除）"：这一格留着一个下拉里没有的值，
+   * 直接显示会是一串裸 id（t7），用户看不出它曾经是什么。
+   */
+  const themeOptions = [
+    { value: BUILTIN_DEFAULT_ID, label: BUILTIN_DEFAULT.name },
+    ...settings.themes.custom.map((t) => ({ value: t.id, label: t.name })),
+  ];
+  if (!themeOptions.some((o) => o.value === settings.format.defaultThemeId))
+    themeOptions.push({
+      value: settings.format.defaultThemeId,
+      label: `（已删除：${settings.format.defaultThemeId}）`,
+    });
+
   const body = !loaded ? (
     <LoadingState tip="正在读取配置文件…" />
   ) : (
@@ -547,14 +564,14 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                 />
               </Field>
               <Field
-                label="默认主题 ID"
-                hint="这个编号现在只落进配置文件：色板只有一套内置的 Edraw 默认值，没有主题库可挑，所以改它还不影响画面。导入的文档自带自己的配色，与这里无关。"
+                label="新文档默认主题"
+                hint={`新建文档与新建画布就用这一套起手（色板写进文件的 theme.xml，跟着 .emmx 一起带走）。只影响新建，已存在的文档和导入的文档都按自己文件里那套走。想往这张表里加新的，用「主题风格」面板（视图菜单，或 ${shortcutLabel("themes")}）里的「设为当前默认」。选中的那套如果被删掉了，就退回内置那一套。`}
               >
-                <Input
-                  size="small"
+                <Select
                   style={{ width: 220 }}
                   value={settings.format.defaultThemeId}
-                  onChange={(e) => void patch("format", { defaultThemeId: e.target.value })}
+                  onChange={(v: string) => void patch("format", { defaultThemeId: v })}
+                  options={themeOptions}
                 />
               </Field>
               <Field

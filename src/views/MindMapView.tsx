@@ -14,6 +14,7 @@ import { applyPalette, styleFor } from "../engine/style.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { usePalette } from "../stores/usePalette.ts";
 import { useUi } from "../stores/uiStore.ts";
+import { shortcutLabel } from "../utils/shortcuts.ts";
 import type { LayoutCode, Page, Shape, ShapeStyle } from "../types/model.ts";
 import { MindCanvas } from "../canvas/index.ts";
 
@@ -33,6 +34,7 @@ export function MindMapView({ page }: { page: Page }) {
   const mutate = useDoc((s) => s.mutate);
   const displayLevels = useUi((s) => s.displayLevels);
   const setDisplayLevels = useUi((s) => s.setDisplayLevels);
+  const openDialog = useUi((s) => s.openDialog);
   const deepest = useMemo(() => maxDepth(page), [page]);
   const selection = useDoc((s) => s.selection);
   // 这一页的色板：回显、"恢复主题配色"和画布必须同一个来源，
@@ -126,6 +128,13 @@ export function MindMapView({ page }: { page: Page }) {
         <span className="zm-bar-label">
           共 {deepest + 1} 级 · {countTopics(page)} 个主题
         </span>
+        <Tooltip
+          title={`把这份文档此刻的配色存成自定义主题，或应用库里的一套。改的是整份文档，选中几个都一样（${shortcutLabel("themes")}）`}
+        >
+          <Button size="small" onClick={() => openDialog("themes")}>
+            主题风格
+          </Button>
+        </Tooltip>
         <div className="zm-bar-spacer" />
         <span className="zm-bar-label">
           样式{selection.length > 1 ? ` ${selection.length} 个主题` : ""}
