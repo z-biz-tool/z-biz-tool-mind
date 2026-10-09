@@ -61,6 +61,7 @@ import {
 import { installCrashWatch } from "./services/crash.ts";
 import { runAiInsert } from "./services/ai.ts";
 import {
+  dirOf,
   listen,
   native,
   pickOpenPath,
@@ -320,6 +321,8 @@ function Shell() {
     const target = await pickSavePath({
       title: "另存为",
       defaultPath: `${s.title}.emmx`,
+      // 另存为的起点跟着原文档走：从 C:\a\b.emmx 另存，框就停在 C:\a，而不是安装目录。
+      dirHint: dirOf(s.path),
       filters: EMMX_FILTER,
     });
     if (target) await saveTo(target);

@@ -13,6 +13,8 @@ export interface AppInfo {
   version: string;
   configDir: string;
   tempDir: string;
+  /** 用户的「文档」目录；取不到是空串。只给裸文件名时原生保存框会停在进程工作目录，用它兜底。 */
+  documentDir: string;
   os: string;
   arch: string;
 }
@@ -157,6 +159,7 @@ function browserInfo(): AppInfo {
     version: "browser",
     configDir: "localStorage",
     tempDir: "memory",
+    documentDir: "",
     os: navigator.platform || "web",
     arch: "wasm",
   };
@@ -645,7 +648,44 @@ function rankOf(level: string): number {
 export interface PickOptions {
   title?: string;
   defaultPath?: string;
+  /** 想把裸文件名落到哪个目录（一般是当前文档所在目录）。不给就用「文档」目录兜底。 */
+  dirHint?: string | null;
   filters: { name: string; extensions: string[] }[];
+}
+
+/** `C:\a\b.emmx` → `C:\a`；裸文件名和 `/a.txt` 这种根下单个名字给 null，让调用方去问默认目录。 */
+export function dirOf(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return i > 0 ? path.slice(0, i) : null;
+}
+
+/**
+ * 原生保存框只拿到裸文件名时，Windows 会把框停在**进程的工作目录**上 —— 用户从开始菜单
+ * 启动时那就是安装目录，"导出"默认往程序文件夹里写。所以这里保证递出去的是绝对路径：
+ * 调用方已经带目录就原样放过（覆盖它等于偷偷改用户点名的位置），否则按 hint → 文档目录 拼。
+ */
+export function absSavePath(
+  name: string | null | undefined,
+  hint: string | null | undefined,
+  base: string | null | undefined
+): string | undefined {
+  if (!name) return undefined;
+  if (/[/\\]/.test(name)) return name;
+  const dir = hint || base;
+  if (!dir) return name;
+  const win = /^[A-Za-z]:/.test(dir) || dir.includes("\\");
+  return dir.replace(/[/\\]+$/, "") + (win ? "\\" : "/") + name;
+}
+
+let docDirProbe: string | null = null;
+
+/** 只问一次：`app_info` 里那个「文档」目录，拿不到就当成没有（空串）。 */
+async function documentDir(): Promise<string | null> {
+  if (docDirProbe === null) {
+    docDirProbe = (await native.appInfo()).documentDir || "";
+  }
+  return docDirProbe || null;
 }
 
 export async function pickOpenPath(opts: PickOptions): Promise<string | null> {
@@ -653,7 +693,8 @@ export async function pickOpenPath(opts: PickOptions): Promise<string | null> {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const r = await open({
       title: opts.title,
-      defaultPath: opts.defaultPath,
+      // 打开框也一样：调用方没点名位置就从「文档」目录起，别停在进程工作目录。
+      defaultPath: opts.defaultPath ?? ((await documentDir()) ?? undefined),
       filters: opts.filters,
     });
     return typeof r === "string" ? r : null;
@@ -684,7 +725,7 @@ export async function pickSavePath(opts: PickOptions): Promise<string | null> {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const r = await save({
       title: opts.title,
-      defaultPath: opts.defaultPath,
+      defaultPath: absSavePath(opts.defaultPath, opts.dirHint, await documentDir()),
       filters: opts.filters,
     });
     return r ?? null;

@@ -9,7 +9,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::{backup, config, crash, log, net, paths, recent, secret};
 
@@ -19,6 +19,9 @@ pub struct AppInfo {
     pub version: String,
     pub config_dir: String,
     pub temp_dir: String,
+    /// 用户的「文档」目录。原生保存框只拿到裸文件名时会停在进程工作目录
+    /// （从开始菜单启动就是安装目录），所以前端要用它兜一个绝对路径出来。取不到就是空串。
+    pub document_dir: String,
     pub os: String,
     pub arch: String,
 }
@@ -57,6 +60,11 @@ pub fn app_info(app: tauri::AppHandle) -> AppInfo {
         version: app.package_info().version.to_string(),
         config_dir: config::get_config_dir().to_string_lossy().to_string(),
         temp_dir: std::env::temp_dir().to_string_lossy().to_string(),
+        document_dir: app
+            .path()
+            .document_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
     }

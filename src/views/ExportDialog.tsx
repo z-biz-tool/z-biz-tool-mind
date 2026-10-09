@@ -24,7 +24,7 @@ import {
   exportArtifact,
   formatOf,
 } from "../engine/export/index.ts";
-import { native, pickSavePath } from "../services/native.ts";
+import { dirOf, native, pickSavePath } from "../services/native.ts";
 import { computeLayout } from "../engine/layout.ts";
 import { outlineRows } from "../engine/projections.ts";
 import { activeDoc, activePage, useDoc } from "../stores/docStore.ts";
@@ -142,6 +142,8 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
     return pickSavePath({
       title: `导出为 ${spec.label}`,
       defaultPath: name,
+      // 导出的落点跟着这份文档走：文档在 C:\a\b.emmx，框就停在 C:\a（不给目录时原生框会停在安装目录）。
+      dirHint: dirOf(useDoc.getState().path),
       filters: [{ name: spec.label, extensions: [spec.ext] }],
     });
   }

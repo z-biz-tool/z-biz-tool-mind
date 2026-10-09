@@ -41,7 +41,7 @@ import {
 } from "../engine/export/print.ts";
 import type { PrintOptions, PrintRange, PrintScaleMode, Rect } from "../engine/export/print.ts";
 import { printHtmlDocument, printSupported } from "../services/print.ts";
-import { native, pickSavePath } from "../services/native.ts";
+import { dirOf, native, pickSavePath } from "../services/native.ts";
 import { activePage, useDoc } from "../stores/docStore.ts";
 import { usePalette } from "../stores/usePalette.ts";
 import { useUi } from "../stores/uiStore.ts";
@@ -185,6 +185,7 @@ export function PrintDialog({ open, onClose }: PrintDialogProps) {
       const target = await pickSavePath({
         title: "打印到文件（PDF）",
         defaultPath: `${printTitleOf(page)}.pdf`,
+        dirHint: dirOf(useDoc.getState().path),
         filters: [{ name: "PDF 文档", extensions: ["pdf"] }],
       });
       if (!target) return;
