@@ -82,30 +82,49 @@ export function startAutosave(): () => void {
 }
 
 /**
- * 启动时问一句"有没有没存下来的东西"：返回最新的那一份快照，没有可恢复项就返回 null。
+ * 启动时问一句"有没有没存下来的东西"：返回待处理的快照（新到旧）与目录里的总数。
  *
  * 判定条件是快照时间 **晚于** 文件落盘时刻：早于它的快照已经被真正的保存覆盖，
  * 恢复那种东西只会把用户往回带。原生层没有 stat，store 的 savedAt 就是"上一次写盘"的时刻，
  * 等价、且不用跨进程问 Rust。
  *
+ * 一次进程只问一份（弹窗里同一时刻只能做一个决定），但**积压条数要交给外壳说** ——
+ * 攒了几十份却只字不提，用户会以为"忽略"掉的是这一份，实际上是在玩打地鼠。
+ * 每到一个自动保存周期就新增一份文件，所以积压是按"份"而不是按"文档"计数的：
+ * 一个文档开着挂机一小时，回来就是 12 份。逐份追问会让人一路点到底，
+ * 于是这里连目录里的总数一起回，外壳才敢在"全部忽略"上写准要删几个文件。
  * 返回条目而不是句子：外壳拿到它才知道"恢复"该去读哪个路径 —— 只回一句文案的提示框，
  * 用户点了确定之后还得再列一次表。
  */
-export async function newestPendingAutosave(): Promise<AutosaveItem | null> {
+export async function pendingAutosaves(): Promise<{ pending: AutosaveItem[]; total: number }> {
   let items: AutosaveItem[];
   try {
     items = await native.autosaveList();
   } catch {
-    return null; // 列表都拿不到，就没有"可恢复"可宣告
+    return { pending: [], total: 0 }; // 列表都拿不到，就没有"可恢复"可宣告
   }
   const state = useDoc.getState();
-  const baseline = state.path ? state.savedAt : 0;
-  return items.filter((i) => i.modifiedAt > baseline).sort((a, b) => b.modifiedAt - a.modifiedAt)[0] ?? null;
+  return { pending: pendingSnapshots(items, state.path ? state.savedAt : 0), total: items.length };
+}
+
+/** 同一条判据的纯函数版：baseline 由调用方给（有路径的文档 = 上次写盘时刻，没存过的 = 0）。 */
+export function pendingSnapshots(items: readonly AutosaveItem[], baseline: number): AutosaveItem[] {
+  return items.filter((i) => i.modifiedAt > baseline).sort((a, b) => b.modifiedAt - a.modifiedAt);
 }
 
 /** 可直接 show 的中文句子：时间和大小在这里格式化，别让外壳各写一份。 */
 export function autosaveNote(item: AutosaveItem): string {
   return `发现 ${timestampName(new Date(item.modifiedAt))} 的自动保存快照「${docNameOf(item.path)}」（${humanSize(item.size)}），其中有尚未写入文件的修改，可以恢复。`;
+}
+
+/**
+ * 恢复进内存之后那份文档叫什么。
+ *
+ * 不能用快照的文件名：Rust 那一种文件名是时间戳（`20261010_041532_997.emmx`），
+ * 用户恢复出来一份叫时间戳的文档，而提示语里明明报的是文档名 —— 两边必须同一个口径。
+ */
+export function snapshotTitle(item: AutosaveItem): string {
+  return `${docNameOf(item.path)}（自动保存）`;
 }
 
 /**

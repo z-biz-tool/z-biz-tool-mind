@@ -270,14 +270,58 @@ pub fn autosave_list() -> Vec<(String, u64, i64)> {
     out
 }
 
+/// 清空自动保存目录。返回的**文件数**要和 `autosave_list` 报出来的口径一致，
+/// 否则启动弹窗里"这会删掉 N 份"与实际删掉的数量会打脸。
+/// 所以这里直接数列表的长度：散着躺在根下的那一种（只有手工往里写文件才会出现）会被删掉但不计数。
 pub fn autosave_clear() -> Result<usize, String> {
     let base = autosave_root();
-    let mut n = 0usize;
-    if base.exists() {
-        std::fs::remove_dir_all(&base).map_err(|e| format!("清理自动保存失败: {}", e))?;
-        n = 1;
+    if !base.exists() {
+        return Ok(0);
     }
+    let n = autosave_list().len();
+    std::fs::remove_dir_all(&base).map_err(|e| format!("清理自动保存失败: {}", e))?;
     Ok(n)
+}
+
+/// 了结一份快照：「忽略」或「已经恢复进内存」之后必须真的把它带走。
+/// 只把弹窗关掉的话，下一次启动还会为同一份快照问一遍 —— 而用户已经答过一次了。
+///
+/// 这是一个删除动作，路径却来自前端，所以判据比 `paths::validate` 更紧：
+/// 只准删 autosave 根目录底下的 `.emmx`。前缀比对用 canonicalize 之后的两边
+/// （`..`、指向别处的软链接、Windows 的 `\\?\` verbatim 前缀都在这一步被统一掉），
+/// 所以"传一个 autosave/../secret.emmx 进来"会被拒。
+/// 删完那一层文档目录空了就顺手收掉，否则 autosave 根下会攒一堆空壳。
+pub fn autosave_drop(path: &str) -> Result<bool, String> {
+    let ext_ok = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("emmx"))
+        .unwrap_or(false);
+    if !ext_ok {
+        return Err(format!("只能删除自动保存的 .emmx 快照: {}", path));
+    }
+    let canon = match Path::new(path).canonicalize() {
+        Ok(c) => c,
+        // 文件本来就不在了：要的效果已经达成，不该报成错误（连点两次「忽略」走这条）。
+        Err(_) => return Ok(false),
+    };
+    let base = autosave_root()
+        .canonicalize()
+        .map_err(|_| "自动保存目录不存在".to_string())?;
+    if !canon.starts_with(&base) {
+        return Err(format!("该路径不在自动保存目录内: {}", path));
+    }
+    std::fs::remove_file(&canon).map_err(|e| format!("删除快照失败: {} ({})", path, e))?;
+    if let Some(parent) = canon.parent() {
+        let empty = std::fs::read_dir(parent)
+            .map(|mut r| r.next().is_none())
+            .unwrap_or(false);
+        // 根目录自己永远留着；空目录收不掉也不影响"这一份已经了结"。
+        if empty && parent != base {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+    Ok(true)
 }
 
 /// 删除文档：移动到回收站并返回回收站条目 id。绝不物理删除。
@@ -489,6 +533,106 @@ mod tests {
         assert!(p.contains("我的导图"));
         assert_eq!(std::fs::read(&p).unwrap(), b"abc");
         assert!(!autosave_list().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("Z_MIND_CONFIG_DIR");
+    }
+
+    /// 启动弹窗里「全部清掉」那颗确认框要写得出真实份数，所以清空报的是文件数，
+    /// 不是"我清过一次 = 1"。数法与 `autosave_list` 同口径（两边不许各数各的）。
+    /// 不断言"恰好 4 份"：同一毫秒的两次写入会撞时间戳文件名，条数本身不是这条测试的重点，
+    /// 报出的数 == 列表里的数、清完列表空、根还能用，才是。
+    #[test]
+    fn autosave_clear_reports_how_many_files_it_took() {
+        let _g = crate::lock_config_env();
+        let dir = isolated("clear");
+        for i in 0..3 {
+            autosave(&format!("/tmp/清掉-{}.emmx", i), b"abc").unwrap();
+        }
+        // 同一份文档再写一次：一个自动保存周期一份文件，积压是按份计的。
+        autosave("/tmp/清掉-0.emmx", b"abcd").unwrap();
+        let listed = autosave_list().len();
+        assert!(listed >= 3, "三份不同文档至少该列出 3 份，实际 {}", listed);
+        assert_eq!(autosave_clear().unwrap(), listed);
+        assert!(autosave_list().is_empty(), "清空之后不该留下任何一份");
+        assert_eq!(autosave_clear().unwrap(), 0, "已经空了再点一次报 0，不是错");
+        assert!(
+            autosave("/tmp/清掉之后还能写.emmx", b"x").is_ok(),
+            "remove_dir_all 把根带走了，写侧要能自己建回来"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("Z_MIND_CONFIG_DIR");
+    }
+
+    /// 「忽略」那一句要真删得掉，否则同一份快照每次开机都再问一遍。
+    /// 顺带钉住"空掉的那一层文档目录被收走"—— 只删文件会在 autosave 根下攒一堆空壳。
+    #[test]
+    fn autosave_drop_finishes_one_snapshot() {
+        let _g = crate::lock_config_env();
+        let dir = isolated("drop");
+        let p = autosave("/tmp/一次性的.emmx", b"abc").unwrap();
+        let doc_dir = Path::new(&p).parent().unwrap().to_path_buf();
+        assert!(doc_dir.exists());
+        assert!(autosave_drop(&p).unwrap(), "在盘上的那一份应报已删掉");
+        assert!(!Path::new(&p).exists());
+        assert!(autosave_list().is_empty());
+        assert!(!doc_dir.exists(), "空掉的文档目录应被收走");
+        assert!(autosave_root().exists(), "根目录自己永远留着");
+        // 直接躺在根下的那一份（不是 `autosave()` 造出来的形状，`autosave_list` 只走一层子目录，
+        // 所以列列表看不见它）：删除按路径走，照样认得；但删完不许把根一起收走 ——
+        // 下一次自动保存还要往里写。
+        let stray = autosave_root().join("散着的一份.emmx");
+        std::fs::write(&stray, b"xy").unwrap();
+        assert!(autosave_drop(stray.to_str().unwrap()).unwrap());
+        assert!(autosave_root().exists(), "父目录就是根时不许收掉根");
+        // 再点一次「忽略」：目标已达成，不该报错把用户挡在那里。
+        assert!(
+            !autosave_drop(&p).unwrap(),
+            "已经不在了的那一份报 false 而不是错"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("Z_MIND_CONFIG_DIR");
+    }
+
+    /// 删除动作的路径来自前端，所以根目录之外一律拒。
+    /// 三桩：根外的普通文件、`..` 遍历出根、根内但扩展名不对的文件（autosave 目录里
+    /// 未来可能落别的东西，不能因为"在那个目录下"就让删）。
+    #[test]
+    fn autosave_drop_refuses_anything_outside_the_snapshots() {
+        let _g = crate::lock_config_env();
+        let dir = isolated("drop-guard");
+        let outside =
+            std::env::temp_dir().join(format!("z-mind-outside-{}.emmx", uuid::Uuid::new_v4()));
+        std::fs::write(&outside, b"keep me").unwrap();
+        assert!(autosave_drop(outside.to_str().unwrap()).is_err());
+        assert!(outside.exists(), "被拒的路径必须原地不动");
+
+        let p = autosave("/tmp/受保护的.emmx", b"abc").unwrap();
+        // 两层 `..` 才真的走出根：autosave/<x>/../../ = 临时目录本身，`outside` 就在那里。
+        // （写成一层会落到配置目录里那个"并不存在的同名文件"上 —— 那一条走的是"本来就不在了"，
+        // 返回 false 而不是错，测试第一版就是这么把自己骗过去的。）
+        let sneaky = autosave_root()
+            .join("..")
+            .join("..")
+            .join(outside.file_name().unwrap())
+            .to_string_lossy()
+            .to_string();
+        assert!(autosave_drop(&sneaky).is_err(), "`..` 遍历出根的要拦下");
+        assert!(outside.exists());
+
+        let not_a_snapshot = autosave_root().join("note.txt");
+        std::fs::write(&not_a_snapshot, b"x").unwrap();
+        assert!(autosave_drop(not_a_snapshot.to_str().unwrap()).is_err());
+        assert!(not_a_snapshot.exists());
+        // 历史版本也是 .emmx、也在配置目录下，但它不是快照 —— 点「忽略」不该碰到它。
+        let b = create("/tmp/doc.emmx", "doc", "manual", b"payload").unwrap();
+        let backup_file = root().join(doc_key("/tmp/doc.emmx")).join(&b.id);
+        assert!(backup_file.exists());
+        assert!(autosave_drop(backup_file.to_str().unwrap()).is_err());
+        assert!(backup_file.exists(), "历史版本必须原地不动");
+        assert!(autosave_drop(&p).unwrap(), "同一目录下的合法快照仍然删得掉");
+        assert!(autosave_list().is_empty());
+
+        std::fs::remove_file(&outside).ok();
         let _ = std::fs::remove_dir_all(&dir);
         std::env::remove_var("Z_MIND_CONFIG_DIR");
     }

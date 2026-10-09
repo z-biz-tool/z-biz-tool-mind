@@ -6,7 +6,17 @@
  * 唯一的例外是"未保存就换文档"那道确认 —— 它同时需要脏标记和用户意志，只有外壳两个都有。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { App as AntdApp, Button, Dropdown, Input, Modal, Segmented, Tabs, Tooltip } from "antd";
+import {
+  App as AntdApp,
+  Button,
+  Dropdown,
+  Input,
+  Modal,
+  Popconfirm,
+  Segmented,
+  Tabs,
+  Tooltip,
+} from "antd";
 import type { MenuProps } from "antd";
 import {
   AppErrorBoundary,
@@ -42,7 +52,12 @@ import {
 import { canSave } from "./utils/entitlement.ts";
 import { humanSize, timestampName } from "./utils/id.ts";
 import { installAppMenu, syncAppMenu, type MenuState } from "./services/appMenu.ts";
-import { autosaveNote, newestPendingAutosave, startAutosave } from "./services/autosave.ts";
+import {
+  autosaveNote,
+  pendingAutosaves,
+  snapshotTitle,
+  startAutosave,
+} from "./services/autosave.ts";
 import { installCrashWatch } from "./services/crash.ts";
 import { runAiInsert } from "./services/ai.ts";
 import {
@@ -110,7 +125,20 @@ function Shell() {
 
   const [pendingSwitch, setPendingSwitch] = useState<PendingSwitch | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+  /**
+   * 启动时那一份待处理的快照：一个进程只问最新的一份。
+   *
+   * 曾经做成"答完接着问下一份"的队列，但那在真实积压面前不成立 —— 自动保存每到一个周期
+   * 就新增一个文件，积压是按份计的而不是按文档计的，本机实测有 285 份躺着 ⇒ 队列要让人点 284 次「忽略」。
+   * 所以只问一份，剩下的交给弹窗里那句"还有 N 份"和一条「全部忽略」的出口。
+   */
   const [snapshot, setSnapshot] = useState<AutosaveItem | null>(null);
+  /** 「恢复」正在读盘：只把弹窗收掉，`snapshot` 留着 —— 它同时是压住"自动打开上次会话"的那道闸。 */
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const [snapshotBacklog, setSnapshotBacklog] = useState<{ pending: number; total: number }>({
+    pending: 0,
+    total: 0,
+  });
 
   const hasDoc = Boolean(doc && page);
 
@@ -346,13 +374,51 @@ function Shell() {
   /** 启动时问一句"有没有没存下来的东西"；判定与格式化都在 services/autosave，这里只负责打断。 */
   useEffect(() => {
     let alive = true;
-    void newestPendingAutosave().then((item) => {
-      if (alive && item) setSnapshot(item);
+    void pendingAutosaves().then(({ pending, total }) => {
+      if (!alive) return;
+      setSnapshot(pending[0] ?? null);
+      setSnapshotBacklog({ pending: pending.length, total });
     });
     return () => {
       alive = false;
     };
   }, []);
+
+  /**
+   * 把一份快照从磁盘上带走（「忽略」，或恢复已经进内存之后）。
+   *
+   * 带走这一步不能省 —— 之前「忽略」只关弹窗，快照原地留着，于是每次开机都为同一份问一遍。
+   * 删失败要说出来：那意味着下次还会再问，静默关掉等于骗用户已经了结了。
+   */
+  const dropSnapshot = useCallback(
+    async (item: AutosaveItem) => {
+      try {
+        await native.autosaveDrop(item.path);
+      } catch (e) {
+        message.warning(
+          `这份快照没能从磁盘上带走（${e instanceof Error ? e.message : String(e)}），下次启动可能还会问一次。`
+        );
+      }
+    },
+    [message]
+  );
+
+  /**
+   * 积压的出口：一次删掉自动保存目录里的所有快照。
+   *
+   * 这是一颗破坏性动作，所以确认框里写的必须是真实份数（来自 autosave 的那份列表，
+   * 和原生层清空时数的是同一批），而不是"若干"。删掉的东西包括别的文档的、用户还没看到过的快照。
+   */
+  const ignoreAllSnapshots = useCallback(async () => {
+    setSnapshot(null);
+    try {
+      const n = await native.autosaveClear();
+      setSnapshotBacklog({ pending: 0, total: 0 });
+      message.success(`已清掉自动保存目录里的 ${n} 份快照。`);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    }
+  }, [message]);
 
   /**
    * 启动时恢复上次会话：选项开着，冷启动就直接回到"上次打开的那一份"。
@@ -383,24 +449,31 @@ function Shell() {
 
   const restoreSnapshot = useCallback(async () => {
     const item = snapshot;
-    setSnapshot(null);
-    if (!item) return;
+    if (!item || snapshotBusy) return;
+    // 只收弹窗，不清 `snapshot`：读盘是异步的，而 `snapshot` 同时压着"自动打开上次会话"那道闸。
+    // 装机实测踩过：提前清掉 ⇒ 那个 effect 在 openBytes 还没落地时就抢着打开上次的文件，
+    // 用户看到的是一次"已恢复"的 toast，画布上却是另一份文档 —— 刚恢复出来的未存盘改动没了。
+    setSnapshotBusy(true);
     const run = async () => {
       try {
         const bytes = await native.fileReadBytes(item.path);
-        const ok = await useDoc
-          .getState()
-          .openBytes(bytes, null, `${stemOf(item.path)}（自动保存）`);
+        const ok = await useDoc.getState().openBytes(bytes, null, snapshotTitle(item));
         if (ok) {
           setStartPage(false);
           message.success("已恢复自动保存快照；这些改动还没有落盘，请用「另存为」。");
+          // 内容已经进内存了，盘上那一份就该带走 —— 留着它，下次开机还会为同一份问一遍，
+          // 而那份改动用户其实已经"恢复"过一次了。读失败时不删：那是唯一的证据。
+          await dropSnapshot(item);
+          setSnapshot(null); // 到这一步内存里确实有这一份了，才把闸放开
         } else message.error(useDoc.getState().error ?? "快照读取失败");
       } catch (e) {
         message.error(e instanceof Error ? e.message : String(e));
+      } finally {
+        setSnapshotBusy(false);
       }
     };
     guard("恢复快照", () => void run());
-  }, [guard, message, setStartPage, snapshot]);
+  }, [guard, message, setStartPage, snapshot, snapshotBusy, dropSnapshot]);
 
   /* ---------------- 快捷键 / 关闭保护 ---------------- */
 
@@ -847,11 +920,23 @@ function Shell() {
       </Modal>
 
       <Modal
-        open={Boolean(snapshot)}
+        open={Boolean(snapshot) && !snapshotBusy}
         title="发现未保存的自动保存快照"
         okText="恢复"
-        cancelText="忽略"
-        onCancel={() => setSnapshot(null)}
+        cancelText="忽略这份"
+        // 这颗框是一个决定，不是一个可以"先关掉再说"的通知：右上角的叉、点遮罩、按 Esc
+        // 走的都是 onCancel，而 onCancel 现在真的会删东西 —— 留这三个出口等于给用户挖坑。
+        closable={false}
+        maskClosable={false}
+        keyboard={false}
+        onCancel={() => {
+          // 「忽略」= 这一份到此为止：先从盘上带走，再收弹窗。以前只是关弹窗，快照留在原地，
+          // 于是每次开机都再问一遍。
+          const item = snapshot;
+          if (!item) return;
+          setSnapshot(null);
+          void dropSnapshot(item);
+        }}
         onOk={() => void restoreSnapshot()}
       >
         <p>{snapshot ? autosaveNote(snapshot) : ""}</p>
@@ -860,7 +945,25 @@ function Shell() {
             ? `位置：${snapshot.path} · ${humanSize(snapshot.size)} · ${timestampName(new Date(snapshot.modifiedAt))}`
             : ""}
         </p>
-        <p>恢复后这些改动算"还没落盘"，请用「另存为」写成文件。</p>
+        <p>恢复后这些改动算"还没落盘"，请用「另存为」写成文件；忽略会把这一份快照从磁盘上删掉。</p>
+        {snapshotBacklog.pending > 1 && (
+          <p>
+            自动保存目录里还有 {snapshotBacklog.pending - 1} 份没答过 ——
+            每个自动保存周期都会新写一份，所以同一篇文档能攒出好几份。这一次只问最新的一份。
+            <Popconfirm
+              title={`删掉目录里全部 ${snapshotBacklog.total} 份快照？`}
+              description="包括别的文档的、你还没看到过的快照，删掉之后找不回来。"
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={() => void ignoreAllSnapshots()}
+            >
+              <Button type="link" size="small">
+                全部清掉
+              </Button>
+            </Popconfirm>
+          </p>
+        )}
       </Modal>
     </>
   );

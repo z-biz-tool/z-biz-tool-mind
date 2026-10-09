@@ -364,6 +364,12 @@ export const native = {
     return call<number>("autosave_clear");
   },
 
+  /** 了结一份快照（弹窗里点「忽略」，或恢复进内存之后）。false = 它本来就不在了。 */
+  async autosaveDrop(path: string): Promise<boolean> {
+    if (!isTauri) return memAutosave.delete(path);
+    return call<boolean>("autosave_drop", { path });
+  },
+
   async backupNow(
     path: string,
     title: string,

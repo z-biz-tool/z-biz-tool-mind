@@ -170,14 +170,18 @@ export function HistoryPanel(_props?: HistoryPanelProps) {
             <div>
               <SectionTitle
                 extra={
-                  <Button
-                    size="small"
-                    danger
-                    disabled={autosave.length === 0}
-                    onClick={() => void clearAutosave()}
+                  <Popconfirm
+                    title={`删掉自动保存目录里的全部 ${autosave.length} 份快照？`}
+                    description="一键就能删空，所以问一句：清掉之后崩溃就没有可恢复的那一份了，找不回来。"
+                    okText="删除"
+                    okButtonProps={{ danger: true }}
+                    cancelText="取消"
+                    onConfirm={() => void clearAutosave()}
                   >
-                    清空快照
-                  </Button>
+                    <Button size="small" danger disabled={autosave.length === 0}>
+                      清空快照
+                    </Button>
+                  </Popconfirm>
                 }
               >
                 定时器写出来的快照

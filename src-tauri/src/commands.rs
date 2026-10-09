@@ -296,6 +296,16 @@ pub fn autosave_clear() -> Result<usize, String> {
     backup::autosave_clear()
 }
 
+/// 了结一份快照（「忽略」/「恢复进内存之后」）。返回 false 表示它本来就不在了。
+#[tauri::command]
+pub fn autosave_drop(path: String) -> Result<bool, String> {
+    let dropped = backup::autosave_drop(&path)?;
+    if dropped {
+        log::log("info", "autosave", &format!("了结快照 {path}"));
+    }
+    Ok(dropped)
+}
+
 // ---------- 备份中心 ----------
 
 #[tauri::command]

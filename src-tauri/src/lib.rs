@@ -76,6 +76,7 @@ pub fn run() {
             commands::autosave_write,
             commands::autosave_list,
             commands::autosave_clear,
+            commands::autosave_drop,
             commands::backup_now,
             commands::backup_list,
             commands::backup_restore,
