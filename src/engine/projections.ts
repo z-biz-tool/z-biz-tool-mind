@@ -220,6 +220,8 @@ export interface GanttBar {
   assignees: string[];
   milestone: boolean;
   isSummary: boolean;
+  /** 前置任务（完工→开工）：连线画在哪些条上。 */
+  deps: string[];
 }
 
 const DAY_MS = 86_400_000;
@@ -259,6 +261,7 @@ export function ganttSchedule(page: Page, gantt: GanttOption): GanttBar[] {
       assignees: task?.assignees ?? [],
       milestone: Boolean(task?.milestone),
       isSummary: s.childIds.length > 0,
+      deps: task?.deps ?? [],
     });
     const self = out[out.length - 1];
     for (const c of children(page, id)) walk(c.id, depth + 1);
@@ -276,7 +279,59 @@ export function ganttSchedule(page: Page, gantt: GanttOption): GanttBar[] {
   };
   walk(page.rootId, 0);
   for (const f of floatingRoots(page)) walk(f.id, 0);
+  // 依赖约束（完工→开工）：前置可能排在 DFS 序后面，收敛式重扫到不再移动；
+  // 每轮末尾把概要条的包络重算一遍（子条被前置推走，父条必须跟着罩住）。
+  // 脏数据成环时靠迭代封顶兜住 —— 最多 out.length 轮，不挂死。
+  const byId = new Map(out.map((b) => [b.id, b]));
+  const hasDeps = out.some((b) => b.deps.length > 0);
+  for (let round = 0; hasDeps && round <= out.length; round += 1) {
+    let moved = false;
+    for (const b of out) {
+      for (const d of b.deps) {
+        const db = byId.get(d);
+        if (!db) continue;
+        const earliest = db.offsetDays + db.lengthDays;
+        if (earliest > b.offsetDays + 1e-9) {
+          b.offsetDays = earliest;
+          moved = true;
+        }
+      }
+    }
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      const b = out[i];
+      if (!b.isSummary) continue;
+      for (const k of children(page, b.id)) {
+        const kb = byId.get(k.id);
+        if (!kb) continue;
+        const start = Math.min(b.offsetDays, kb.offsetDays);
+        b.lengthDays = Math.max(b.lengthDays, kb.offsetDays + kb.lengthDays - start);
+        b.offsetDays = start;
+      }
+    }
+    if (!moved) break;
+  }
   return out;
+}
+
+/**
+ * 给 taskId 挂上前置 depId 会不会成环：depId 沿自己的依赖链能走回 taskId 就是环。
+ * UI 在写入前调它，引擎不做防环（排期那层靠迭代封顶自保）。
+ */
+export function depCreatesCycle(page: Page, taskId: string, depId: string): boolean {
+  if (taskId === depId) return true;
+  const seen = new Set<string>([depId]);
+  const stack = [depId];
+  while (stack.length) {
+    const id = stack.pop() as string;
+    if (id === taskId) return true;
+    for (const d of page.shapes[id]?.extras.task?.deps ?? []) {
+      if (!seen.has(d)) {
+        seen.add(d);
+        stack.push(d);
+      }
+    }
+  }
+  return false;
 }
 
 /** 甘特横轴刻度：跳过非工作日，和 gantt.workDay 一致。 */

@@ -550,4 +550,49 @@ if (!existsSync(FIXTURE)) {
   eq("界面里删掉的标签不再写回", delabeled.shapes[labelId].extras.labels, undefined);
 }
 
+// ---------------------------------------------------------------- TaskInfo：看板/甘特的任务字段要能过盘（2026-10-10）
+// 修复前 extras.task 根本不进 XML —— 用户排好的期、看板的优先级进度，存一次盘全部蒸发。
+// TaskInfo 是自造节点（BranchOffset 先例）：亿图读不懂只会忽略。
+{
+  const base = createDocument("任务字段", "balanced");
+  let page = base.pages[0];
+  const a = insertChild(page, page.rootId, "甲");
+  page = a.page;
+  const b = insertChild(page, page.rootId, "乙");
+  page = b.page;
+  const withPage = (p: Page) => ({
+    ...base,
+    pages: base.pages.map((x) => (x.id === p.id ? p : x)),
+  });
+  const MON = new Date(2026, 9, 5).getTime();
+  const FRI = new Date(2026, 9, 20).getTime();
+  const tasked = updateExtras(page, a.id, {
+    task: {
+      assignees: ["张三", "李四"],
+      progress: 40,
+      priority: "high",
+      status: "doing",
+      tags: ["红"],
+      start: MON,
+      finish: FRI,
+      duration: 15,
+      milestone: false,
+      deps: [b.id],
+    },
+  });
+  const rtDoc = (await parseEmmx(await writeEmmx(withPage(tasked)))).doc;
+  const rt = rtDoc.pages[0];
+  const t = rt.shapes[a.id].extras.task;
+  ok("任务字段存盘不丢", Boolean(t), JSON.stringify(t));
+  eq("枚举与进度", [t?.priority, t?.status, t?.progress], ["high", "doing", 40]);
+  eq("起止毫秒", [t?.start, t?.finish], [MON, FRI]);
+  eq("工期", t?.duration, 15);
+  eq("成员与标签", [t?.assignees, t?.tags], [["张三", "李四"], ["红"]]);
+  eq("前置（deps）原样回来", t?.deps, [b.id]);
+  eq("没写的里程碑读回 undefined", t?.milestone, undefined);
+  ok("没挂任务的主题不凭空长出任务", !rt.shapes[b.id].extras.task);
+  const rt2 = (await parseEmmx(await writeEmmx(rtDoc))).doc;
+  ok("TaskInfo 往返幂等", modelEquals(rtDoc, rt2));
+}
+
 done();

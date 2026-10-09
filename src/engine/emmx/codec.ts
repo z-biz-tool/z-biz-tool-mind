@@ -25,6 +25,7 @@ import type {
   Shape,
   ShapeStyle,
   ShapeType,
+  TaskData,
   TextParagraph,
 } from "../../types/model.ts";
 import { makeText, plainText } from "../../types/model.ts";
@@ -475,6 +476,35 @@ function parseShape(n: XmlNode, rels: Record<string, string>, warnings: string[]
   if (covered) extras.covered = covered.split(";").filter(Boolean);
   const callouts = attr(find(n, "Callout"), "V", "");
   if (callouts) extras.calloutIds = callouts.split(";").filter(Boolean);
+  // 任务信息（看板/甘特共用，§3.5）。亿图的 .emmx 里没有这个概念，TaskInfo 是我们自造的节点
+  // （同 BranchOffset 的先例：参考软件读不懂只会忽略）——没有它，用户排好的期存盘就丢。
+  const taskNode = find(n, "TaskInfo");
+  if (taskNode) {
+    const numA = (a: string): number | undefined => {
+      const raw = attr(taskNode, a, "");
+      if (raw === "") return undefined;
+      const v = Number(raw);
+      return Number.isFinite(v) ? v : undefined;
+    };
+    const listA = (a: string): string[] | undefined => {
+      const raw = attr(taskNode, a, "");
+      if (!raw) return undefined;
+      const arr = raw.split(";").filter(Boolean);
+      return arr.length ? arr : undefined;
+    };
+    extras.task = {
+      assignees: listA("Assignees") ?? [],
+      progress: numA("Progress") ?? 0,
+      priority: (attr(taskNode, "Priority", "medium") || "medium") as TaskData["priority"],
+      status: (attr(taskNode, "Status", "todo") || "todo") as TaskData["status"],
+      tags: listA("Tags") ?? [],
+      start: numA("Start"),
+      finish: numA("Finish"),
+      duration: numA("Duration"),
+      milestone: attr(taskNode, "Milestone", "") === "1" || undefined,
+      deps: listA("Deps"),
+    };
+  }
 
   return {
     id,
@@ -1064,6 +1094,25 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
   // 分支自由布局（doc/复刻方案/00 §3.3）的位移。亿图没有这个字段，节点名是我们自造的，
   // 它读不懂只会忽略 —— 这条只保证"在我们这儿拖开的枝，存了再开还在"。
   if (s.offset) n.children.push(el("BranchOffset", { V: `${s.offset.x};${s.offset.y}` }));
+  // 任务信息：同一条自造节点的路。进度/优先级/状态/起止/里程碑/成员/标签/前置全部收进属性，
+  // 空字段不写，重开时 parse 侧还原成 undefined。
+  if (s.extras.task) {
+    const t = s.extras.task;
+    n.children.push(
+      el("TaskInfo", {
+        Progress: round(t.progress),
+        Priority: t.priority,
+        Status: t.status,
+        ...(t.start !== undefined ? { Start: String(Math.round(t.start)) } : {}),
+        ...(t.finish !== undefined ? { Finish: String(Math.round(t.finish)) } : {}),
+        ...(t.duration !== undefined ? { Duration: String(t.duration) } : {}),
+        ...(t.milestone ? { Milestone: "1" } : {}),
+        ...(t.assignees.length ? { Assignees: t.assignees.join(";") } : {}),
+        ...(t.tags.length ? { Tags: t.tags.join(";") } : {}),
+        ...(t.deps?.length ? { Deps: t.deps.join(";") } : {}),
+      })
+    );
+  }
   carryUntouched(s, n, from);
   return n;
 }
@@ -1081,6 +1130,7 @@ const SHAPE_OWN_TAGS = new Set([
   "BoundaryData",
   "Callout",
   "BranchOffset",
+  "TaskInfo",
 ]);
 
 /**

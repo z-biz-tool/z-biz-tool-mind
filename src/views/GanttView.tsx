@@ -7,8 +7,9 @@
  */
 import { useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { Button, DatePicker, Empty, InputNumber, Segmented, Tooltip } from "antd";
-import { ganttSchedule, ganttTicks, isWorkDay } from "../engine/projections.ts";
+import { Button, Checkbox, DatePicker, Dropdown, Empty, InputNumber, Popover, Segmented, Tooltip } from "antd";
+import type { MenuProps } from "antd";
+import { depCreatesCycle, ganttSchedule, ganttTicks, isWorkDay } from "../engine/projections.ts";
 import type { GanttBar } from "../engine/projections.ts";
 import { setCollapsed, updateExtras } from "../engine/tree.ts";
 import { activeDoc, useDoc } from "../stores/docStore.ts";
@@ -59,6 +60,8 @@ interface DragState {
 
 export function GanttView({ page }: GanttViewProps) {
   const mutate = useDoc((s) => s.mutate);
+  const patchPage = useDoc((s) => s.patchPage);
+  const setError = useDoc((s) => s.setError);
   const select = useDoc((s) => s.select);
   const focusId = useDoc((s) => s.focusId);
   const selection = useDoc((s) => s.selection);
@@ -107,6 +110,76 @@ export function GanttView({ page }: GanttViewProps) {
   const todayOffset = Math.round((startOfToday() - opt.startDate) / DAY_MS);
   const selId = focusId ?? selection[0] ?? null;
   const selBar = selId ? bars.find((b) => b.id === selId) : undefined;
+
+  /** 时间条右键菜单：建立 / 清除前置关系（完工→开工，§3.9 的任务依赖）。 */
+  const barMenu = (bar: GanttBar): MenuProps => ({
+    items: [
+      {
+        key: "after",
+        label: selBar && selBar.id !== bar.id ? `在「${selBar.name}」之后开始` : "先选中另一任务，再建立前置",
+        disabled: !selBar || selBar.id === bar.id,
+      },
+      { key: "clear", label: "清除前置关系", disabled: bar.deps.length === 0 },
+    ],
+    onClick: ({ key, domEvent }) => {
+      domEvent.stopPropagation();
+      if (key === "after" && selBar && selBar.id !== bar.id) {
+        if (depCreatesCycle(page, bar.id, selBar.id)) {
+          setError(`「${bar.name}」已经（直接或间接）排在「${selBar.name}」后面，这条前置会成环`);
+          return;
+        }
+        mutate("建立前置关系", (p) =>
+          patchTask(p, bar.id, { deps: [...bar.deps.filter((d) => d !== selBar.id), selBar.id] })
+        );
+      } else if (key === "clear") {
+        mutate("清除前置关系", (p) => patchTask(p, bar.id, { deps: [] }));
+      }
+    },
+  });
+
+  const rowIx = useMemo(() => new Map(rows.map((b, i) => [b.id, i])), [rows]);
+  /** 依赖连线：从前置条的右端走到后置条的左端，拐在竖直中线上。只画两行都可见的。 */
+  const connectors = useMemo(() => {
+    const out: { d: string; arrow: string }[] = [];
+    for (const b of rows) {
+      const bi = rowIx.get(b.id) as number;
+      for (const d of b.deps) {
+        const di = rowIx.get(d);
+        if (di === undefined) continue;
+        const dep = rows[di];
+        const fx = px(dep.offsetDays + dep.lengthDays);
+        const fy = di * ROW_H + ROW_H / 2;
+        const tx = px(b.offsetDays);
+        const ty = bi * ROW_H + ROW_H / 2;
+        const midX = Math.max(fx + 8, tx - 12);
+        out.push({
+          d: `M ${fx} ${fy} L ${midX} ${fy} L ${midX} ${ty} L ${tx + 6} ${ty}`,
+          arrow: `M ${tx} ${ty - 4} L ${tx + 7} ${ty} L ${tx} ${ty + 4} Z`,
+        });
+      }
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, rowIx, originDays, unit]);
+
+  const setWorkDay = (ix: number, on: boolean) => {
+    const arr = [...(opt.workDay.length === 7 ? opt.workDay : [...opt.workDay, 1, 1].slice(0, 7))];
+    arr[ix] = on ? 1 : 0;
+    patchPage((p) => ({ ...p, gantt: { ...opt, workDay: arr } }));
+  };
+  const workDayEditor = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map((name, ix) => (
+        <Checkbox
+          key={name}
+          checked={(opt.workDay[ix] ?? 1) === 1}
+          onChange={(e) => setWorkDay(ix, e.target.checked)}
+        >
+          {name}
+        </Checkbox>
+      ))}
+    </div>
+  );
 
   function commitDrag(d: DragState, days: number) {
     const offset = d.mode === "move" ? d.offset + days : d.offset;
@@ -242,11 +315,55 @@ export function GanttView({ page }: GanttViewProps) {
           }}
         />
         <span style={{ fontSize: 12, color: "#8c8c8c" }}>天</span>
+        <InputNumber
+          size="small"
+          min={0}
+          max={100}
+          style={{ width: 76 }}
+          placeholder="进度%"
+          disabled={!selBar}
+          value={selBar ? Math.round(selBar.progress) : null}
+          onChange={(v) => {
+            const pct = typeof v === "number" ? Math.max(0, Math.min(100, v)) : null;
+            if (pct !== null && selBar && pct !== Math.round(selBar.progress))
+              mutate("设置任务进度", (p) => patchTask(p, selBar.id, { progress: pct }));
+          }}
+        />
+        <Checkbox
+          disabled={!selBar}
+          checked={Boolean(selBar?.milestone)}
+          onChange={(e) => selBar && mutate("切换里程碑", (p) => patchTask(p, selBar.id, { milestone: e.target.checked }))}
+        >
+          里程碑
+        </Checkbox>
+        <span style={{ width: 1, height: 18, background: "#eeeeee" }} />
+        <Popover content={workDayEditor} title="哪些天算工作日" trigger="click">
+          <Button size="small">工作日</Button>
+        </Popover>
+        <InputNumber
+          size="small"
+          min={1}
+          max={31}
+          style={{ width: 70 }}
+          value={opt.majorTick}
+          onChange={(v) => typeof v === "number" && v > 0 && patchPage((p) => ({ ...p, gantt: { ...opt, majorTick: v } }))}
+          title="主刻度（天）"
+        />
+        <InputNumber
+          size="small"
+          min={10}
+          max={200}
+          step={10}
+          style={{ width: 84 }}
+          value={opt.unitWidth}
+          onChange={(v) => typeof v === "number" && v >= 10 && patchPage((p) => ({ ...p, gantt: { ...opt, unitWidth: v } }))}
+          title="列宽（像素/天）"
+        />
       </div>
 
       <div style={{ padding: "4px 12px", fontSize: 12, color: "#8c8c8c", borderBottom: "1px solid #f5f5f5" }}>
-        拖动时间条改开始时间，拖右端改工期；概要条是子任务的包络，不可拖。开始时间与工期写回主题的
-        <code> extras.task</code>，看板与任务表看到的是同一份数据。
+        拖动时间条改开始时间，拖右端改工期；右键时间条建立前置（完工→开工），连线画在条底下。概要条是子任务的包络，不可拖。
+        开始时间与工期写回主题的 <code> extras.task</code>，看板与甘特看到的是同一份数据。
       </div>
 
       {rows.length === 0 ? (
@@ -300,6 +417,27 @@ export function GanttView({ page }: GanttViewProps) {
                 <div style={{ position: "absolute", left: px(todayOffset), top: 0, bottom: 0, width: 2, background: "#f5222d" }} />
               ) : null}
             </div>
+
+            {/* 依赖连线：画在条底下、底纹之上。只画两行都可见的前置。 */}
+            <svg
+              style={{
+                position: "absolute",
+                left: LEFT_W,
+                top: HEAD_H,
+                width: ticks.total,
+                height: rows.length * ROW_H,
+                pointerEvents: "none",
+                zIndex: 2,
+                overflow: "visible",
+              }}
+            >
+              {connectors.map((c, i) => (
+                <g key={i}>
+                  <path d={c.d} fill="none" stroke="#8c8c8c" strokeWidth="1.2" />
+                  <path d={c.arrow} fill="#8c8c8c" />
+                </g>
+              ))}
+            </svg>
 
             {rows.map((bar) => {
               // 拖动中用 ghost 的实时值画条，松手才落库 —— 所见即所拖，但撤销栈只有一条记录。
@@ -362,36 +500,43 @@ export function GanttView({ page }: GanttViewProps) {
                         }}
                       />
                     ) : (
-                      <Tooltip title={bar.isSummary ? "概要条：由子任务包络出来，不可拖" : `${bar.name} ${bar.lengthDays} 天`}>
-                        <div
-                          style={{
-                            position: "absolute",
-                            left: px(offsetDays),
-                            top: bar.isSummary ? 6 : 8,
-                            width: Math.max(6, lengthDays * unit),
-                            height: bar.isSummary ? 6 : ROW_H - 16,
-                            borderRadius: bar.isSummary ? 1 : 4,
-                            background: bar.isSummary ? "#8c8c8c" : "#5b8ff9",
-                            cursor: bar.isSummary ? "default" : "grab",
-                            overflow: "hidden",
-                            boxShadow: ghost?.id === bar.id ? "0 0 0 2px rgba(91,143,249,.35)" : undefined,
-                          }}
-                          onMouseDown={(e) => onBarDown(e, bar, "move")}
-                        >
-                          {/* 已完成部分：进度写在 extras.task.progress */}
-                          <div style={{ position: "absolute", inset: 0, width: `${Math.min(100, bar.progress)}%`, background: "rgba(0,0,0,.22)" }} />
-                          {!bar.isSummary ? (
-                            <span style={{ position: "absolute", right: 4, top: 0, fontSize: 10, lineHeight: `${ROW_H - 16}px`, color: "#ffffff" }}>
-                              {Math.round(lengthDays * 100) / 100}d
-                            </span>
-                          ) : null}
-                          {!bar.isSummary ? (
-                            <span
-                              onMouseDown={(e) => onBarDown(e, bar, "resize")}
-                              style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 7, cursor: "col-resize", background: "rgba(255,255,255,.45)" }}
-                            />
-                          ) : null}
-                        </div>
+                      <Tooltip
+                        title={
+                          (bar.isSummary ? "概要条：由子任务包络出来，不可拖" : `${bar.name} ${bar.lengthDays} 天`) +
+                          (bar.deps.length ? ` · 前置 ${bar.deps.length} 项（右键条上管理）` : "")
+                        }
+                      >
+                        <Dropdown menu={barMenu(bar)} trigger={["contextMenu"]}>
+                          <div
+                            style={{
+                              position: "absolute",
+                              left: px(offsetDays),
+                              top: bar.isSummary ? 6 : 8,
+                              width: Math.max(6, lengthDays * unit),
+                              height: bar.isSummary ? 6 : ROW_H - 16,
+                              borderRadius: bar.isSummary ? 1 : 4,
+                              background: bar.isSummary ? "#8c8c8c" : "#5b8ff9",
+                              cursor: bar.isSummary ? "default" : "grab",
+                              overflow: "hidden",
+                              boxShadow: ghost?.id === bar.id ? "0 0 0 2px rgba(91,143,249,.35)" : undefined,
+                            }}
+                            onMouseDown={(e) => onBarDown(e, bar, "move")}
+                          >
+                            {/* 已完成部分：进度写在 extras.task.progress */}
+                            <div style={{ position: "absolute", inset: 0, width: `${Math.min(100, bar.progress)}%`, background: "rgba(0,0,0,.22)" }} />
+                            {!bar.isSummary ? (
+                              <span style={{ position: "absolute", right: 4, top: 0, fontSize: 10, lineHeight: `${ROW_H - 16}px`, color: "#ffffff" }}>
+                                {Math.round(lengthDays * 100) / 100}d
+                              </span>
+                            ) : null}
+                            {!bar.isSummary ? (
+                              <span
+                                onMouseDown={(e) => onBarDown(e, bar, "resize")}
+                                style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 7, cursor: "col-resize", background: "rgba(255,255,255,.45)" }}
+                              />
+                            ) : null}
+                          </div>
+                        </Dropdown>
                       </Tooltip>
                     )}
                   </div>

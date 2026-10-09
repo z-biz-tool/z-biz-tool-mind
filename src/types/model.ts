@@ -183,6 +183,8 @@ export interface TaskData {
   status: TaskStatus;
   tags: string[];
   milestone?: boolean;
+  /** 前置任务（完工→开工）：甘特连线与排期约束的数据面。存形状 id。 */
+  deps?: string[];
 }
 
 export interface ShapeExtras {

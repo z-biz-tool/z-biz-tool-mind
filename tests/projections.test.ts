@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { createPage, newGanttOption } from "../src/model/factory.ts";
 import { insertChild, setCollapsed, setFloating, updateExtras, updateText } from "../src/engine/tree.ts";
 import {
+  depCreatesCycle,
   filterCards,
   ganttSchedule,
   ganttTicks,
@@ -277,6 +278,53 @@ const barsOf = (p: Page, g: GanttOption) => ganttSchedule(p, g);
   eq("筛选：标签精确一道", filterCards(cards, { tag: "红" }).map((c) => c.id), [c1]);
   eq("筛选：关键字与大小写", filterCards(cards, { text: "a" }).map((c) => c.id), [c1]);
   eq("筛选：无命中给空数组", [filterCards(cards, { text: "不存在" }).length, filterCards(cards, { tag: "紫" }).length], [0, 0]);
+}
+
+// ---------------------------------------------------------------- 甘特依赖（完工→开工）与成环守卫（§3.9）
+{
+  let p = createPage("甘特依赖");
+  const mk = (parent: string, text: string, extras?: ShapeExtras) => {
+    const r = insertChild(p, parent, text);
+    p = r.page;
+    if (extras) p = updateExtras(p, r.id, extras);
+    return r.id;
+  };
+  const a = mk(p.rootId, "设计", { task: T({ start: MON, duration: 3 }) });
+  const b = mk(p.rootId, "开发", { task: T({ start: MON, duration: 2, deps: [] }) });
+  // B 显式开工比 A 收工早：依赖把它顶到 A 之后（FS：完工才开工）
+  const b2 = mk(p.rootId, "测试", { task: T({ start: MON, duration: 1 }) });
+  p = updateExtras(p, b, { task: T({ start: MON, duration: 2, deps: [a] }) });
+  let bars = ganttSchedule(p, gantt);
+  const of = (id: string) => bars.find((x) => x.id === id);
+  eq("前置收工前不许开工", [of(b)?.offsetDays, of(b)?.lengthDays], [3, 2]);
+  eq("没依赖的原样保留", [of(a)?.offsetDays, of(b2)?.offsetDays], [0, 0]);
+  // 链式：设计→开发→上线，两轮收敛
+  const c = mk(p.rootId, "上线", { task: T({ start: MON, duration: 1 }) });
+  p = updateExtras(p, c, { task: T({ start: MON, duration: 1, deps: [b] }) });
+  bars = ganttSchedule(p, gantt);
+  eq("链式依赖逐级推", [of(b)?.offsetDays, of(c)?.offsetDays], [3, 5]);
+  // 环：A 依赖 C、C 又依赖 B、B 依赖 A —— 迭代封顶兜住，不挂死、不无限推
+  p = updateExtras(p, a, { task: T({ start: MON, duration: 3, deps: [c] }) });
+  bars = ganttSchedule(p, gantt);
+  ok("成环也返回（迭代封顶）", bars.length === 4, `bars=${bars.length}`);
+  ok("环判据：直接回边", depCreatesCycle(p, b, a), "");
+  ok("环判据：间接回边（C 的链走得到 B）", depCreatesCycle(p, b, c), "");
+  ok("环判据：无关两任务不是环", !depCreatesCycle(p, a, b2), "");
+  ok("环判据：自己依赖自己", depCreatesCycle(p, a, a), "");
+  // 概要条包络：给"设计"挂个子任务，依赖把子任务推走后父条要罩住
+  const s1 = mk(a, "调研", { task: T({ start: MON, duration: 1, deps: [c] }) });
+  bars = ganttSchedule(p, gantt);
+  const parent = of(a);
+  const kidBar = of(s1);
+  ok(
+    "概要条罩住被依赖推走的子条",
+    parent !== undefined &&
+      kidBar !== undefined &&
+      parent.offsetDays <= kidBar.offsetDays &&
+      parent.offsetDays + parent.lengthDays >= kidBar.offsetDays + kidBar.lengthDays,
+    `父=[${parent?.offsetDays},${(parent?.offsetDays ?? 0) + (parent?.lengthDays ?? 0)}] 子=[${kidBar?.offsetDays},${(kidBar?.offsetDays ?? 0) + (kidBar?.lengthDays ?? 0)}]`
+  );
+  eq("bar 带上 deps 供连线画", of(b)?.deps, [a]);
 }
 
 done();
