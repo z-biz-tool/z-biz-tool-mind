@@ -537,6 +537,7 @@ function add(parentId: string, text: string): string {
     "radial",
     "sunburst",
     "circlePacking",
+    "bubbleMap",
     "logicClockwise",
     "logicCounterclockwise",
   ];
@@ -586,7 +587,7 @@ function add(parentId: string, text: string): string {
     y > b.y - b.h / 2 + 0.5 &&
     y < b.y + b.h / 2 - 0.5;
 
-  ok("版式码表至少 32 码（蓝本 §3.3 的族与变体）", CODES.length >= 32, CODES.join(","));
+  ok("版式码表至少 33 码（蓝本 §3.3 的族与变体）", CODES.length >= 33, CODES.join(","));
   for (const code of CODES) {
     const L = computeLayout({ ...cur, layout: { ...cur.layout, code } });
     eq(`${code}：每个主题都算出盒子`, ids.filter((id) => !L.boxes[id]).length, 0);
@@ -983,6 +984,47 @@ function add(parentId: string, text: string): string {
       Math.abs(Math.hypot(pack.at(A).x, pack.at(A).y) - Math.hypot(pack.at(B).x, pack.at(B).y)) < 1,
       ""
     );
+    // 气泡图（03 §1.2 放射族）：主题画成圆气泡。直径取文字包围盒的对角线（内切圆装不下多行字），
+    // 半径沿链按"两泡半径之和 + 间距"累加（不像放射图那样一层一个固定半径）。
+    const bub = box("bubbleMap");
+    const r0 = bub.at(root());
+    const dist = (id: string) => Math.hypot(bub.at(id).x - r0.x, bub.at(id).y - r0.y);
+    const half = (id: string) => bub.at(id).w / 2;
+    eq("气泡图：每个盒子钉成正方形（圆角拉满才是圆）", ids.filter((id) => bub.at(id).w !== bub.at(id).h), []);
+    const plain = box("radial");
+    eq(
+      "气泡图：直径 = 文字包围盒的对角线",
+      ids.filter(
+        (id) => Math.abs(bub.at(id).w - Math.round(Math.hypot(plain.at(id).w, plain.at(id).h))) > 1
+      ),
+      []
+    );
+    // 圆与圆不相交比方框互不压框更严：上面那条全码检测过了这里还要按半径再判一次
+    const touching: string[] = [];
+    for (let i = 0; i < ids.length; i += 1)
+      for (let j = i + 1; j < ids.length; j += 1) {
+        const a = bub.at(ids[i]);
+        const b = bub.at(ids[j]);
+        if (Math.hypot(a.x - b.x, a.y - b.y) < (a.w + b.w) / 2 - 0.5)
+          touching.push(`${a.lines.join("")}×${b.lines.join("")}`);
+      }
+    eq("气泡图：气泡两两不相交（圆判据）", touching, []);
+    const step = (id: string) => dist(id) - dist(bub.at(id).parentId!);
+    ok(
+      "气泡图：每一跳的半径增量 = 两泡半径 + 同一个间距（不是一层一个固定半径）",
+      Math.abs(step(A1) - half(A) - half(A1) - (step(A11) - half(A1) - half(A11))) <= 2,
+      `${step(A1)} / ${step(A11)}`
+    );
+    ok("气泡图：子气泡一定比父气泡离中心远", dist(A11) > dist(A1) && dist(A) > dist(root()), "");
+    // 圆角只改绘制层的一份 paint，画布与 SVG / PDF / 打印读同一个值；别的版式不许被带跑
+    const bp = paintPage({ ...cur, layout: { ...cur.layout, code: "bubbleMap" } });
+    eq(
+      "气泡图：paint 层圆角 = 半边长",
+      ids.filter((id) => bp.boxes.find((b) => b.id === id)!.rounding !== bp.boxes.find((b) => b.id === id)!.w / 2),
+      []
+    );
+    const rp = paintPage({ ...cur, layout: { ...cur.layout, code: "radial" } });
+    eq("别的版式仍用样式圆角", rp.boxes.find((b) => b.id === A)!.rounding, DEFAULTS.rounding);
     // 顺时针 / 逆时针：与放射图共用同一份半径表，差别全在"从 12 点起步"和绕向
     const cw = box("logicClockwise");
     const ccw = box("logicCounterclockwise");
@@ -1071,6 +1113,60 @@ function add(parentId: string, text: string): string {
     const fr = box("free");
     eq("自由布局：主题位置原样不动", fr.at(A).x, cur.shapes[A].transform.x);
   }
+}
+
+// ------------------------------------------------ 气泡图的角区间按"子树直径之和"加权（等分角度就挤）
+{
+  cur = createPage("气泡权重");
+  const big = add(root(), "很大的那一枝");
+  for (let i = 0; i < 8; i += 1) add(big, `第 ${i} 个子主题的名字挺长`);
+  const s1 = add(root(), "小枝一");
+  add(s1, "一个孩子");
+  const s2 = add(root(), "小枝二");
+  add(s2, "一个孩子");
+  const L = computeLayout({ ...cur, layout: { ...cur.layout, code: "bubbleMap" } });
+  const ids = Object.keys(L.boxes);
+  const c0 = L.boxes[root()];
+  const ang = (id: string) => Math.atan2(L.boxes[id].y - c0.y, L.boxes[id].x - c0.x);
+  const below = (id: string): string[] => {
+    const kids = (cur.shapes[id].childIds ?? []).filter((k) => L.boxes[k]);
+    return kids.flatMap((k) => [k, ...below(k)]);
+  };
+  /** 整枝占多大一段弧：枝内每个主题相对本枝中位角的最大偏角（跨 ±π 要先绕回来）。 */
+  const spreadOf = (id: string) => {
+    const mid = ang(id);
+    const rel = (a: number) => {
+      let d = a - mid;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      return Math.abs(d);
+    };
+    return Math.max(...[id, ...below(id)].map((k) => rel(ang(k))));
+  };
+  const bigArc = spreadOf(big);
+  const smallArc = spreadOf(s1);
+  ok(
+    "气泡图：大枝占的弧比小枝长（角区间按子树直径加权，不是按分支个数等分）",
+    bigArc > smallArc * 2,
+    `大枝 ${bigArc.toFixed(3)} rad / 小枝 ${smallArc.toFixed(3)} rad`
+  );
+  // 这条才是"按体量分"与"按个数等分"的分水岭：等分时大枝只有 1/3 的圈，
+  // 8 颗孩子泡挤不下就把整圈往外推，同一份图样胀到实测 1056×1230（这里是 776×987）。
+  const bb = L.bounds;
+  ok(
+    "气泡图：大枝拿宽弧，整张图才收得住（等分角度会胀成 1056×1230）",
+    bb.maxX - bb.minX <= 900 && bb.maxY - bb.minY <= 1100,
+    `${bb.maxX - bb.minX} × ${bb.maxY - bb.minY}`
+  );
+  const touch: string[] = [];
+  for (let i = 0; i < ids.length; i += 1)
+    for (let j = i + 1; j < ids.length; j += 1) {
+      const a = L.boxes[ids[i]];
+      const b = L.boxes[ids[j]];
+      if (Math.hypot(a.x - b.x, a.y - b.y) < (a.w + b.w) / 2 - 0.5)
+        touch.push(`${a.lines.join("")}×${b.lines.join("")}`);
+    }
+  eq("气泡图：11 颗气泡挤在一圈也谁都不压谁", touch, []);
 }
 
 // ---------------------------------------------------------------- 文本测量原语

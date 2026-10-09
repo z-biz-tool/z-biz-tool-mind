@@ -108,7 +108,9 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
       fill: r.fill,
       line: r.line,
       lineWidth: r.lineWidth,
-      rounding: r.rounding,
+      // 气泡图：圆角拉满就是圆（主树盒子在布局里已按包围盒对角线钉成正方形，
+      // 浮动主题仍走自己的右向树，那份就是胶囊）。画布与 SVG / PDF / 打印读这一份。
+      rounding: page.layout.code === "bubbleMap" ? Math.min(b.w, b.h) / 2 : r.rounding,
       textColor: r.font.color ?? contrastText(r.fill),
       fontSize: r.font.size ?? DEFAULTS.fontSize,
       fontFamily: r.font.family ?? palette.fontFamily,

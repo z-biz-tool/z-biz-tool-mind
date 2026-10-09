@@ -1031,6 +1031,65 @@ function layoutRingFan(root: TreeNode, spacing: number, a0: number, a1: number):
   put(root, a0, a1);
 }
 
+/**
+ * 气泡图（03 §1.2 放射族缺的那一码）：每个主题是一颗**圆气泡**，圆要装得下整块文字，
+ * 所以直径取文字包围盒的**对角线** —— 取内切圆不行，多行文字角落那几行会戳到圆外。
+ * 排布仍是"绕着父气泡一圈"，但和放射图 / 圆形图分道三处（那句"包围盒策略不同"就是这三条）：
+ * ① 半径按**两颗气泡的半径之和 + 间距**沿链累加，不是按层级给一个固定半径，大泡会把小泡推得更远；
+ * ② 每颗气泡**至少**拿到"在这一圈上不会被邻泡压住"的那段弧（弧长 = 直径 + 间距），
+ *    剩下的角区间再按**子树气泡直径之和**加权。只按体量分会出事：一颗大泡的枝把弧吃光，
+ *    挨着的两颗小泡就叠到一起 —— 11 主题的压力图样抓出来的（tests 的"气泡权重"那段）。
+ * ③ 最小弧加起来已经超过可用角区间时，把这一圈**整体往外推**，而不是让气泡重叠。
+ * 每个子树锁死在自己那段绝对角区间里（从中心主题量），所以枝与枝不会互相越界。
+ */
+function layoutBubble(root: TreeNode, spacing: number): void {
+  root.x = 0;
+  root.y = 0;
+  // 进这里之前盒子已经被 squareToBubble 钉成正方形，边长就是气泡直径
+  const rad = (n: TreeNode) => n.w / 2;
+  const bulk = (n: TreeNode): number => n.children.reduce((s, c) => s + bulk(c), 0) + n.w;
+  const ring = new Map<TreeNode, number>();
+  /** 邻泡不压住所需的最小圆心角：弧长要盖住直径，再加一份间距。 */
+  const needOf = (c: TreeNode, R: number) => (2 * rad(c) + spacing) / R;
+  const put = (node: TreeNode, lo: number, hi: number) => {
+    const kids = node.children;
+    if (!kids.length) return;
+    const span = hi - lo;
+    const baseR = (ring.get(node) ?? 0) + rad(node) + spacing;
+    // 这一圈要往外推多少才装得下所有最小弧：need 随半径单调下降，逐步放大几次就收敛
+    let push = 0;
+    for (let i = 0; i < 24; i += 1) {
+      const total = kids.reduce((s, c) => s + needOf(c, baseR + rad(c) + push), 0);
+      if (total <= span) break;
+      push += (baseR + push) * 0.25;
+    }
+    const needs = kids.map((c) => needOf(c, baseR + rad(c) + push));
+    const weights = kids.map(bulk);
+    const sum = weights.reduce((s, w) => s + w, 0) || 1;
+    const rest = Math.max(0, span - needs.reduce((s, n) => s + n, 0));
+    let a = lo;
+    kids.forEach((c, i) => {
+      const sub = needs[i] + (rest * weights[i]) / sum;
+      const mid = a + sub / 2;
+      const r = baseR + rad(c) + push;
+      ring.set(c, r);
+      c.x = Math.cos(mid) * r;
+      c.y = Math.sin(mid) * r;
+      put(c, a, a + sub);
+      a += sub;
+    });
+  };
+  ring.set(root, 0);
+  put(root, -Math.PI / 2, Math.PI * 1.5);
+}
+
+/** 气泡图先把盒子钉成正方形：边长 = 文字包围盒的对角线，圆才装得下字。 */
+function squareToBubble(n: TreeNode): void {
+  const side = Math.round(Math.hypot(n.w, n.h));
+  n.w = side;
+  n.h = side;
+}
+
 export interface LayoutInput {
   /** "显示层级数"：超过这个层级的节点不布局（1..9）。 */
   displayLevel?: number;
@@ -1110,6 +1169,8 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
   const s = page.layout;
   const hs = s.hSpacing || DEFAULTS.hSpacing;
   const vs = s.vSpacing || DEFAULTS.vSpacing;
+  // 气泡图的盒子是圆而不是文字框：先按包围盒对角线钉成正方形，布局与绘制拿的是同一份尺寸
+  if (s.code === "bubbleMap") walk([root], squareToBubble);
 
   if (page.layout.code !== "free") {
     // 主分支先定侧：双向平衡按 "右左交替" 分配，其余布局由各自的 spine 决定。
@@ -1182,6 +1243,10 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
       case "radial":
       case "circlePacking": {
         layoutCircle(root, vs);
+        break;
+      }
+      case "bubbleMap": {
+        layoutBubble(root, vs);
         break;
       }
       case "logicClockwise": {

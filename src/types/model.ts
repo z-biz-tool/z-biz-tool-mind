@@ -261,6 +261,7 @@ export type LayoutCode =
   | "braceRight" // 括号图（右）
   | "matrix" // 矩阵图
   | "circlePacking" // 圆形图
+  | "bubbleMap" // 气泡图
   | "timelineVertical" // 时间轴（向下）
   | "timelineUp" // 时间轴（向上）
   | "timelineHorizontal" // 时间轴（向右）
