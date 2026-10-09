@@ -44,9 +44,11 @@ import {
   promote,
   removeOverlay,
   removeShape,
+  resetBranch,
   setCollapsed,
   setFloating,
   setRelationshipText,
+  shiftBranch,
   swapSibling,
   siblingIndex,
   relationshipBetween,
@@ -78,7 +80,8 @@ interface Rect {
 
 /**
  * 拖拽落点：mode=child 表示"成为它的子主题"，mode=gap 表示"插在两主题之间"，
- * mode=move 表示"把整枝浮动主题搬到这儿"（只有浮动根能落到空白处，x/y 是新盒子左上角）。
+ * mode=move 表示"搬到这儿"（x/y 是新盒子左上角）—— 能落到空白处的只有浮动根、
+ * 自由布局里的主题，和智慧版式里被整枝拖开的二级主题（后两者见 §3.3）。
  */
 interface DropTarget extends Rect {
   mode: "child" | "gap" | "move";
@@ -504,11 +507,16 @@ export function MindCanvas({ page }: MindCanvasProps) {
     const start = toWorld(from.x, from.y);
     const dragged = live.current.page.shapes[id];
     const freeLayout = live.current.page.layout.code === "free";
-    // 位置归用户的只有两种：自由布局（整张图都不重算），和浮动根（P-2 的例外）。
-    // 落在空白处就是搬到那儿，落在别的主题上才走"挂上去"。
-    // 其余版式的位置由布局引擎算出来，主树上的主题拖了也白拖。
+    // 位置归用户的有三种：自由布局（整张图都不重算）、浮动根（P-2 的例外），
+    // 以及智慧版式里的二级主题 —— 后者挪的是"整枝"，落点在 Shape.offset 上而不是 transform（§3.3）。
+    // 落在别的主题上仍然走"挂上去"；三级往上的主题拖了也白拖，枝内结构归引擎。
+    const branchDrag =
+      !freeLayout &&
+      Boolean(dragged) &&
+      !dragged?.floating &&
+      dragged?.parentId === live.current.page.rootId;
     const ownBox =
-      dragged && (freeLayout || (dragged.floating && !dragged.parentId))
+      dragged && (freeLayout || (dragged.floating && !dragged.parentId) || branchDrag)
         ? live.current.paint.boxes.find((b) => b.id === id)
         : undefined;
     let moving = false;
@@ -538,6 +546,13 @@ export function MindCanvas({ page }: MindCanvasProps) {
         const t: DropTarget | null = target;
         if (!t) return;
         if (t.mode === "move") {
+          if (branchDrag && ownBox) {
+            // 拖的是整枝：位移记在二级主题上，枝内还是引擎的相对结构（§3.3）。
+            const dx = Math.round(t.x - ownBox.x);
+            const dy = Math.round(t.y - ownBox.y);
+            if (dx || dy) useDoc.getState().mutate("移动分支", (p) => shiftBranch(p, id, dx, dy));
+            return;
+          }
           // 落点盒子是左上角，transform 存的是中心（布局与 .emmx 的 CX/CY 同一个约定）；
           // 不换算的话每拖一次就往左上偏半个盒子。取整：亚像素坐标存进文件只是噪声。
           const x = Math.round(t.x + t.w / 2);
@@ -866,6 +881,14 @@ export function MindCanvas({ page }: MindCanvasProps) {
             label: only.extras.collapsed ? "展开" : "折叠",
             tip: "折叠 / 展开这条分支（F4）",
             run: () => toggleFold(id),
+          });
+        // 只在"这枝确实被拖开过"时出现：没拖过的主题给一个复位，是纯粹的噪声。
+        if (only.offset && only.parentId === page.rootId)
+          out.push({
+            k: "branch",
+            label: "复位分支",
+            tip: "把这枝交还给布局引擎，撤掉拖出来的位移",
+            run: () => useDoc.getState().mutate("复位分支", (p) => resetBranch(p, id)),
           });
         if (only.parentId || only.floating)
           out.push({

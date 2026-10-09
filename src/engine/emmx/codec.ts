@@ -467,6 +467,9 @@ function parseShape(n: XmlNode, rels: Record<string, string>, warnings: string[]
   if (labels) extras.labels = labels.split(";").filter(Boolean);
   const layoutNode = find(n, "Layout");
   if (vnode(layoutNode, "LayoutDirection", "") === "0") extras.collapsed = true;
+  // 分支自由布局的位移（§3.3）。这一对读作 [dx,dy]；长度不够就当成"没拖过"，
+  // 不猜半个值 —— 脏数据在这里的正确答案是回到引擎位置，而不是把分支挪到原点。
+  const branchOffset = splitNumbers(attr(find(n, "BranchOffset"), "V", ""));
   // 外框/概要与标注框都是"分号分隔的 id 列表写在 V 上"：找错属性这两个字段就永远是空的。
   const covered = vnode(find(n, "BoundaryData"), "Shapes", "");
   if (covered) extras.covered = covered.split(";").filter(Boolean);
@@ -488,6 +491,10 @@ function parseShape(n: XmlNode, rels: Record<string, string>, warnings: string[]
     style,
     extras,
     floating: type === "Floating" || Boolean(vnode(layoutNode, "FreePostion", "")),
+    offset:
+      branchOffset.length === 2 && (branchOffset[0] || branchOffset[1])
+        ? { x: branchOffset[0], y: branchOffset[1] }
+        : undefined,
   };
 }
 
@@ -727,6 +734,9 @@ function sigOfShape(s: Shape): string {
     JSON.stringify(s.style),
     JSON.stringify(s.extras),
     s.floating ? "1" : "0",
+    // 分支位移（§3.3）必须进指纹：拖一整枝只改这一个字段，漏了它就会被判"没动过"，
+    // 于是原节点整份原样带回，用户拖开的枝第二次保存就悄悄回到引擎位置了。
+    s.offset ? `${s.offset.x};${s.offset.y}` : "",
   ].join("\u0001");
 }
 
@@ -1051,6 +1061,9 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
     n.children.push(el("BoundaryData", {}, [vNode("Shapes", s.extras.covered.join(";"))]));
   if (s.extras.calloutIds?.length)
     n.children.push(el("Callout", { V: s.extras.calloutIds.join(";") }));
+  // 分支自由布局（doc/复刻方案/00 §3.3）的位移。亿图没有这个字段，节点名是我们自造的，
+  // 它读不懂只会忽略 —— 这条只保证"在我们这儿拖开的枝，存了再开还在"。
+  if (s.offset) n.children.push(el("BranchOffset", { V: `${s.offset.x};${s.offset.y}` }));
   carryUntouched(s, n, from);
   return n;
 }
@@ -1067,6 +1080,7 @@ const SHAPE_OWN_TAGS = new Set([
   "Attachments",
   "BoundaryData",
   "Callout",
+  "BranchOffset",
 ]);
 
 /**

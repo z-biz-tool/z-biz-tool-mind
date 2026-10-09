@@ -224,6 +224,14 @@ export interface Shape {
   extras: ShapeExtras;
   /** 浮动主题的位置是用户拖出来的（其它主题的位置由布局引擎写回，见 P-2）。 */
   floating?: boolean;
+  /**
+   * 分支自由布局的位移（doc/复刻方案/00 §3.3「允许自由移动二级主题分支线」）。
+   *
+   * 只在智慧版式里生效，且只写在二级主题（中心主题的直系孩子）上：枝内结构仍由引擎排，
+   * 算完位置再把整枝平移这么多。它不是"绝对坐标的另一种写法" ——
+   * 自由布局用的是 transform，这一份是叠加在布局结果上的意图，换版式仍然带着走。
+   */
+  offset?: { x: number; y: number };
 }
 
 export type LayoutCode =

@@ -16,6 +16,7 @@ export const MENU_ACTION_GROUPS: readonly { k: string; label: string }[] = [
   { k: "child", label: "插入子主题" },
   { k: "sibling", label: "插入同级主题" },
   { k: "fold", label: "折叠 / 展开分支" },
+  { k: "branch", label: "复位被拖开的分支" },
   { k: "del", label: "删除主题或标注" },
   { k: "note", label: "附注（备注与超链接）" },
   { k: "edit", label: "改名 / 改文字" },

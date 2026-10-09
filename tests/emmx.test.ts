@@ -14,6 +14,8 @@
  *    都不能跟着一起没了。
  * 8) 保存会改 ModifiedDate，"复用原始 document.xml 节点"的快速通道随之失效；重新生成的那一份
  *    必须还是亿图的写法（Version/DocGuid 在 <Document> 上，属性是 <X V/> 子节点）。
+ * 9) 分支自由布局（00 §3.3）的位移只存在我们自造的 <BranchOffset> 上：它必须进语义指纹，
+ *    否则"拖一整枝"这种只改一个字段的编辑会被判成没动过，原节点原样带回，位移静默丢失。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,7 +24,13 @@ import { readZip, writeZip, decodeBytes } from "../src/engine/emmx/zip.ts";
 import { nodeEquals, parseXml, findAll, attr, numVnode, vnode } from "../src/engine/emmx/xparse.ts";
 import type { XmlNode } from "../src/engine/emmx/xparse.ts";
 import { modelEquals, parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
-import { insertChild, updateExtras, updateStyle, updateText } from "../src/engine/tree.ts";
+import {
+  insertChild,
+  shiftBranch,
+  updateExtras,
+  updateStyle,
+  updateText,
+} from "../src/engine/tree.ts";
 import { createDocument } from "../src/model/factory.ts";
 import { applyPalette } from "../src/engine/style.ts";
 import { plainText } from "../src/types/model.ts";
@@ -115,6 +123,42 @@ const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
     ""
   );
 
+  // --- 分支自由布局（00 §3.3）：亿图没有这个字段，节点名是我们自造的，
+  //     但"拖开的枝保存再开还在"是这一版唯一的验收口径。
+  const dragged = shiftBranch(colored, pinned, 120, -45);
+  const dbytes = await writeEmmx(withPage(dragged));
+  ok("位移按我们自己的节点写出去了", /<BranchOffset V="120;-45"/.test(await pageXml(dbytes)));
+  const dparsed = await parseEmmx(dbytes);
+  const dpage = dparsed.doc.pages[0];
+  eq("保存再开，位移还是那一份", dpage.shapes[pinned].offset, { x: 120, y: -45 });
+  eq(
+    "没被拖的枝不长这个节点",
+    Object.values(dpage.shapes)
+      .filter((s) => s.offset)
+      .map((s) => s.id),
+    [pinned]
+  );
+  ok(
+    "第二次保存不变质（往返幂等）",
+    modelEquals(dparsed.doc, (await parseEmmx(await writeEmmx(dparsed.doc))).doc)
+  );
+  ok(
+    "没位移的文档不会凭空长出一个节点",
+    !/<BranchOffset/.test(await pageXml(await writeEmmx(withPage(page))))
+  );
+  // 语义指纹那条复用通道：从文件读回来的页面"只改位移"必须被认成改过 ——
+  // 漏了这一步，原节点整份原样带回，拖开的枝第二次保存就静默回到引擎位置。
+  const rawPage = shiftBranch(rt0.doc.pages[0], pinned, -80, 20);
+  const rawDoc = {
+    ...rt0.doc,
+    pages: rt0.doc.pages.map((x) => (x.id === rawPage.id ? rawPage : x)),
+  };
+  eq(
+    "复用通道里只改位移也重写了这个节点",
+    (await parseEmmx(await writeEmmx(rawDoc))).doc.pages[0].shapes[pinned].offset,
+    { x: -80, y: 20 }
+  );
+
   // --- 批注 / 超链接 / 标签
   const noted = updateExtras(
     updateExtras(updateExtras(colored, kids[0], { note: "批注一" }), kids[1], {
@@ -126,7 +170,11 @@ const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
   const nrt = (await parseEmmx(await writeEmmx(withPage(noted)))).doc.pages[0];
   eq("批注往返", nrt.shapes[kids[0]].extras.note, "批注一");
   eq("超链接往返", nrt.shapes[kids[1]].extras.hyperlink?.target, "https://example.com/a?b=1");
-  eq("标签往返（亿图的尾分号不该多出空项）", (nrt.shapes[kids[2]].extras.labels ?? []).join(";"), "原型;草稿");
+  eq(
+    "标签往返（亿图的尾分号不该多出空项）",
+    (nrt.shapes[kids[2]].extras.labels ?? []).join(";"),
+    "原型;草稿"
+  );
   const dropped = updateExtras(nrt, kids[0], { note: undefined });
   const droppedBack = (await parseEmmx(await writeEmmx(withPage(dropped)))).doc.pages[0];
   eq("界面里删掉的批注不再写回", droppedBack.shapes[kids[0]].extras.note, undefined);
@@ -183,7 +231,11 @@ const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
   );
 
   // --- 坏输入
-  await rejects("非 ZIP 报中文错误", parseEmmx(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])), "不是 ZIP 容器");
+  await rejects(
+    "非 ZIP 报中文错误",
+    parseEmmx(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])),
+    "不是 ZIP 容器"
+  );
   await rejects(
     "ZIP 里缺 page.xml 报错",
     writeZip([{ name: "document.xml", data: new Uint8Array([60, 63, 120]) }]).then(parseEmmx),

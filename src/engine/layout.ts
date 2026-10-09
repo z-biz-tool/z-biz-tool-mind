@@ -1042,6 +1042,38 @@ export interface LayoutInput {
   topicWidthMode?: "auto" | "fixed";
 }
 
+/**
+ * 分支自由布局（doc/复刻方案/00 §3.3「允许自由移动二级主题分支线」）：
+ * 二级主题被用户拖开之后，枝内还是由引擎排，算完位置再把整枝平移这份位移。
+ *
+ * 只有智慧版式需要这一步 —— 自由布局的坐标本身就是用户写的（§1.3-11），再叠一次就翻倍。
+ * 也只认中心主题的直系孩子：三级往上的位置属于枝内结构，那是引擎的活儿，
+ * 让用户拖出一堆互不相干的枝内偏移，换版式时就没法解释了。
+ *
+ * 加在 collect 之后、连线和主轴之前：那两步都读 boxes，整枝跟着走是免费的。
+ * 坐标此前已按整数落定，位移写入时也取整，所以盒心不会漂成小数。
+ */
+function applyBranchOffsets(page: Page, boxes: Record<string, NodeBox>): void {
+  const kids = new Map<string, string[]>();
+  for (const b of Object.values(boxes)) {
+    if (!b.parentId) continue;
+    const list = kids.get(b.parentId);
+    if (list) list.push(b.id);
+    else kids.set(b.parentId, [b.id]);
+  }
+  const shift = (id: string, dx: number, dy: number) => {
+    const b = boxes[id];
+    if (!b) return;
+    b.x += dx;
+    b.y += dy;
+    for (const c of kids.get(id) ?? []) shift(c, dx, dy);
+  };
+  for (const c of kids.get(page.rootId) ?? []) {
+    const o = page.shapes[c]?.offset;
+    if (o) shift(c, Math.round(o.x), Math.round(o.y));
+  }
+}
+
 export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult {
   const displayLevel = input.displayLevel ?? 9;
   const palette = input.palette ?? defaultPalette();
@@ -1207,6 +1239,7 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
     order.push(n.id);
   };
   walk([root], collect);
+  if (page.layout.code !== "free") applyBranchOffsets(page, boxes);
   // 浮动主题（P-2 的例外）：根位置是用户拖出来的，整枝子树往右下堆。
   // 层级判据与 buildTree 一致 —— 浮动根自己算第 0 层，displayLevel 管它下面还能看几层；
   // 必须递归到底：只铺一层子的话，孙主题在大纲/看板/甘特里数得到，画布和 SVG 里却没有盒子（P-1）。

@@ -588,6 +588,34 @@ export function updateTransform(page: Page, id: string, t: Partial<Shape["transf
 }
 
 /**
+ * 分支自由布局的写入侧（doc/复刻方案/00 §3.3）：把二级主题整枝拖开的量累加到 offset 上，
+ * 布局引擎在算完位置之后把这一枝整体平移（见 layout.ts 的 applyBranchOffsets）。
+ *
+ * 落回原处就删掉这个字段而不是留个 {x:0,y:0}：导出时"没偏移"和"偏移为零"写进文件是两件事，
+ * 前者不带节点，后者会一直跟着这份文档走。
+ */
+export function shiftBranch(page: Page, id: string, dx: number, dy: number): Page {
+  const s = page.shapes[id];
+  if (!s) return page;
+  const x = Math.round((s.offset?.x ?? 0) + dx);
+  const y = Math.round((s.offset?.y ?? 0) + dy);
+  if (!s.offset && !x && !y) return page;
+  const next: Shape = { ...s };
+  if (!x && !y) delete next.offset;
+  else next.offset = { x, y };
+  return patch(page, id, next);
+}
+
+/** 取消这一枝的自由摆放，交还给布局引擎。 */
+export function resetBranch(page: Page, id: string): Page {
+  const s = page.shapes[id];
+  if (!s?.offset) return page;
+  const next = { ...s };
+  delete next.offset;
+  return patch(page, id, next);
+}
+
+/**
  * 双向索引修复 + 去环 + 类型重算。
  * 从 .emmx 读回来的数据不能假设干净：Super/SubLevel 任一侧缺失都要能自愈，
  * 否则第二次保存会把 undefined 写回文件，把好数据永久改掉。

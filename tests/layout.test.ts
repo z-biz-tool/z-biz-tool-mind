@@ -21,6 +21,9 @@
  * 10) 自由布局是 P-2"位置是算出来的"那条规矩的完整例外（不再只有浮动根例外）：
  *    切进去要把屏幕上的位置钉进 transform，被折叠或"显示层级"挡在布局外的主题也得补一份，
  *    否则用户放开折叠就看到一整枝叠在中心主题上。
+ * 11) 分支自由布局（00 §3.3）是叠加在智慧版式结果上的一次整体平移，只对二级主题生效：
+ *    断言要按"整枝位移相同、别的枝与中心主题不动"来写，只比枝根那一个盒子内不能发现
+ *    "只挪了根、孙子留在原地"这种最像真确的错。
  */
 import { done, eq, near, ok } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
@@ -37,8 +40,10 @@ import type { NodeBox } from "../src/engine/layout.ts";
 import { defaultPalette, EDRAW_FONT_SIZES, styleFor } from "../src/engine/style.ts";
 import {
   insertChild,
+  resetBranch,
   setCollapsed,
   setFloating,
+  shiftBranch,
   updateStyle,
   updateText,
   updateTransform,
@@ -307,6 +312,109 @@ function add(parentId: string, text: string): string {
     Math.abs(pd.shapes[d1].transform.x) > 1 || Math.abs(pd.shapes[d1].transform.y) > 1,
     ""
   );
+}
+
+// ---------------------------------------------------------------- 分支自由布局：智慧版式里把一整枝拖开（00 §3.3）
+{
+  cur = createPage("分支自由");
+  const a = add(root(), "甲");
+  const a1 = add(a, "甲一");
+  const a11 = add(a1, "甲一一");
+  const b = add(root(), "乙");
+  const b1 = add(b, "乙一");
+  const moved = [a, a1, a11];
+  const still = [b, b1];
+  const base = computeLayout(cur);
+  const at = (L: typeof base, id: string) => [L.boxes[id].x, L.boxes[id].y];
+
+  eq("没拖过就是空写，page 都还是同一个", shiftBranch(cur, a, 0, 0) === cur, true);
+  let p = shiftBranch(cur, a, 40, -25);
+  eq("位移记在被拖的那一条二级主题上", p.shapes[a].offset, { x: 40, y: -25 });
+  const L = computeLayout(p);
+  eq(
+    "整枝一起走：根、子、孙的位移一模一样",
+    moved.map((id) => at(L, id).map((v, i) => v - at(base, id)[i])),
+    [
+      [40, -25],
+      [40, -25],
+      [40, -25],
+    ]
+  );
+  eq(
+    "别的枝和中心主题都留在引擎算出来的地方",
+    [...still, root()].map((id) => at(L, id)),
+    [...still, root()].map((id) => at(base, id))
+  );
+  eq(
+    "枝内相对结构没被压扁：子还是在父外侧同样的距离",
+    [L.boxes[a1].x - L.boxes[a].x, L.boxes[a11].x - L.boxes[a1].x],
+    [base.boxes[a1].x - base.boxes[a].x, base.boxes[a11].x - base.boxes[a1].x]
+  );
+
+  // 第二次拖是在屏幕上接着走，不是把上一次的距离当成新起点
+  p = shiftBranch(p, a, -10, 5);
+  eq("两次拖累加", p.shapes[a].offset, { x: 30, y: -20 });
+  p = shiftBranch(p, a, -30, 20);
+  eq("拖回原位就不算被拖过（不留一个 {0,0} 进文件）", "offset" in p.shapes[a], false);
+  eq(
+    "位置也确实回到了原来那一份",
+    moved.map((id) => at(computeLayout(p), id)),
+    moved.map((id) => at(base, id))
+  );
+
+  // 右键菜单的复位走另一条入口，行为要和"拖回原位"一致
+  p = resetBranch(shiftBranch(cur, b, 12, 34), b);
+  eq("复位摘掉字段", "offset" in p.shapes[b], false);
+  eq("复位后位置回到引擎那份", at(computeLayout(p), b1), at(base, b1));
+  eq("没拖过的主题复位是空写", resetBranch(cur, b) === cur, true);
+
+  // 三级往上的位移引擎不认：枝内结构归布局，不然换版式时没法解释一堆枝内偏移
+  const deep = shiftBranch(cur, a1, 100, 100);
+  eq(
+    "只有二级主题上的位移生效",
+    [a1, a11].map((id) => at(computeLayout(deep), id)),
+    [a1, a11].map((id) => at(base, id))
+  );
+
+  // 连线读的是同一份 boxes，整枝跟着走是免费的；不能顺手多画或少画一条
+  const wired = computeLayout(shiftBranch(cur, a, 60, 0));
+  eq("连线条数不变", wired.connectors.length, base.connectors.length);
+  ok(
+    "拖过的那一条连线形状变了（端点跟着盒子走）",
+    wired.connectors.find((c) => c.toId === a1)!.d !==
+      base.connectors.find((c) => c.toId === a1)!.d,
+    ""
+  );
+  eq(
+    "没拖的那一条一个字都不差",
+    wired.connectors.find((c) => c.toId === b1)!.d,
+    base.connectors.find((c) => c.toId === b1)!.d
+  );
+
+  // 主轴类版式：沿主轴拖远要把轴伸长，横拖不该让轴拐弯（轴身是穿过中心主题的那条直线）
+  const nums = (d: string) => (d.match(/-?\d+(\.\d+)?/g) ?? []).map(Number);
+  const tl = (page: typeof cur) =>
+    computeLayout({ ...page, layout: { ...page.layout, code: "timelineHorizontal" } });
+  const t0 = tl(cur);
+  const along = tl(shiftBranch(cur, b, 120, 0));
+  const cross = tl(shiftBranch(cur, b, 0, 90));
+  eq("沿主轴拖远，主轴末端跟着伸长", nums(along.axis!.d)[2] > nums(t0.axis!.d)[2], true);
+  eq("横拖不改主轴的纵向位置（轴还是原来那条直线）", nums(cross.axis!.d)[1], nums(t0.axis!.d)[1]);
+  eq("但主题自己确实离开了轴", cross.boxes[b].y !== t0.boxes[b].y, true);
+
+  // 切进自由布局要把"含位移的屏幕位置"当成用户坐标钉住，位移本身不能再加一次
+  const dragged = shiftBranch(cur, a, 50, 50);
+  const onScreen = computeLayout(dragged);
+  const baked = toFreeLayout(dragged);
+  eq(
+    "钉进 transform 的是拖过之后的屏幕位置",
+    [baked.shapes[a11].transform.x, baked.shapes[a11].transform.y],
+    [onScreen.boxes[a11].x, onScreen.boxes[a11].y]
+  );
+  eq("自由布局里不会再叠加一次位移", at(computeLayout(baked), a11), [
+    onScreen.boxes[a11].x,
+    onScreen.boxes[a11].y,
+  ]);
 }
 
 // ---------------------------------------------------------------- 全码几何回归（03 §1.3-1：过去 20 码只有 2 码有断言）

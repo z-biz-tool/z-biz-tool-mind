@@ -4,6 +4,7 @@
  * 浮动主题脱离主树、拖浮动主题改位置后布局要认、挂回主树时浮动标记必须一起摘下、
  * 浮动根虽然没有父也必须删得掉、
  * 自由布局里新建的主题要落在父主题外侧（位置在这一版归用户，留 (0,0) 就是叠在中心主题上），
+ * 分支自由布局（00 §3.3）的位移要累加、落回原位要摘干净，且自愈/改父/删除都不能顺手抹掉它，
  * 脏数据（parentId 指向不存在的节点）自愈但不能丢内容。
  */
 import { done, eq, ok } from "./_harness.ts";
@@ -23,8 +24,10 @@ import {
   normalize,
   promote,
   removeShape,
+  resetBranch,
   setCollapsed,
   setFloating,
+  shiftBranch,
   siblingIndex,
   swapSibling,
   toggleCollapsed,
@@ -237,6 +240,30 @@ eq("文本读回", plainText(updateText(p, A, "改过").shapes[A].text), "改过
     [fchild.page.shapes[fchild.id].transform.x, fchild.page.shapes[fchild.id].transform.y],
     [0, 0]
   );
+}
+
+// --- 分支自由布局的写入侧：位移记在二级主题上，落回原位就把字段摘掉
+{
+  const one = shiftBranch(p, A, 30, -20);
+  eq("记下的是这一枝的位移", one.shapes[A].offset, { x: 30, y: -20 });
+  eq("别处不受影响", one.shapes[B].offset, undefined);
+  const two = shiftBranch(one, A, 5, 5);
+  eq("再拖一次是在原位移上累加", two.shapes[A].offset, { x: 35, y: -15 });
+  eq("取整：亚像素位移不该进文件", shiftBranch(p, A, 2.4, -1.6).shapes[A].offset, { x: 2, y: -2 });
+  const back = shiftBranch(one, A, -30, 20);
+  eq("拖回原位不留 {0,0}", "offset" in back.shapes[A], false);
+  eq("复位走另一条入口，结果一样", "offset" in resetBranch(one, A), false);
+  eq("本来没拖过的主题复位是空写", resetBranch(p, A) === p, true);
+  eq("未知 id 的位移是空写", shiftBranch(p, "不存在的id", 10, 10) === p, true);
+  // 自愈与改父都不该顺手抹掉这份用户意图：normalize 重建每个 shape 都要带着走
+  const healed = normalize({ ...one, shapes: { ...one.shapes } });
+  eq("normalize 之后位移还在", healed.shapes[A].offset, { x: 30, y: -20 });
+  const movedDown = moveShape(one, A, B);
+  eq("换父亲不抹掉位移（回到根下时引擎会再认它）", movedDown.shapes[A].offset, {
+    x: 30,
+    y: -20,
+  });
+  eq("删掉这一枝就不再有这个主题（位移跟着走）", Boolean(removeShape(one, A).shapes[A]), false);
 }
 
 done();
