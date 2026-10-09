@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6C5CE7"/>
+      <stop offset="1" stop-color="#00B4D8"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7FF9E8" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#7FF9E8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="72" y="72" width="880" height="880" rx="232" fill="url(#bg)"/>
+
+  <!-- 连线 -->
+  <g stroke="#F2F7FA" stroke-width="28" stroke-linecap="round">
+    <path d="M512 512 L286 298"/>
+    <path d="M512 512 L754 322"/>
+    <path d="M512 512 L330 748"/>
+    <path d="M512 512 L742 716"/>
+  </g>
+
+  <!-- 中心节点 -->
+  <circle cx="512" cy="512" r="216" fill="url(#glow)"/>
+  <circle cx="512" cy="512" r="150" fill="#FFFFFF"/>
+  <circle cx="512" cy="512" r="82" fill="#34E8D2"/>
+
+  <!-- 分支节点 -->
+  <circle cx="286" cy="298" r="82" fill="#F2F7FA"/>
+  <circle cx="754" cy="322" r="94" fill="#F2F7FA"/>
+  <circle cx="330" cy="748" r="70" fill="#F2F7FA"/>
+  <circle cx="742" cy="716" r="78" fill="#FF6B6B"/>
+</svg>
