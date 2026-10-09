@@ -6,10 +6,10 @@
  * 它不改文档，所以只碰 useDoc 的选中态，一次 mutate 都没有。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, Empty, Tag, Tooltip } from "antd";
+import { Button, Empty, Input, Tag, Tooltip } from "antd";
 import { slideDeck } from "../engine/projections.ts";
 import { accentAt, defaultPalette } from "../engine/style.ts";
-import { branchIndex } from "../engine/tree.ts";
+import { branchIndex, updateExtras } from "../engine/tree.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import type { Page } from "../types/model.ts";
@@ -21,16 +21,22 @@ interface SlidesViewProps {
 const PALETTE = defaultPalette();
 
 export function SlidesView({ page }: SlidesViewProps) {
+  const mutate = useDoc((s) => s.mutate);
   const deck = useMemo(() => slideDeck(page), [page]);
   const select = useDoc((s) => s.select);
   const theme = useSettings((s) => s.settings.general.theme);
   const [ix, setIx] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const total = deck.length;
+  /** 放映态跳过隐藏页；编辑态照常全部列出 —— 隐藏的那页要能取消隐藏，藏起来就找不回了。 */
+  const playDeck = useMemo(() => deck.filter((s) => !s.hidden), [deck]);
+  const viewDeck = playing ? playDeck : deck;
+  const total = viewDeck.length;
   // 删分支之后页码可能越界：每次渲染重新夹一次，不做多余的 setState。
   const safeIx = Math.max(0, Math.min(ix, total - 1));
-  const current = deck[safeIx];
+  const current = viewDeck[safeIx];
   const lastSelected = useRef<string | null>(null);
+  /** 备注编辑走受控草稿：键是页 id，翻页自动回到该页已存的内容。 */
+  const [notesDraft, setNotesDraft] = useState<{ id: string; text: string } | null>(null);
 
   const step = useCallback(
     (dir: 1 | -1) => setIx(Math.max(0, Math.min(total - 1, safeIx + dir))),
@@ -67,7 +73,23 @@ export function SlidesView({ page }: SlidesViewProps) {
   }, [step, total]);
 
   // 放映也是业务规则的一部分：中心主题没有内容时不给放映（§3.8 硬限制）。
-  const playable = (deck[0]?.title.trim() ?? "") !== "" && deck.length > 1;
+  const playable = (playDeck[0]?.title.trim() ?? "") !== "" && playDeck.length > 1;
+
+  const notesValue = notesDraft?.id === current?.id ? notesDraft.text : current?.notes ?? "";
+  const commitNotes = () => {
+    if (!current || notesDraft?.id !== current.id) return;
+    if (notesDraft.text !== (current.notes ?? "")) {
+      const text = notesDraft.text;
+      mutate("编辑演讲备注", (p) => updateExtras(p, current.id, { note: text }));
+    }
+    setNotesDraft(null);
+  };
+  const toggleHide = () => {
+    if (!current || current.id === page.rootId) return;
+    mutate(current.hidden ? "取消隐藏幻灯片" : "隐藏幻灯片", (p) =>
+      updateExtras(p, current.id, { slideHidden: !current.hidden })
+    );
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "#f5f6f8" }}>
@@ -91,6 +113,11 @@ export function SlidesView({ page }: SlidesViewProps) {
           {safeIx + 1} / {total}
         </span>
         <span style={{ flex: 1 }} />
+        <Tooltip title={current && current.id !== page.rootId ? "" : "封面页不能隐藏"}>
+          <Button size="small" disabled={!current || current.id === page.rootId} onClick={toggleHide}>
+            {current?.hidden ? "取消隐藏" : "隐藏本页"}
+          </Button>
+        </Tooltip>
         <Tooltip title={playable ? "" : "中心主题没有内容，无法放映"}>
           <Button size="small" type="primary" disabled={!playable} onClick={() => setPlaying(true)}>
             放映
@@ -145,10 +172,24 @@ export function SlidesView({ page }: SlidesViewProps) {
             </div>
           ) : null}
 
-          {current?.notes ? (
-            <div style={{ maxWidth: 860, margin: "12px auto 0", background: "#fffbe6", borderRadius: 6, padding: "10px 14px", fontSize: 13 }}>
-              <Tag color="gold">备注</Tag>
-              <span style={{ whiteSpace: "pre-wrap" }}>{current.notes}</span>
+          {current ? (
+            <div style={{ maxWidth: 860, margin: "12px auto 0", background: "#fffbe6", borderRadius: 6, padding: "8px 14px" }}>
+              <div style={{ marginBottom: 2 }}>
+                <Tag color="gold">备注</Tag>
+                <span style={{ fontSize: 12, color: "#8c8c8c" }}>
+                  直接编辑，失焦保存 —— 与画布的「附注」是同一份数据
+                </span>
+              </div>
+              <Input.TextArea
+                key={current.id}
+                autoSize={{ minRows: 1, maxRows: 6 }}
+                variant="borderless"
+                value={notesValue}
+                onChange={(e) => setNotesDraft({ id: current.id, text: e.target.value })}
+                onBlur={commitNotes}
+                placeholder="这一页的演讲备注…"
+                style={{ background: "transparent", padding: 0, fontSize: 13 }}
+              />
             </div>
           ) : null}
 
@@ -167,10 +208,12 @@ export function SlidesView({ page }: SlidesViewProps) {
                   cursor: "pointer",
                   borderRadius: 4,
                   background: "#ffffff",
-                  border: i === safeIx ? "2px solid #1677ff" : "1px solid #e5e5e5",
+                  opacity: s.hidden ? 0.55 : 1,
+                  border: i === safeIx ? "2px solid #1677ff" : s.hidden ? "1px dashed #d9d9d9" : "1px solid #e5e5e5",
                 }}
               >
                 {i + 1}. {s.title}
+                {s.hidden ? <Tag style={{ marginInlineStart: 4, fontSize: 10, lineHeight: "16px" }}>隐藏</Tag> : null}
               </div>
             ))}
           </div>

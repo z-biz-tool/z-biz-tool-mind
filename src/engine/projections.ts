@@ -179,6 +179,8 @@ export interface SlideBlock {
   /** 要点：主分支的下两级，第三级缩进。 */
   bullets: { text: string; level: number; id: string }[];
   notes: string;
+  /** 隐藏页（§3.8 幻灯片管理）：编辑器里照常列出，放映时跳过。 */
+  hidden: boolean;
 }
 
 export function slideDeck(page: Page): SlideBlock[] {
@@ -188,6 +190,7 @@ export function slideDeck(page: Page): SlideBlock[] {
     title: plainText(page.shapes[page.rootId]?.text ?? { paragraphs: [], characters: [] }),
     bullets: [],
     notes: page.shapes[page.rootId]?.extras.note ?? "",
+    hidden: false,
   };
   const out: SlideBlock[] = [cover];
   for (const branch of children(page, page.rootId)) {
@@ -202,6 +205,7 @@ export function slideDeck(page: Page): SlideBlock[] {
       title: plainText(branch.text),
       bullets,
       notes: branch.extras.note ?? "",
+      hidden: Boolean(branch.extras.slideHidden),
     });
   }
   return out;

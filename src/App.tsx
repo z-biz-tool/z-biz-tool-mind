@@ -67,7 +67,13 @@ import {
   pickSavePath,
   type AutosaveItem,
 } from "./services/native.ts";
-import { IMPORT_EXTENSIONS, importBytes, importFilter, sniff } from "./engine/import/index.ts";
+import {
+  IMPORT_EXTENSIONS,
+  IMPORT_FORMAT_LABELS,
+  importBytes,
+  importFilter,
+  sniff,
+} from "./engine/import/index.ts";
 
 /** 打开只收 .emmx，导入用 importFilter()：两条路径的报错文案不同，合成一个选择框就没法解释失败原因。 */
 const EMMX_FILTER = [{ name: "亿图脑图文件", extensions: ["emmx"] }];
@@ -290,7 +296,7 @@ function Shell() {
           const shapes = built.pages.reduce((n, p) => n + Object.keys(p.shapes).length, 0);
           if (!shapes) {
             message.error(
-              "没有解析出任何主题：请确认文件是缩进文本 / Markdown / FreeMind / OPML / CSV / XMind 之一。"
+              `没有解析出任何主题：请确认文件是${IMPORT_FORMAT_LABELS.join(" / ")}之一。`
             );
             return;
           }
@@ -707,7 +713,7 @@ function Shell() {
         打开
       </Button>
       <Tooltip
-        title={`导入 XMind / FreeMind / OPML / Markdown / CSV / 缩进文本（${IMPORT_EXTENSIONS.join("、")}）`}
+        title={`导入 ${IMPORT_FORMAT_LABELS.join(" / ")}（${IMPORT_EXTENSIONS.join("、")}）`}
       >
         <Button size="small" onClick={() => void doImport()}>
           导入

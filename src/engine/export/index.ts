@@ -3,7 +3,7 @@
  *
  * 分工刻意的：
  * - SVG / 文本 / 矢量 PDF 全部是纯函数，node 里就能测（不依赖 WebView）；
- * - PNG 和"位图 PDF"必须经过 WebView 的 canvas，所以只在应用运行时可用，
+ * - PNG / JPG 和"位图 PDF"必须经过 WebView 的 canvas，所以只在应用运行时可用，
  *   并且失败时给明确的中文原因，而不是悄悄给一张空图。
  */
 import type { Page } from "../../types/model.ts";
@@ -11,9 +11,22 @@ import { plainText } from "../../types/model.ts";
 import { outlineRows } from "../projections.ts";
 import { buildPdf, type PdfOp, type PdfPage } from "./pdf.ts";
 import { buildSvg, paintPage, type Paint, type RenderOptions } from "./svg.ts";
-import { toCsv, toHtml, toMarkdown, toOpml, toSlidesMarkdown, toText } from "./markup.ts";
+import { toCsv, toHtml, toMarkdown, toOpml, toSlidesMarkdown, toText, toTreeJson } from "./markup.ts";
 
-export type ExportFormat = "emmx" | "svg" | "png" | "pdf" | "pdf-vector" | "md" | "txt" | "csv" | "opml" | "html" | "slides-md";
+export type ExportFormat =
+  | "emmx"
+  | "svg"
+  | "png"
+  | "jpg"
+  | "pdf"
+  | "pdf-vector"
+  | "md"
+  | "txt"
+  | "csv"
+  | "opml"
+  | "html"
+  | "json"
+  | "slides-md";
 
 export interface FormatSpec {
   id: ExportFormat;
@@ -28,6 +41,7 @@ export const FORMATS: FormatSpec[] = [
   { id: "emmx", label: "亿图脑图文件 (.emmx)", ext: "emmx", mime: "application/zip", group: "文档" },
   { id: "svg", label: "SVG 矢量图", ext: "svg", mime: "image/svg+xml", group: "图片" },
   { id: "png", label: "PNG 图片", ext: "png", mime: "image/png", group: "图片", needsCanvas: true },
+  { id: "jpg", label: "JPG 图片", ext: "jpg", mime: "image/jpeg", group: "图片", needsCanvas: true },
   { id: "pdf-vector", label: "PDF（矢量，可选中文字）", ext: "pdf", mime: "application/pdf", group: "PDF" },
   { id: "pdf", label: "PDF（位图，兼容性最好）", ext: "pdf", mime: "application/pdf", group: "PDF", needsCanvas: true },
   { id: "md", label: "Markdown 大纲", ext: "md", mime: "text/markdown", group: "文本" },
@@ -36,7 +50,18 @@ export const FORMATS: FormatSpec[] = [
   { id: "csv", label: "CSV 表格", ext: "csv", mime: "text/csv", group: "文本" },
   { id: "opml", label: "OPML 大纲", ext: "opml", mime: "text/x-opml", group: "文本" },
   { id: "html", label: "网页（单文件）", ext: "html", mime: "text/html", group: "文本" },
+  { id: "json", label: "JSON 数据（给程序读）", ext: "json", mime: "application/json", group: "文本" },
 ];
+
+/**
+ * 不进导出引擎、由「另存为」那条路产出的格式。
+ *
+ * .emmx 是文档本身，不是派生物：免费版文件数闸门（P-4）、覆盖前自动备份、脏标记落盘全在
+ * `useDoc.saveAs` 里，绕开它去 hand 一份 zip 等于把这两条规则各写一遍。
+ * 但它又必须出现在 FORMATS 里（导出对话框按组渲染这张表），于是"表里有一项、switch 里没有分支"
+ * 变成只有运行时才炸的洞 —— 单列一张表，配合 tests/export.test.ts 遍历 FORMATS 的门测。
+ */
+export const SAVE_AS_FORMATS: readonly ExportFormat[] = ["emmx"];
 
 export interface ExportOptions extends RenderOptions {
   scale?: number;
@@ -87,6 +112,8 @@ export async function exportArtifact(
       return made("opml", textToBytes(toOpml(page)));
     case "html":
       return made("html", textToBytes(toHtml(page, name)));
+    case "json":
+      return made("json", textToBytes(toTreeJson(page)));
     case "pdf-vector":
       return made("pdf", buildPdf(pdfPagesOf(page, opts), { title: name }));
     case "pdf": {
@@ -107,7 +134,12 @@ export async function exportArtifact(
     }
     case "png":
       return made("png", await svgToPng(buildSvg(page, opts), opts.scale ?? 2));
+    case "jpg":
+      return made("jpg", (await svgToJpeg(buildSvg(page, opts), opts.scale ?? 2, opts.quality ?? 0.92)).bytes);
     default:
+      if (SAVE_AS_FORMATS.includes(format)) {
+        throw new Error(`${format} 不在这里产出：请用「另存为」—— 文件数闸门、覆盖前备份、脏标记落盘都只在那条路上`);
+      }
       throw new Error(`不支持的导出格式：${format}`);
   }
 }

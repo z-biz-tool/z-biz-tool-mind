@@ -1,12 +1,13 @@
 /**
- * 文本类导出：Markdown / 纯文本大纲 / CSV / OPML / HTML。
+ * 文本类导出：Markdown / 纯文本大纲 / CSV / OPML / HTML / JSON。
  *
  * 亿图的"另存为"里这几项都存在，共同点是**丢掉图形、只保留层级和文字**。
- * 复刻里它们全部由大纲行（outlineRows）生成，一条树六个投影（P-1）——
+ * 复刻里它们除 JSON 之外全部由大纲行（outlineRows）生成，一条树六个投影（P-1）——
  * 也就是说这些导出永远不会和画布上的结构对不上。
+ * JSON 是唯一走整棵树的：见 toTreeJson 的说明。
  */
-import type { Page } from "../../types/model.ts";
-import { plainText } from "../../types/model.ts";
+import type { Page, Shape } from "../../types/model.ts";
+import { isTopic, plainText } from "../../types/model.ts";
 import { outlineRows, slideDeck } from "../projections.ts";
 import { children } from "../tree.ts";
 import { buildSvg, esc } from "./svg.ts";
@@ -129,19 +130,124 @@ export function toSlidesMarkdown(page: Page): string {
     + "\n";
 }
 
+/**
+ * 大纲行 → 嵌套 `<ul>`。
+ *
+ * 早先是拍平的 `<li style="margin-left:Npx">`：人看着一样，机器读不出来 ——
+ * 嵌套列表才是 HTML 表达层级的原生写法，浏览器自己缩进，
+ * 而 HTML 导入（import/index.ts 的 htmlOutline）认的就是这一层 `<ul>` 嵌套。
+ * 最外层那块带 `data-mindmap`：导入时以它为界，页面自己的标题、内嵌 SVG 都不会被当成主题。
+ */
+function nestedList(rows: readonly { level: number; text: string }[], topAttrs = ""): string {
+  const parts: string[] = [];
+  let prev = -1;
+  for (const r of rows) {
+    const level = Math.max(0, r.level);
+    if (prev < 0) parts.push(`<ul${topAttrs}>`);
+    else if (level > prev) parts.push("<ul>".repeat(level - prev));
+    else if (level < prev) parts.push("</li></ul>".repeat(prev - level));
+    else parts.push("</li>");
+    parts.push(`<li>${esc(r.text)}`);
+    prev = level;
+  }
+  if (prev >= 0) parts.push("</li>", "</ul>".repeat(prev + 1));
+  return parts.join("");
+}
+
 /** 单文件 HTML：内嵌 SVG，双击就能看，不需要任何运行时。 */
 export function toHtml(page: Page, title: string): string {
   const svg = buildSvg(page, {});
-  const outline = outlineRows(page)
-    .map((r) => `<li style="margin-left:${r.level * 16}px">${esc(r.text)}</li>`)
-    .join("");
+  const outline = nestedList(outlineRows(page), ' data-mindmap="1"');
   return `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>${esc(title)}</title>
 <style>body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;margin:0;background:#f7f8fa;color:#333}
 h1{font-size:18px;margin:16px}section{background:#fff;margin:16px;padding:12px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.08);overflow:auto}
 svg{display:block}ul{list-style:none;padding:0 16px}li{line-height:1.8}</style></head>
-<body><h1>${esc(title)}</h1><section>${svg}</section><section><h1 style="font-size:15px">大纲</h1><ul>${outline}</ul></section>
+<body><h1>${esc(title)}</h1><section>${svg}</section><section><h1 style="font-size:15px">大纲</h1>${outline}</section>
 </body></html>`;
+}
+
+/**
+ * JSON 数据导出（蓝本 §3.12 导出 15 类里的「Json」）。
+ *
+ * 两处和其余文本导出不一样，都是刻意的：
+ * - **走整棵树，不经过大纲投影**：折叠掉的子树在画布上不出现，但那是内容不是视图；
+ *   一份拿去给外部程序读的 JSON 少几枝，等于静默丢数据。大纲系五份文本跟随画布折叠，
+ *   因为它们给人看；JSON 给机器读，判据得反过来。
+ * - **带主题 id 与关系线**：id 是把 `relationships` 的两端对上号的唯一把手。
+ *
+ * 不带的是视图状态（折叠、缩放、滚动、显示层级）与图形（图片/附件的 relId 指向
+ * .emmx 容器内的条目，出了容器就是死链）。蓝本把 Json 只列在导出侧，导入侧没有它，
+ * 所以这里不做 JSON 导入 —— 那是自造协议，不是复刻。
+ */
+interface JsonTopic {
+  id: string;
+  text: string;
+  note?: string;
+  labels?: string[];
+  link?: string;
+  task?: {
+    assignees: string[];
+    progress: number;
+    status: string;
+    priority: string;
+    start?: string;
+    finish?: string;
+  };
+  children: JsonTopic[];
+}
+
+export function toTreeJson(page: Page): string {
+  const topic = (s: Shape): JsonTopic => {
+    const o: JsonTopic = {
+      id: s.id,
+      text: plainText(s.text),
+      children: children(page, s.id)
+        .filter((c) => isTopic(c.type))
+        .map(topic),
+    };
+    if (s.extras.note) o.note = s.extras.note;
+    if (s.extras.labels?.length) o.labels = s.extras.labels;
+    if (s.extras.hyperlink) o.link = s.extras.hyperlink.target;
+    const t = s.extras.task;
+    if (t) {
+      o.task = {
+        assignees: t.assignees,
+        progress: t.progress,
+        status: t.status,
+        priority: t.priority,
+        start: dateOf(t.start) || undefined,
+        finish: dateOf(t.finish) || undefined,
+      };
+    }
+    return o;
+  };
+  const roots: JsonTopic[] = [];
+  const center = page.shapes[page.rootId];
+  if (center) roots.push(topic(center));
+  // 浮动主题自成一根（与 outlineEntries 同一判据），硬挂进中心主题会凭空多一层。
+  for (const s of Object.values(page.shapes)) {
+    if (s.floating && !s.parentId && isTopic(s.type) && s.id !== page.rootId) roots.push(topic(s));
+  }
+  return (
+    JSON.stringify(
+      {
+        kind: "z-mind.mindmap",
+        version: 1,
+        name: page.name,
+        layout: page.layout.code,
+        theme: { id: page.theme.id, name: page.theme.name },
+        roots,
+        relationships: page.relationships.map((r) => ({
+          from: r.beginId,
+          to: r.endId,
+          text: plainText(r.text),
+        })),
+      },
+      null,
+      2
+    ) + "\n"
+  );
 }
 
 /** 甘特/任务导出用的扁平表（与 CSV 不同：只给有任务字段的分支）。 */

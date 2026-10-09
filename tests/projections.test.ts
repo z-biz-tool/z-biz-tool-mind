@@ -327,4 +327,26 @@ const barsOf = (p: Page, g: GanttOption) => ganttSchedule(p, g);
   eq("bar 带上 deps 供连线画", of(b)?.deps, [a]);
 }
 
+// ---------------------------------------------------------------- 幻灯片隐藏页（§3.8 幻灯片管理）
+{
+  let p = createPage("隐藏页");
+  const mk = (parent: string, text: string) => {
+    const r = insertChild(p, parent, text);
+    p = r.page;
+    return r.id;
+  };
+  const b1 = mk(p.rootId, "第一页");
+  const b2 = mk(p.rootId, "第二页");
+  p = updateExtras(p, b2, { slideHidden: true });
+  const deck = slideDeck(p);
+  eq(
+    "隐藏页在编辑器里照常列出并打标（藏起来就找不回了）",
+    deck.map((s) => `${s.index}:${s.title}:${s.hidden ? 1 : 0}`),
+    ["0:中心主题:0", "1:第一页:0", "2:第二页:1"]
+  );
+  eq("放映序列跳过隐藏页", deck.filter((s) => !s.hidden).map((s) => s.title), ["中心主题", "第一页"]);
+  p = updateExtras(p, b2, { slideHidden: undefined });
+  eq("取消隐藏后回到放映序列", slideDeck(p).filter((s) => !s.hidden).length, 3);
+}
+
 done();

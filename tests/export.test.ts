@@ -1,23 +1,51 @@
 /**
- * 导出层（doc/复刻方案/00 §3.11 分发）：十一种格式全部由同一份 Page 现算。
+ * 导出层（doc/复刻方案/00 §3.11 分发）：十三种格式全部由同一份 Page 现算。
  * 覆盖的缺陷形状：
  * 1) 文本类导出必须数出与大纲投影同一批主题（P-1），折叠与浮动主题四份文本要一致；
  * 2) CSV 的 Excel 公式注入与引号转义；
  * 3) SVG / PDF 用的是布局量出来的同一套折行（P-2）；
  * 4) 文件名里的非法字符、空主题兜底；
- * 5) PDF 的 CJK 走标准 CID 字体（不嵌字体，Windows 与 macOS 都能开）。
+ * 5) PDF 的 CJK 走标准 CID 字体（不嵌字体，Windows 与 macOS 都能开）；
+ * 6) 格式表与 dispatch 必须同步 —— 表里有一项、switch 里没分支，是只有点下去那天才炸的洞（emmx 就躺过）；
+ * 7) JSON 是唯一走整棵树的导出：折叠掉的枝在画布上没有，在数据面上不能没有。
  *
  * 折叠的取舍在这一层有两个答案，是刻意的：大纲系（Markdown/CSV/TXT/OPML/HTML）跟着画布走，
  * 折叠掉的子树不出现；演示稿按整棵树出片 —— 收起分支是为了看图，不是为了删内容。
+ * JSON 属于后者，理由见 toTreeJson。
  */
 import { done, eq, near, ok, rejects } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
-import { FORMATS, exportArtifact, formatOf, pdfPagesOf, transformPath, A4_PORTRAIT } from "../src/engine/export/index.ts";
+import {
+  A4_PORTRAIT,
+  FORMATS,
+  SAVE_AS_FORMATS,
+  exportArtifact,
+  formatOf,
+  pdfPagesOf,
+  transformPath,
+} from "../src/engine/export/index.ts";
 import { buildSvg, paintPage } from "../src/engine/export/svg.ts";
 import { buildPdf } from "../src/engine/export/pdf.ts";
-import { toCsv, toHtml, toMarkdown, toOpml, toSlidesMarkdown, toTaskTable, toText } from "../src/engine/export/markup.ts";
-import { insertChild, setCollapsed, setFloating, updateExtras, updateText } from "../src/engine/tree.ts";
+import {
+  toCsv,
+  toHtml,
+  toMarkdown,
+  toOpml,
+  toSlidesMarkdown,
+  toTaskTable,
+  toText,
+  toTreeJson,
+} from "../src/engine/export/markup.ts";
+import {
+  insertChild,
+  setCollapsed,
+  setFloating,
+  toggleRelationship,
+  updateExtras,
+  updateText,
+} from "../src/engine/tree.ts";
 import { outlineRows } from "../src/engine/projections.ts";
+import { isTopic } from "../src/types/model.ts";
 import type { Page } from "../src/types/model.ts";
 
 const asText = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -48,7 +76,9 @@ cur = updateExtras(cur, risky, { note: '带"引号"、逗号，和\n换行' });
 // 主题文字里带 &：SVG / OPML / HTML 三条转义路径都要吃下它
 const memo = add(root(), "散记&备忘");
 cur = setFloating(cur, memo, 400, 240);
-add(memo, "浮动子");
+const floatKid = add(memo, "浮动子");
+// 有标签数组但是空的：JSON 侧的判据是"没内容就不出这个键"，样张里得真有这么一个主题。
+cur = updateExtras(cur, floatKid, { labels: [] });
 const page = cur;
 
 /** 大纲投影的行数：中心主题 + 3 个主分支 + 2 个二级 + 折叠的那枝自身 + 浮动树两行。 */
@@ -56,11 +86,39 @@ const total = 9;
 
 // ---------------------------------------------------------------- 格式表本身
 {
-  eq("十一种格式与导出对话框一一对应", FORMATS.length, 11);
+  eq("十三种格式与导出对话框一一对应", FORMATS.length, 13);
   eq("格式 id 不重复", new Set(FORMATS.map((f) => f.id)).size, FORMATS.length);
   eq("每个格式都有扩展名与 MIME", FORMATS.every((f) => f.ext !== "" && f.mime.includes("/")), true);
   eq("未知 id 兜到第一项（.emmx）", formatOf("nope" as never).id, "emmx");
-  eq("需要光栅化的两种格式标了 needsCanvas", FORMATS.filter((f) => f.needsCanvas).map((f) => f.id), ["png", "pdf"]);
+  eq("需要光栅化的三种格式标了 needsCanvas", FORMATS.filter((f) => f.needsCanvas).map((f) => f.id), ["png", "jpg", "pdf"]);
+  eq("图片那一组是 PNG / JPG / SVG（蓝本 §3.12「导出 15 类：图片(PNG/JPG)」）",
+    FORMATS.filter((f) => f.group === "图片").map((f) => f.id), ["svg", "png", "jpg"]);
+}
+
+// ---------------------------------------------------------------- 完整性门：表里每一项都要有落点
+{
+  // emmx 在表里（对话框按组渲染这张表），却故意不进导出引擎 —— 于是"表里加一项、switch 里忘加分支"
+  // 只有用户点下去那天才炸。这一版之前就是这个状态：exportArtifact(emmx) 抛的是"不支持的导出格式"。
+  // 判据遍历 FORMATS，所以漏一项就在这一条上红，而不是等运行时。
+  const holes: string[] = [];
+  for (const f of FORMATS) {
+    try {
+      await exportArtifact(page, f.id);
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      if (m.startsWith("不支持的导出格式")) holes.push(f.id);
+    }
+  }
+  eq("格式表里没有点了只会抛「不支持」的项", holes, []);
+  ok(
+    "另存为那一类里确实躺着 emmx（这张表空转的话，上面的循环一行都不会跑）",
+    SAVE_AS_FORMATS.includes("emmx"),
+    SAVE_AS_FORMATS.join(",")
+  );
+  for (const id of SAVE_AS_FORMATS) {
+    await rejects(`${id} 的落点是另存为那条路（报错要指路）`, exportArtifact(page, id), "另存为");
+  }
+  ok("SVG 与 JSON 不属于另存为那一类", !SAVE_AS_FORMATS.includes("svg") && !SAVE_AS_FORMATS.includes("json"), "");
 }
 
 // ---------------------------------------------------------------- 四份文本导出的主题数必须一致（P-1）
@@ -124,9 +182,63 @@ const total = 9;
   const html = toHtml(page, "导出样张");
   ok("是完整的单文件", html.startsWith("<!DOCTYPE html>") && html.includes("</html>"), "");
   ok("内嵌了 SVG", html.includes("<svg xmlns"), "");
-  eq("大纲列表条数与大纲投影一致", (html.match(/<li /g) ?? []).length, total);
+  eq("大纲列表条数与大纲投影一致", (html.match(/<li>/g) ?? []).length, total);
+  // 层级由 <ul> 的嵌套表达，不是内联 margin-left：那才是 HTML 的原生写法，
+  // 也只有这样，HTML 导入（import 那边）才能不靠读样式表就把树带回来。
+  ok("二级主题嵌在父主题的 <li> 里", html.includes("<li>开发<ul><li>登录联调"), "");
+  ok("同级是兄弟，不再各写一个缩进值", html.includes("<li>登录联调</li><li>报表导出</li>"), "");
+  eq("<ul> 的开合配平", (html.match(/<ul\b/g) ?? []).length, (html.match(/<\/ul>/g) ?? []).length);
   ok("标题转义", html.includes("<title>导出样张</title>"), "");
   ok("没有外链资源（双击就能看）", !/src="https?:|href="https?:/.test(html));
+}
+
+// ---------------------------------------------------------------- JSON 数据导出：整棵树，不是大纲
+{
+  const doc = JSON.parse(toTreeJson(page));
+  eq("顶层是给程序认的标识与版本", [doc.kind, doc.version], ["z-mind.mindmap", 1]);
+  eq("页名与版式码带上", [doc.name, doc.layout], ["导出", "balanced"]);
+  const count = (ns: any[]): number => ns.reduce((n, x) => n + 1 + count(x.children ?? []), 0);
+  const allTopics = Object.values(page.shapes).filter((s) => isTopic(s.type)).length;
+  eq("折叠掉的子树也在 JSON 里（这是数据面，不是视图）", count(doc.roots), allTopics);
+  ok("同一样张的大纲系少一枝，两条判据确实不同", [count(doc.roots), outlineRows(page).length], [10, 9]);
+  eq("中心主题在第一根，浮动主题另起一根", doc.roots.length, 2);
+  eq("浮动主题的根就是那个浮动主题", doc.roots[1].id, memo);
+  // 这些变量名一律带 j 前缀：外层样张里 dev/login/report 是主题 id（字符串），
+  // 同名一遮蔽，下面 toggleRelationship 拿到的就是 JSON 节点对象，关系线静默没加上。
+  const jDev = doc.roots[0].children[0];
+  eq("主分支顺序与 childIds 同序", jDev.children.map((x: any) => x.text), ["登录联调", "报表导出"]);
+  const jLogin = jDev.children[0];
+  eq("备注 / 标签 / 链接三类字段带着走", [jLogin.note, jLogin.labels, jLogin.link], [
+    "接口要\n对齐两次",
+    ["紧急", "安全"],
+    "https://example.com/a?x=1&y=2",
+  ]);
+  const jReport = jDev.children[1];
+  ok(
+    "标签是空数组就不写 labels 键（有键没值，等于让读的人多分一支）",
+    !("labels" in doc.roots[1].children[0]),
+    JSON.stringify(doc.roots[1].children[0])
+  );
+  eq("任务字段用与 CSV 同一套写法（日期到日）", [jReport.task.assignees, jReport.task.progress, jReport.task.status, jReport.task.start], [
+    ["张三"],
+    100,
+    "done",
+    "2026-10-01",
+  ]);
+  ok(
+    "没填的主题不写出空字段（note/labels/link/task 四键都是按需出现）",
+    !["note", "labels", "link", "task"].some((k) => k in doc.roots[0]),
+    Object.keys(doc.roots[0]).join(",")
+  );
+  eq("JSON 里的 id 就是形状 id（与样张同一个号）", [jLogin.id, jReport.id], [login, report]);
+  const rel = toggleRelationship(page, login, report);
+  eq("关系线是这份 JSON 里唯一不是树的部分，单独一段", JSON.parse(toTreeJson(rel)).relationships, [
+    { from: login, to: report, text: "" },
+  ]);
+  const artifact = await exportArtifact(page, "json");
+  eq("导出文件名跟着根主题", artifact.name, "导出.json");
+  eq("MIME 是 JSON", artifact.mime, "application/json");
+  eq("字节就是那份文本", new TextDecoder().decode(artifact.bytes), toTreeJson(page));
 }
 
 // ---------------------------------------------------------------- SVG：与画布同一套折行

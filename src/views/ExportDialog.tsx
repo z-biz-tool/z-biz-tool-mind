@@ -36,7 +36,7 @@ const GROUPS = ["文档", "图片", "PDF", "文本"] as const;
 type Group = (typeof GROUPS)[number];
 
 /** 走画布的那几种：主题数由 computeLayout 说了算，pdf-vector 的图形页也一样按层级裁。 */
-const GRAPHIC_FORMATS = new Set<ExportFormat>(["svg", "png", "pdf", "pdf-vector"]);
+const GRAPHIC_FORMATS = new Set<ExportFormat>(["svg", "png", "jpg", "pdf", "pdf-vector"]);
 
 /** 留空 = 交给引擎默认（paintPage 里 background 缺省 "#ffffff"），不是一个叫"默认"的颜色。 */
 const BACKGROUNDS = [
@@ -98,13 +98,18 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
 
   /**
    * 这个数字必须按所选格式算，不能一个数通吃：
-   * 图形系（SVG / PNG / 位图 PDF）走 computeLayout，显示层级之外不画、折叠的子树整枝不画；
+   * 图形系（SVG / PNG / JPG / 位图 PDF）走 computeLayout，显示层级之外不画、折叠的子树整枝不画；
    * 文本系走 outlineRows，折叠跟随画布，但层级不裁 —— 大纲导出被裁掉层级等于偷偷删内容。
+   * JSON 例外：它走整棵树（折叠掉的枝也是内容，见 markup.ts 的 toTreeJson），
+   * 所以它的数就是全部主题数。
    * 判据不一致还拼成一句"本页将输出 X 个主题"，用户就会拿图形系的裁切去猜文本产物的内容。
-   * 浮动主题自成一根（不在中心主题子树里），两条路都带着它，所以这里不用再特殊处理。
+   * 浮动主题自成一根（不在中心主题子树里），三条路都带着它，所以这里不用再特殊处理。
    */
   const visibleCount = useMemo(() => {
     if (!page) return 0;
+    if (format === "json") {
+      return Object.values(page.shapes).filter((s) => isTopic(s.type)).length;
+    }
     if (!GRAPHIC_FORMATS.has(format)) return outlineRows(page).length;
     const layout = computeLayout(page, { displayLevel: levels, palette });
     return layout.order.filter((id) => {
@@ -121,6 +126,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
   function options(): ExportOptions {
     const opts: ExportOptions = { scale, displayLevel: levels, padding, palette };
     if (background) opts.background = background;
+    if (format === "jpg") opts.quality = quality;
     if (format === "pdf") {
       opts.quality = quality;
       opts.paper = landscape ? A4_LANDSCAPE : A4_PORTRAIT;
@@ -189,6 +195,8 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
   }
 
   const isText = spec.group === "文本";
+  /** 走光栅化的三条：清晰度都由倍率说话（JPG 与位图 PDF 还多一个质量档）。 */
+  const BITMAP = format === "png" || format === "jpg" || format === "pdf";
 
   return (
     <Modal
@@ -236,8 +244,9 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
 
           {isText ? (
             <div style={{ fontSize: 12, color: "var(--zm-text-2)", lineHeight: 1.6 }}>
-              文本类导出只读大纲结构，不经过布局：倍率、底色、内边距这些渲染参数对这一组没有意义（exportArtifact
-              的那几条分支根本不读 opts），所以这里不给。
+              这一组都不经过布局：倍率、底色、内边距这些渲染参数对它们没有意义（exportArtifact
+              的那几条分支根本不读 opts），所以这里不给。折叠的取舍有两套答案 —— 大纲系五份跟着画布走，
+              演示稿与 JSON 出整棵树，所以下面那个计数对 JSON 会比你屏幕上看到的多。
             </div>
           ) : (
             <>
@@ -269,7 +278,11 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               ) : (
                 <Field
                   label="底色"
-                  note="PNG 光栅化前引擎先铺一层白，所以底色只影响图形本身；要真透明请用 SVG。"
+                  note={
+                    format === "jpg"
+                      ? "JPEG 没有透明通道：光栅化前那层白是编码要求，底色只影响图形本身。要透明就改用 PNG 或 SVG。"
+                      : "PNG 光栅化前引擎先铺一层白，所以底色只影响图形本身；要真透明请用 SVG。"
+                  }
                 >
                   <Select
                     size="small"
@@ -283,13 +296,13 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             </>
           )}
 
-          {format === "png" || format === "pdf" ? (
+          {BITMAP ? (
             <Field
               label="倍率"
               note={
-                format === "png"
-                  ? "位图在 WebView 的 canvas 上光栅化：浏览器模式照样能出真 PNG，所以这里不需要“请先用桌面版”那种提示。"
-                  : "位图 PDF 的清晰度全靠倍率，文件按面积涨。编码走 canvas.toBlob，浏览器与桌面同一条路。"
+                format === "pdf"
+                  ? "位图 PDF 的清晰度全靠倍率，文件按面积涨。编码走 canvas.toBlob，浏览器与桌面同一条路。"
+                  : "位图在 WebView 的 canvas 上光栅化：浏览器模式照样能出真图，所以这里不需要“请先用桌面版”那种提示。"
               }
             >
               <Segmented
@@ -315,8 +328,15 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             </Field>
           ) : null}
 
-          {format === "pdf" ? (
-            <Field label="图片质量" note="JPEG 压缩率，只影响位图 PDF。">
+          {format === "pdf" || format === "jpg" ? (
+            <Field
+              label="图片质量"
+              note={
+                format === "jpg"
+                  ? "JPEG 压缩率：倍率定了像素，这一档定文件大小。"
+                  : "JPEG 压缩率，只影响位图 PDF —— 它内嵌的就是这张 JPEG。"
+              }
+            >
               <Select
                 size="small"
                 style={{ width: 150 }}

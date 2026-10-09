@@ -1,5 +1,5 @@
 /**
- * 导入：emmx / XMind / FreeMind / OPML / Markdown / TXT / CSV。
+ * 导入：emmx / XMind / FreeMind / OPML / Markdown / TXT / CSV / HTML。
  *
  * 除 .emmx 之外，其余格式一律先压平成"缩进大纲"，再走 P-3 的同一套插树协议
  * （insertOutline）。这样新增一个导入格式只需要写一个"读出文本行"的函数，
@@ -10,13 +10,13 @@ import { activePage, createDocument, createPage, withActivePage } from "../../mo
 import { insertOutline, normalizeLevels, parseOutline } from "../outline.ts";
 import type { OutlineLine } from "../outline.ts";
 import { updateText } from "../tree.ts";
-import { attr, find, findAll, parseXml } from "../emmx/xparse.ts";
+import { attr, decodeEntities, find, findAll, parseXml } from "../emmx/xparse.ts";
 import type { XmlNode } from "../emmx/xparse.ts";
 import { decodeBytes, readZip } from "../emmx/zip.ts";
 import { parseEmmx, EmmxError } from "../emmx/codec.ts";
 
 export type ImportKind =
-  "emmx" | "xmind" | "freemind" | "opml" | "markdown" | "text" | "csv" | "unknown";
+  "emmx" | "xmind" | "freemind" | "opml" | "markdown" | "text" | "csv" | "html" | "unknown";
 
 export function sniff(name: string): ImportKind {
   const n = name.toLowerCase();
@@ -26,6 +26,7 @@ export function sniff(name: string): ImportKind {
   if (n.endsWith(".opml")) return "opml";
   if (n.endsWith(".md") || n.endsWith(".markdown")) return "markdown";
   if (n.endsWith(".csv")) return "csv";
+  if (n.endsWith(".html") || n.endsWith(".htm")) return "html";
   if (n.endsWith(".txt")) return "text";
   return "unknown";
 }
@@ -66,6 +67,7 @@ export async function importBytes(name: string, bytes: Uint8Array): Promise<Docu
     return doc;
   }
   if (kind === "xmind") return importXmind(bytes, name);
+  if (kind === "html") return importHtml(decodeHtml(bytes), titleOf(name));
   const text = new TextDecoder("utf-8").decode(bytes);
   if (kind === "freemind") return importFreeMind(text, titleOf(name));
   if (kind === "opml") return importOpml(text, titleOf(name));
@@ -264,17 +266,263 @@ export function splitCsv(text: string): string[][] {
 }
 
 /**
+ * HTML 导入（蓝本 §3.12 导入清单里的 HTML）。
+ *
+ * 为什么不复用 xparse 的 parseXml：那是给 .emmx 写的**严格**解析器，标签不匹配就抛。
+ * 现实里的 HTML 满是没写斜杠的 void 标签（`<meta charset=utf-8>`）和省略的 `</p>`，
+ * 连我们自己的 toHtml 产物都过不了它 —— 严格解析器读不了 HTML 是格式决定的，不是实现问题。
+ *
+ * 这里只问一件事：能不能读出层级和文字。层级的载体是 `<ul>/<ol>` 的嵌套与 `<h1>–<h6>`；
+ * 脚本、样式、导航、SVG 图形的内容整体丢掉（SVG 里的 `<text>` 是画布上那几个字的副本，
+ * 导进来就是一堆重复主题），其余标签只当内联包装。这与其余文本导入同一条边界：丢图形、留层级和文字。
+ * 一项内部的换行压成空格：主题文字的多段在 HTML 里本来就看不出边界。
+ */
+export function importHtml(html: string, title: string): DocumentModel {
+  return docFromOutline(htmlOutline(machineBlock(html)), title);
+}
+
+/**
+ * 认机器可读的那一块。
+ *
+ * 我们自己的 HTML 导出是"给人看的单文件"：标题、内嵌 SVG、还有一个「大纲」小标题。
+ * 按通用规则整份读回来会多出两个主题（页面标题和那个小标题）—— 那是页面外壳，不是内容。
+ * 所以导出时给大纲那块 `<ul>` 打了 `data-mindmap`，导入时认到这个标记就只读它罩住的子树；
+ * 没有标记的普通网页仍按整份读（标题给层级、列表给枝干）。
+ *
+ * 标签名是从文档里匹配出来的（`[a-z][\w:-]*`，不含正则元字符），拼进第二个 RegExp 是安全的。
+ */
+function machineBlock(src: string): string {
+  const m = /<([a-z][\w:-]*)(?=[^>]*\bdata-mindmap\b)[^>]*>/i.exec(src);
+  if (!m) return src;
+  const re = new RegExp(`<(/?)${m[1]}\\b`, "gi");
+  re.lastIndex = m.index + m[0].length;
+  let depth = 1;
+  let hit: RegExpExecArray | null;
+  while ((hit = re.exec(src))) {
+    depth += hit[1] === "/" ? -1 : 1;
+    if (depth === 0) return src.slice(m.index, src.indexOf(">", hit.index) + 1);
+  }
+  return src.slice(m.index); // 标记块没闭合（截断的文件）：读到末尾，别把整份丢了
+}
+
+/** 内容整体丢掉的标签（它的子树在读到同名结束标签前一律不看）。 */
+const HTML_DROP = new Set([
+  "script",
+  "style",
+  "noscript",
+  "template",
+  "head",
+  "select",
+  "textarea",
+  "iframe",
+  "nav",
+  "footer",
+  "header",
+  "aside",
+  "button",
+  "form",
+  "svg",
+]);
+/** 撑起一行的块级标签。div/section 不表达层级（它们只表达"这是一块"），层级只由列表嵌套和标题给。 */
+const HTML_ITEM = new Set([
+  "p",
+  "div",
+  "li",
+  "dd",
+  "dt",
+  "tr",
+  "blockquote",
+  "pre",
+  "section",
+  "article",
+]);
+/** 没有结束标签的那批；`<br>` 是项内换行，其余连文字都不带。 */
+const HTML_VOID = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "keygen",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
+
+/**
+ * HTML → 缩进大纲文本（一层一个制表符，归一交给 parseOutline / normalizeLevels）。
+ *
+ * 状态只有四个：开着哪一项（cur）、它的层级（level）、列表嵌套深度（listDepth）、
+ * 最近一个标题给正文垫的层级（headBase）。
+ * `<li>` 不等 `</li>` 就自起一行（漏写结束标签是最常见的 HTML 写法），
+ * 表格的 `<td>/<th>` 不另起一行 —— 一行 = 一个主题，单元格之间补空格。
+ */
+export function htmlOutline(src: string): string {
+  const lines: string[] = [];
+  let cur: string | null = null;
+  let level = 0;
+  let listDepth = 0;
+  let dropTag = "";
+  let drop = 0;
+  // 最近一个标题把"它下面的正文"压到第几级。一篇真网页的骨架是 h2 段 + ul 要点，
+  // 只按列表嵌套算的话要点会齐平在标题那一层（装上一份真网页才看出来）。
+  let headBase = 0;
+  const flush = () => {
+    if (cur !== null) {
+      const t = cur.replace(/\s+/g, " ").trim();
+      if (t) lines.push("\t".repeat(level) + t);
+    }
+    cur = null;
+  };
+  const itemLevel = () => headBase + Math.max(0, listDepth - 1);
+
+  for (const [tok] of src
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .matchAll(/<(?:"[^"]*"|'[^']*'|[^"'<>])*>|[^<]+/g)) {
+    const isTag = tok[0] === "<";
+    const m = isTag ? /^<\s*(\/?)\s*([a-zA-Z][\w:-]*)([\s\S]*)$/.exec(tok) : null;
+    const tag = m ? m[2].toLowerCase() : "";
+
+    // 丢弃区（script/style/svg/nav/…）里连文字都不看：样式表里的 "li{甲}" 不是主题。
+    if (drop > 0) {
+      if (m && tag === dropTag && !m[3].endsWith("/>") && !HTML_VOID.has(tag))
+        drop += m[1] === "/" ? -1 : 1;
+      if (drop <= 0) dropTag = "";
+      continue;
+    }
+    if (!isTag) {
+      // 游离文本自起一行（手写大纲常见 `<body>中心主题<ul>…`）；纯空白不算行。
+      if (cur === null && tok.trim()) {
+        cur = "";
+        level = itemLevel();
+      }
+      if (cur !== null) cur += decodeEntities(tok);
+      continue;
+    }
+    if (!m) continue; // <!DOCTYPE>、<?xml?>、认不出的碎片
+    const closing = m[1] === "/";
+    const selfClose = m[3].endsWith("/>");
+
+    if (!closing && !selfClose && HTML_DROP.has(tag)) {
+      dropTag = tag;
+      drop = 1;
+      continue;
+    }
+    if (tag === "ul" || tag === "ol") {
+      if (closing) {
+        flush();
+        listDepth = Math.max(0, listDepth - 1);
+      } else if (!selfClose) listDepth += 1;
+      continue;
+    }
+    if (HTML_VOID.has(tag)) {
+      if (tag === "br" && cur !== null) cur += " ";
+      continue;
+    }
+    const head = /^h([1-6])$/.exec(tag);
+    if (head) {
+      flush();
+      if (!closing && !selfClose) {
+        cur = "";
+        level = Number(head[1]) - 1;
+        headBase = level + 1;
+      }
+      continue;
+    }
+    if (tag === "li" && !closing) {
+      flush();
+      cur = "";
+      level = itemLevel();
+      continue;
+    }
+    if (closing) {
+      if (HTML_ITEM.has(tag)) flush();
+      else if (tag === "td" || tag === "th") cur = cur === null ? null : cur + " ";
+      continue;
+    }
+    if (selfClose) continue;
+    if (tag === "td" || tag === "th") {
+      if (cur === null) {
+        cur = "";
+        level = itemLevel();
+      }
+      continue;
+    }
+    if (HTML_ITEM.has(tag)) {
+      // 已经开着一项但还没有正文（`<li><p>x</p></li>`）：沿用这一项，别让内层标签把它换成同级。
+      if (cur !== null && cur.trim() === "") continue;
+      flush();
+      cur = "";
+      level = itemLevel();
+    }
+  }
+  flush();
+  return lines.join("\n");
+}
+
+/**
+ * HTML 自带 charset 声明，中文网络上的老页面还有一大截是 GBK。按 utf-8 硬解得到一串
+ * ``（导入"成功"却全是乱码），比直接失败难查得多。声明必然在 ASCII 前缀里，
+ * 所以先用 utf-8 解一段去读它，认得的标签再重解整份；ICU 没有这个转换器就回落 utf-8。
+ */
+function decodeHtml(bytes: Uint8Array): string {
+  const utf8 = new TextDecoder("utf-8").decode(bytes);
+  const m = /charset\s*=\s*["']?\s*([\w-]+)/i.exec(utf8.slice(0, 2048));
+  const label = (m?.[1] ?? "").toLowerCase();
+  if (
+    !/^(gb(?:2312|k|18030)|big5|shift[-_]?jis|euc-(?:jp|kr)|iso-8859-\d|windows-125\d)$/.test(label)
+  ) {
+    return utf8;
+  }
+  try {
+    return new TextDecoder(label).decode(bytes);
+  } catch {
+    return utf8;
+  }
+}
+
+/**
  * 选择框里只收**真的有解析器**的扩展名 —— 一个能让用户点出"暂不支持"的选项，
  * 比没有这个选项更坏。.xmind 之前就是因为这句话被摘掉的，现在 importXmind 在
  * importBytes 里真的走得到，所以放回来。
  */
-export const IMPORT_EXTENSIONS = [".xmind", ".mm", ".opml", ".md", ".markdown", ".txt", ".csv"];
+export const IMPORT_EXTENSIONS = [
+  ".xmind",
+  ".mm",
+  ".opml",
+  ".md",
+  ".markdown",
+  ".txt",
+  ".csv",
+  ".html",
+  ".htm",
+];
+
+/**
+ * 给用户看的格式名清单（报错提示、工具栏 title 都从这里取）。
+ * 之前这些名字是界面里各抄一份散文列表：加一个格式就得记着改三处，漏抄一处就是错的提示。
+ */
+export const IMPORT_FORMAT_LABELS = [
+  "XMind",
+  "FreeMind",
+  "OPML",
+  "Markdown",
+  "CSV",
+  "HTML",
+  "缩进文本",
+];
 
 export function importFilter(): { name: string; extensions: string[] }[] {
   return [
     { name: "XMind 思维导图", extensions: ["xmind"] },
     { name: "大纲/思维导图文件", extensions: ["mm", "opml"] },
-    { name: "文本文件", extensions: ["md", "markdown", "txt", "csv"] },
+    { name: "文本/网页文件", extensions: ["md", "markdown", "txt", "csv", "html", "htm"] },
     { name: "所有文件", extensions: ["*"] },
   ];
 }

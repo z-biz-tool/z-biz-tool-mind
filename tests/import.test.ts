@@ -1,5 +1,5 @@
 /**
- * 导入器：XMind / FreeMind / OPML / CSV / Markdown / 缩进文本 → 主题树。
+ * 导入器：XMind / FreeMind / OPML / CSV / Markdown / 缩进文本 / HTML → 主题树。
  *
  * 缺陷形状（这里刻意覆盖的）：
  * 1) .xmind 有解析器却没人调用：engine 里 importXmind/importBytes 一直躺着，App 那边
@@ -10,23 +10,31 @@
  *    XMind 的根是 <xmap-content>，只能报"这不是 FreeMind 文件"；
  * 5) 空文件产出一张"只有中心主题的空白脑图"还提示导入成功；
  * 6) 多页导进来 page.id 撞车（页签 key 与 activePageId 都靠它）；
- * 7) CSV 的引号、内嵌逗号、"" 转义、BOM 与 CRLF；表头认不认中文列名。
+ * 7) CSV 的引号、内嵌逗号、"" 转义、BOM 与 CRLF；表头认不认中文列名；
+ * 8) HTML 是宽松语法：严格 XML 解析器连我们自己的导出产物都读不了；页面外壳（标题、
+ *    内嵌 SVG、"大纲"小标题）不能变成主题；样式表/脚本里的字符串不能变成主题；
+ * 9) 导入清单与选择框分组与嗅探必须同源 —— 收一个 sniff 不认的扩展名就是"点了只会报错"。
  */
 import { done, eq, ok, rejects, throws } from "./_harness.ts";
 import { encodeText, writeZip } from "../src/engine/emmx/zip.ts";
 import { parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
 import {
   IMPORT_EXTENSIONS,
+  IMPORT_FORMAT_LABELS,
   docFromOutline,
+  htmlOutline,
   importBytes,
   importCsv,
   importFilter,
   importFreeMind,
+  importHtml,
   importOpml,
   importXmind,
   sniff,
   splitCsv,
 } from "../src/engine/import/index.ts";
+import { toHtml } from "../src/engine/export/markup.ts";
+import { parseXml } from "../src/engine/emmx/xparse.ts";
 import { outlineToText } from "../src/engine/outline.ts";
 import type { DocumentModel } from "../src/types/model.ts";
 
@@ -38,16 +46,33 @@ eq("嗅探认 .xmind（大小写无关）", sniff("D:\\a\\计划.XMind"), "xmind
 eq("嗅探认 .mm 是 FreeMind", sniff("map.mm"), "freemind");
 eq("嗅探认 .md / .markdown", [sniff("a.md"), sniff("b.markdown")], ["markdown", "markdown"]);
 eq("嗅探认 .csv 与 .txt", [sniff("t.csv"), sniff("t.txt")], ["csv", "text"]);
+eq("嗅探认 .html 与 .htm（大小写无关）", [sniff("页.HTML"), sniff("a.htm")], ["html", "html"]);
 eq("嗅探不认的扩展名", sniff("photo.png"), "unknown");
 ok(
-  "选择框收的扩展名都有解析器（含 .xmind）",
-  IMPORT_EXTENSIONS.includes(".xmind") && !IMPORT_EXTENSIONS.includes(".docx"),
+  "选择框收的扩展名都有解析器（含 .xmind 与 .html）",
+  IMPORT_EXTENSIONS.includes(".xmind") &&
+    IMPORT_EXTENSIONS.includes(".html") &&
+    !IMPORT_EXTENSIONS.includes(".docx"),
   IMPORT_EXTENSIONS.join(",")
 );
 ok(
   "文件过滤里 XMind 单列一组",
   importFilter().some((f) => f.extensions.includes("xmind"))
 );
+{
+  // 清单 ⇄ 嗅探 ⇄ 选择框分组三处同源：任何一处漏抄，用户点到的就是一个只会报错的选项。
+  const blind = IMPORT_EXTENSIONS.filter((ext) => sniff(`文件${ext}`) === "unknown");
+  eq("扩展名清单里每一项 sniff 都认得", blind, []);
+  const offList = importFilter()
+    .flatMap((f) => f.extensions)
+    .filter((e) => e !== "*" && !IMPORT_EXTENSIONS.includes(`.${e}`));
+  eq("选择框分组不超出清单（多了就是点了没解析器）", offList, []);
+  ok(
+    "提示清单也收 HTML（界面从这里取，不再各抄一份散文）",
+    IMPORT_FORMAT_LABELS.includes("HTML"),
+    IMPORT_FORMAT_LABELS.join("/")
+  );
+}
 
 // ---------- 缩进文本 / Markdown ----------
 const outline = "项目计划\n\t阶段一\n\t\t任务A\n\t阶段二";
@@ -204,6 +229,126 @@ await rejects(
   importBytes("e.csv", utf8("\uFEFF")),
   "CSV 是空的"
 );
+eq(
+  "importBytes 走 html 分支",
+  pageText(await importBytes("页.html", utf8("<ul><li>甲<ul><li>乙</li></ul></li></ul>"))),
+  "甲\n\t乙"
+);
+
+// ---------- HTML：宽松语法，只读层级和文字 ----------
+const htmlText = (s: string): string => pageText(importHtml(s, "网页"));
+eq(
+  "列表嵌套给层级（一层 <ul> 一级）",
+  htmlText("<ul><li>甲<ul><li>乙<ul><li>丙</li></ul></li></ul></li></ul>"),
+  "甲\n\t乙\n\t\t丙"
+);
+eq("标题给层级", htmlText("<h1>标题</h1><h2>小节</h2><h3>要点</h3>"), "标题\n\t小节\n\t\t要点");
+eq(
+  "标题当根，同级的 li 挂在它下面",
+  htmlText("<h1>标题</h1><ul><li>甲</li><li>乙</li></ul>"),
+  "标题\n\t甲\n\t乙"
+);
+// 装机那份真网页骨架（h2 段 + ul 要点 + 段里再套一层）：要点必须落在自己那一节下面，
+// 而不是和节标题齐平。只看上一条测不出这一截 —— 一节的时候"齐平"和"挂上"在树里长一样。
+eq(
+  "一节一段要点：列表跟着它上面那个标题走",
+  htmlText(
+    "<h1>纪要</h1><h2>收入</h2><ul><li>续约<li>新签</ul>" +
+      "<h2>成本</h2><ul><li>服务器<ul><li>扩容</li></ul></li><li>人力</li></ul>"
+  ),
+  "纪要\n\t收入\n\t\t续约\n\t\t新签\n\t成本\n\t\t服务器\n\t\t\t扩容\n\t\t人力"
+);
+eq("漏写 </li> 也照样分行", htmlText("<ul><li>甲<li>乙<li>丙</ul>"), "甲\n\t乙\n\t丙");
+eq(
+  "项里的第二段挂到这一项下面，不是变成兄弟",
+  htmlText("<ul><li>甲<p>说明<li>乙</ul>"),
+  "甲\n\t说明\n\t乙"
+);
+eq(
+  "表格一行 = 一个主题，单元格之间补空格",
+  htmlText("<table><tr><td>甲</td><td>乙</td></tr><tr><td>丙</td></tr></table>"),
+  "甲 乙\n\t丙"
+);
+eq("<br> 是项内换行，不是新主题", htmlText("<ul><li>甲<br>乙</li></ul>"), "甲 乙");
+eq(
+  "实体解码，&nbsp; 压成普通空格",
+  htmlText("<ul><li>散记&amp;备忘</li><li>甲&nbsp;&nbsp;乙</li></ul>"),
+  "散记&备忘\n\t甲 乙"
+);
+eq(
+  "脚本 / 样式 / 导航 / SVG 里的字符串一概不进来",
+  htmlText(
+    '<script>var 甲="不该出现"</script><style>li{不该出现}</style><nav>首页 关于</nav>' +
+      "<svg><text>图形里的字</text></svg><ul><li>真主题</li></ul>"
+  ),
+  "真主题"
+);
+eq("注释不进来", htmlText("<!--甲--><ul><li>乙</li></ul>"), "乙");
+eq(
+  "行就是制表符缩进的大纲文本（与其余导入同一条 P-3 路）",
+  htmlOutline("<ul><li>甲<ul><li>乙</li></ul></li></ul>"),
+  "甲\n\t乙"
+);
+// 这一条钉的是 `<li>` 自己那支，不是通用的块级那一支：走通用支时"空的父项"会把它下面
+// 那层缩进一起吃掉（乙 落成 0 级）。normalizeLevels 会把跳层压平，所以这个差别在
+// importHtml 的结果里看不出来 —— 只有 htmlOutline 的原始缩进能把它钉住。
+eq(
+  "空的包裹项（导航/目录常见）不吞掉嵌套层级",
+  htmlOutline("<ul><li><ul><li>乙</li></ul></li></ul>"),
+  "\t乙"
+);
+throws(
+  "HTML 里也守『空文件要报错』：只有外壳不给一张空白图",
+  () => importHtml("<ul></ul>", "空"),
+  "没有读到任何主题行"
+);
+throws(
+  "严格 XML 解析器确实读不了 HTML —— 所以才要 htmlOutline 这套宽松扫描",
+  () => parseXml("<meta charset=utf-8><ul><li>甲</li></ul>"),
+  "未闭合"
+);
+
+// ---------- 我们的 HTML 导出 ⇄ 导入：回环不能长出外壳主题 ----------
+{
+  const outline = "季度规划\n\t收入\n\t\t续约\n\t成本";
+  const exported = toHtml(docFromOutline(outline, "季度规划").pages[0], "季度规划");
+  eq("导出的 HTML 再导回来，大纲一字不差", htmlText(exported), outline);
+  ok("导出的 HTML 里那块是标了记的", /data-mindmap="1"/.test(exported), "");
+  eq(
+    "没有标记的普通网页仍按整份读（标题也是主题）",
+    htmlText("<h1>文章</h1><ul><li>要点</li></ul>"),
+    "文章\n\t要点"
+  );
+}
+
+// ---------- 按声明的 charset 解，不硬按 utf-8 ----------
+{
+  const gbk = new Uint8Array([
+    ...utf8('<meta charset="gbk"><ul><li>'),
+    0xd6,
+    0xd0,
+    0xce,
+    0xc4,
+    ...utf8("</li></ul>"),
+  ]);
+  eq(
+    "GBK 页面导进来是中文，不是一串 \\ufffd",
+    pageText(await importBytes("老页面.html", gbk)),
+    "中文"
+  );
+  const latin = new Uint8Array([
+    ...utf8('<meta charset="iso-8859-1"><ul><li>caf'),
+    0xe9,
+    ...utf8("</li></ul>"),
+  ]);
+  eq("latin-1 同理", pageText(await importBytes("a.html", latin)), "café");
+  const lied = new Uint8Array([...utf8('<meta charset="x-不存在"><ul><li>甲</li></ul>')]);
+  eq(
+    "声明了个 ICU 没有的标签：回落 utf-8，不整份失败",
+    pageText(await importBytes("b.html", lied)),
+    "甲"
+  );
+}
 
 // ---------- 导进来要存得回去：多页 .xmind → .emmx → 再读回来 ----------
 const roundTrip = await parseEmmx(await writeEmmx(doc));

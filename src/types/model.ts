@@ -212,6 +212,8 @@ export interface ShapeExtras {
   calloutIds?: string[];
   /** 折叠：只显示到本层。 */
   collapsed?: boolean;
+  /** 幻灯片隐藏页（§3.8）：编辑器照常列出，放映跳过。只挂在主分支上。 */
+  slideHidden?: boolean;
 }
 
 export interface Shape {
