@@ -15,6 +15,7 @@ import {
   children,
   descendants,
   demote,
+  duplicateShape,
   insertChild,
   insertParent,
   insertSibling,
@@ -31,6 +32,7 @@ import {
   siblingIndex,
   swapSibling,
   toggleCollapsed,
+  updateExtras,
   updateText,
   updateTransform,
   visibleChildren,
@@ -264,6 +266,55 @@ eq("文本读回", plainText(updateText(p, A, "改过").shapes[A].text), "改过
     y: -20,
   });
   eq("删掉这一枝就不再有这个主题（位移跟着走）", Boolean(removeShape(one, A).shapes[A]), false);
+}
+
+// ---------------------------------------------------------------- 复制卡片：看板「复制卡片」的数据面（duplicateShape）
+{
+  let q = createPage("复制");
+  const qroot = q.rootId;
+  const grow = (parent: string, text: string) => {
+    const r = insertChild(q, parent, text);
+    q = r.page;
+    return r.id;
+  };
+  const b1 = grow(qroot, "枝一");
+  const s1 = grow(b1, "孙一");
+  grow(s1, "曾孙");
+  const b2 = grow(qroot, "枝二");
+  q = updateExtras(updateText(q, b1, "枝一改"), b1, {
+    task: { assignees: ["张三"], progress: 40, priority: "high", status: "doing", tags: ["红"], start: 1000, finish: 2000 },
+    note: "便签",
+  });
+  const r = duplicateShape(q, b1);
+  const cid = r.id;
+  ok("副本拿到全新 id", cid.length > 0 && cid !== b1 && !q.shapes[cid], cid);
+  const copy = r.page.shapes[cid];
+  const orig = r.page.shapes[b1];
+  eq("副本插在原件紧后", r.page.shapes[qroot].childIds, [b1, cid, b2]);
+  eq("子树结构照抄", [copy.childIds.length, r.page.shapes[copy.childIds[0]].childIds.length], [1, 1]);
+  eq("文字逐级相同", [plainText(copy.text), plainText(r.page.shapes[copy.childIds[0]].text)], ["枝一改", "孙一"]);
+  eq("任务字段整份带走", [
+    copy.extras.task?.priority,
+    copy.extras.task?.progress,
+    copy.extras.task?.assignees,
+    copy.extras.task?.tags,
+    copy.extras.note,
+  ], ["high", 40, ["张三"], ["红"], "便签"]);
+  ok("任务对象是拷贝不是引用（改副本不许串到原件）", copy.extras.task !== orig.extras.task);
+  eq("副本的父链接指向原件的父亲", copy.parentId, qroot);
+  eq("原件一个字节没动", r.page.shapes[b1], q.shapes[b1]);
+  // 浮动根：位置是用户数据（P-2），副本要带着走
+  const f = grow(qroot, "散记");
+  const fq = setFloating(q, f, 320, -210);
+  const fr = duplicateShape(fq, f);
+  const fc = fr.page.shapes[fr.id];
+  eq("浮动根副本：仍是浮动、不挂父、位置照抄", [
+    Boolean(fc.floating),
+    fc.parentId,
+    [fc.transform.x, fc.transform.y],
+  ], [true, null, [320, -210]]);
+  eq("中心主题不可复制", duplicateShape(fq, fq.rootId).id, "");
+  eq("未知 id 是空写", duplicateShape(fq, "不存在的id").page, fq);
 }
 
 done();

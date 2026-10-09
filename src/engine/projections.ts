@@ -55,9 +55,46 @@ export interface KanbanCard {
   priority: string;
   progress: number;
   due?: number;
+  /** 里程碑（§3.5 任务部件）：甘特画菱形、看板打标。 */
+  milestone?: boolean;
   tags: string[];
   subCount: number;
   status: TaskStatus;
+}
+
+/** 看板排序键。manual = 树序（投影永远可退回的基准，排序不写树）。 */
+export type KanbanSortKey = "manual" | "title" | "due" | "priority";
+
+const PRIORITY_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+/**
+ * 卡片排序。只影响看板这一层的展示顺序，树一个字节都不动（P-1：投影无状态）。
+ * 截止日那条特殊：没填日期的卡片永远垫底 —— 升序时它们本来就最大，降序翻转会沉到最前，
+ * "最紧急的排最后"不是任何一种用法。
+ */
+export function sortCards(cards: KanbanCard[], key: KanbanSortKey, dir: 1 | -1 = 1): KanbanCard[] {
+  if (key === "manual") return cards;
+  const arr = [...cards];
+  arr.sort((a, b) => {
+    if (key === "title") return dir * a.title.localeCompare(b.title, "zh");
+    if (key === "priority") return dir * ((PRIORITY_RANK[a.priority] ?? 1) - (PRIORITY_RANK[b.priority] ?? 1));
+    if (!a.due && !b.due) return 0;
+    if (!a.due) return 1;
+    if (!b.due) return -1;
+    return dir * (a.due - b.due);
+  });
+  return arr;
+}
+
+/** 卡片筛选：标题或标签包含关键字（不区分大小写），标签可再精确卡一道。 */
+export function filterCards(cards: KanbanCard[], f: { text?: string; tag?: string }): KanbanCard[] {
+  const text = f.text?.trim().toLowerCase();
+  return cards.filter((c) => {
+    if (text && !c.title.toLowerCase().includes(text) && !c.tags.some((t) => t.toLowerCase().includes(text)))
+      return false;
+    if (f.tag && !c.tags.includes(f.tag)) return false;
+    return true;
+  });
 }
 
 export interface KanbanColumn {
@@ -101,6 +138,7 @@ export function kanbanBoard(page: Page): KanbanColumn[] {
         priority: c.extras.task?.priority ?? "medium",
         progress: progressOf(c),
         due: c.extras.task?.finish,
+        milestone: c.extras.task?.milestone ?? false,
         tags: c.extras.labels ?? c.extras.task?.tags ?? [],
         subCount: c.childIds.length,
         status: statusOf(c),

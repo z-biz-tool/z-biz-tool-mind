@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { createPage, newGanttOption } from "../src/model/factory.ts";
 import { insertChild, setCollapsed, setFloating, updateExtras, updateText } from "../src/engine/tree.ts";
 import {
+  filterCards,
   ganttSchedule,
   ganttTicks,
   isWorkDay,
@@ -27,6 +28,7 @@ import {
   outlineRows,
   printPagePlan,
   slideDeck,
+  sortCards,
   traverseFocus,
   traverseSequence,
 } from "../src/engine/projections.ts";
@@ -247,6 +249,34 @@ const barsOf = (p: Page, g: GanttOption) => ganttSchedule(p, g);
     );
     ok("样本里确实读到了 7 位工作日掩码", attr("WorkDay").split(";").length === 7, `实测 ${attr("WorkDay")}`);
   }
+}
+
+// ---------------------------------------------------------------- 看板排序 / 筛选 / 里程碑（卡片菜单的数据面）
+{
+  let p = createPage("看板排序");
+  const mk = (parent: string, text: string, extras?: ShapeExtras) => {
+    const r = insertChild(p, parent, text);
+    p = r.page;
+    if (extras) p = updateExtras(p, r.id, extras);
+    return r.id;
+  };
+  const a = mk(p.rootId, "甲列");
+  const c1 = mk(a, "卡片A", { task: T({ priority: "high", finish: MON + 2 * DAY, milestone: true }), labels: ["红"] });
+  const c2 = mk(a, "卡片B", { task: T({ priority: "low", finish: MON + 1 * DAY }), labels: ["蓝"] });
+  const c3 = mk(a, "卡片C", { task: T({ priority: "medium" }) });
+  const cards = kanbanBoard(p)[0].cards;
+  eq("里程碑随卡片浮出（看板标签与甘特菱形读同一份）", cards.map((c) => (c.milestone ? 1 : 0)), [1, 0, 0]);
+  eq("标题排序", sortCards(cards, "title").map((c) => c.id), [c1, c2, c3]);
+  eq("截止日升序：先到的在前", sortCards(cards, "due").map((c) => c.id), [c2, c1, c3]);
+  eq("截止日降序：没填日期的照样垫底，不参与翻转", sortCards(cards, "due", -1).map((c) => c.id), [c1, c2, c3]);
+  eq("优先级排序：高→低", sortCards(cards, "priority").map((c) => c.id), [c1, c3, c2]);
+  eq("优先级降序：低在前", sortCards(cards, "priority", -1).map((c) => c.id), [c2, c3, c1]);
+  eq("手动 = 树序原样（引用都不换，看板不写树）", sortCards(cards, "manual"), cards);
+  eq("筛选：标题包含", filterCards(cards, { text: "A" }).map((c) => c.id), [c1]);
+  eq("筛选：标签也算在关键字里", filterCards(cards, { text: "蓝" }).map((c) => c.id), [c2]);
+  eq("筛选：标签精确一道", filterCards(cards, { tag: "红" }).map((c) => c.id), [c1]);
+  eq("筛选：关键字与大小写", filterCards(cards, { text: "a" }).map((c) => c.id), [c1]);
+  eq("筛选：无命中给空数组", [filterCards(cards, { text: "不存在" }).length, filterCards(cards, { tag: "紫" }).length], [0, 0]);
 }
 
 done();

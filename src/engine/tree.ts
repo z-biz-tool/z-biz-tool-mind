@@ -192,6 +192,37 @@ export function insertSibling(page: Page, refId: string, side: Side, text = ""):
   return insertChild(page, ref.parentId, text, at);
 }
 
+/**
+ * 深拷贝子树，作为原节点的紧后兄弟（看板「复制卡片」走这里）。
+ * id 全部重发；内容（文字/样式/挂载件）用 structuredClone 整份带走，
+ * 所以任务字段、注释、标签在副本上改一个都不串到原件。位置也照抄：
+ * 智慧版式里坐标归引擎重算无所谓，浮动根的位置是用户数据（P-2），丢了才是 bug。
+ */
+export function duplicateShape(page: Page, id: string): InsertResult {
+  const src = page.shapes[id];
+  if (!src) return { page, id: "" };
+  if (!src.parentId && !src.floating) return { page, id: "" }; // 中心主题不复制
+  let out = page;
+  const walk = (srcId: string, parentId: string | null): string => {
+    const s = page.shapes[srcId];
+    const nid = nextShapeId(out);
+    const copy: Shape = { ...structuredClone(s), id: nid, parentId, childIds: [] };
+    out = { ...out, shapes: { ...out.shapes, [nid]: copy } };
+    for (const c of s.childIds) copy.childIds.push(walk(c, nid));
+    return nid;
+  };
+  if (!src.parentId) {
+    const newId = walk(id, null);
+    return { page: out, id: newId };
+  }
+  const parentId = src.parentId;
+  const at = siblingIndex(page, id) + 1;
+  const newId = walk(id, parentId);
+  const sibs = [...(out.shapes[parentId]?.childIds ?? page.shapes[parentId].childIds)];
+  sibs.splice(Math.min(at, sibs.length), 0, newId);
+  return { page: setChildren(out, parentId, sibs), id: newId };
+}
+
 /** 为选中主题插入父主题：原节点整体下移一层，类型随层级重算。 */
 export function insertParent(page: Page, id: string): InsertResult {
   const s = page.shapes[id];
