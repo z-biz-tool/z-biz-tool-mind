@@ -1199,8 +1199,6 @@ function layoutTable(root: TreeNode, top: boolean, line: string): TableGrid {
     c.node.y = Math.round(r.y + r.h / 2);
   }
   const lines: TableGrid["lines"] = [];
-  // 不需要去重：同栏里两个格子的下沿必然错开（同深度的两棵子树不共享叶子），
-  // 栏界线与外框又各自在不同的跨度上。测试那边仍然断言"一条都不重复"。
   const add = (u0: number, v0: number, u1: number, v1: number) => {
     const a = at(u0, v0);
     const b = at(u1, v1);
@@ -1213,12 +1211,22 @@ function layoutTable(root: TreeNode, top: boolean, line: string): TableGrid {
   add(totalU, 0, totalU, totalV);
   // 栏界：整条贯通（表格里的合并格只跨槽，不跨栏，所以栏界线不会被盖住）
   for (let l = 1; l < laneOff.length; l += 1) add(laneOff[l], 0, laneOff[l], totalV);
-  // 槽界：只画在该栏真的有格子断开的地方
+  // 槽界：按栏画，落笔的位置是**这一栏里所有格子的上下沿**的并集。
+  // 只画下沿不够：某条浅枝占掉的槽在这一栏是空档，空档与下一格之间没有线，
+  // 那两行就被读成一整格、下一格看着不居中（真机抓到，见 03 §1.3-14）。
+  // 相邻格子共享一条边，所以按栏收进 Set —— 这里去重是载荷，测试仍断言"一条都不重复"。
+  const edges = new Map<number, Set<number>>();
   for (const c of cells) {
-    const end = slotOff[c.slot] + sumSlot(c.slot, c.span);
-    if (end >= totalV) continue;
-    add(laneOff[c.lane], end, laneOff[c.lane] + laneSize[c.lane], end);
+    const s = edges.get(c.lane) ?? new Set<number>();
+    s.add(slotOff[c.slot]);
+    s.add(slotOff[c.slot] + sumSlot(c.slot, c.span));
+    edges.set(c.lane, s);
   }
+  for (const [lane, set] of edges)
+    for (const e of [...set].sort((a, b) => a - b)) {
+      if (e <= 0 || e >= totalV) continue; // 外框那两条已经画过
+      add(laneOff[lane], e, laneOff[lane] + laneSize[lane], e);
+    }
   return { lines, line, cells: out };
 }
 
