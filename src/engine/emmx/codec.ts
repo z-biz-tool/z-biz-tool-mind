@@ -467,7 +467,11 @@ function parseShape(n: XmlNode, rels: Record<string, string>, warnings: string[]
   const labels = vnode(find(n, "Labels"), "V");
   if (labels) extras.labels = labels.split(";").filter(Boolean);
   const layoutNode = find(n, "Layout");
-  if (vnode(layoutNode, "LayoutDirection", "") === "0") extras.collapsed = true;
+  // 折叠的真落点。早先这里读的是 LayoutDirection=="0"，那是认错键：亿图自己写的五份用户图里
+  // LayoutDirection=0 有三分之一挂在叶子主题上（软件质量 36/72、测试基础 13/28、系统测试 9/14），
+  // 而叶子不可能被折叠；真键 Toggler 值域只有 "1"、不写即未折叠，且系统测试那 22 个全都长在有子主题上，
+  // 与 LayoutDirection 互斥。LayoutDirection 仍归 LayoutDirection，交给 carryUntouched 原样带回。
+  if (vnode(layoutNode, "Toggler", "") === "1") extras.collapsed = true;
   // 分支自由布局的位移（§3.3）。这一对读作 [dx,dy]；长度不够就当成"没拖过"，
   // 不猜半个值 —— 脏数据在这里的正确答案是回到引擎位置，而不是把分支挪到原点。
   const branchOffset = splitNumbers(attr(find(n, "BranchOffset"), "V", ""));
@@ -1150,6 +1154,11 @@ function carryUntouched(s: Shape, n: XmlNode, from?: XmlNode): void {
   // 读侧按 split(";").filter(Boolean) 理解标签，比较前先按同一规则归一化，否则 "A;A;" 会被当成改过。
   const rawLabels = from ? normLabels(vnode(find(from, "Labels"), "V")) : undefined;
   const modelLabels = normLabels((s.extras.labels ?? []).join(";"));
+  // <Layout> 是"部分建模"的节点：折叠态归我们管，里面其余的码（LayoutDirection、ImagePos、
+  // Margins、我们不认的布局记忆）一律留着 —— 界面里折一下再存，不该顺手把亿图的布局信息洗掉。
+  const rawLayout = from ? find(from, "Layout") : undefined;
+  const rawFolded = vnode(rawLayout, "Toggler", "") === "1";
+  const folded = Boolean(s.extras.collapsed);
   for (const c of from?.children ?? []) {
     if (SHAPE_OWN_TAGS.has(c.tag)) continue;
     if (c.tag === "Comment" || c.tag === "Note") {
@@ -1164,6 +1173,10 @@ function carryUntouched(s: Shape, n: XmlNode, from?: XmlNode): void {
       if (rawLabels === modelLabels) n.children.push(c);
       continue;
     }
+    if (c.tag === "Layout") {
+      n.children.push(folded === rawFolded ? c : withToggler(c, folded));
+      continue;
+    }
     n.children.push(c);
   }
   if (s.extras.note !== undefined && s.extras.note !== rawNote) {
@@ -1175,6 +1188,20 @@ function carryUntouched(s: Shape, n: XmlNode, from?: XmlNode): void {
   if (modelLabels && modelLabels !== rawLabels) {
     n.children.push(el("Labels", {}, [vNode("V", modelLabels)]));
   }
+  // 新建的主题本来就没有 <Layout>：折叠了才补一个，没折叠就不写（亿图的写法是"没折叠不留节点"）。
+  if (folded && !rawLayout) n.children.push(el("Layout", {}, [vNode("Toggler", "1")]));
+}
+
+/**
+ * 换掉 `<Layout>` 里的 Toggler，其余子元素与属性一律保留。
+ *
+ * 加在开头而不是追加：亿图自己就把 Toggler 写在 `<Layout>` 的第一个位置，
+ * 位置跟着原作者比按我们的习惯排更稳。
+ */
+function withToggler(raw: XmlNode, folded: boolean): XmlNode {
+  const kids = raw.children.filter((c) => c.tag !== "Toggler");
+  if (folded) kids.unshift(vNode("Toggler", "1"));
+  return { tag: raw.tag, attrs: { ...raw.attrs }, children: kids, text: raw.text };
 }
 
 function normLabels(raw?: string): string {
