@@ -12,6 +12,7 @@
     "build:desktop": "node scripts/build-desktop.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node tests/run.mjs",
+    "bench": "node scripts/bench-layout.mjs",
     "icons": "node scripts/gen-icons.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\""
   },

@@ -30,6 +30,7 @@ import { createPage } from "../src/model/factory.ts";
 import {
   charWidth,
   computeLayout,
+  layoutCacheProbe,
   measureShape,
   textWidth,
   toFreeLayout,
@@ -488,6 +489,126 @@ function add(parentId: string, text: string): string {
     "没拖的盒子一个像素不动",
     still.map((id) => atPaint(p1, id)),
     still.map((id) => atPaint(p0, id))
+  );
+}
+
+// ---------------------------------------------------------------- 拖动帧的缓存等值（§1.3-12 每帧成本）
+{
+  cur = createPage("缓存");
+  const a = add(root(), "枝甲");
+  const a1 = add(a, "子甲");
+  const a11 = add(a1, "孙甲一层很长的一段中文标题");
+  const b = add(root(), "乙枝");
+  add(b, "子乙");
+  const snap = (r: ReturnType<typeof computeLayout>) =>
+    JSON.stringify({
+      order: r.order,
+      // 按 order 取，逐字段比：盒子内任何一处（含 lines、stripH）被缓存带歪都会红
+      boxes: r.order.map((id) => r.boxes[id]),
+      connectors: r.connectors,
+      axis: r.axis,
+      grid: r.grid,
+      bounds: r.bounds,
+      width: r.width,
+      height: r.height,
+    });
+  /** 命中缓存的那一帧 vs 换了引用、整页重排的那一帧：必须逐值相同。 */
+  const sameAsCold = (label: string, page: Page, input: Parameters<typeof computeLayout>[1]) =>
+    eq(label, snap(computeLayout(page, input)), snap(computeLayout({ ...page }, input)));
+
+  const offs: ({ id: string; x: number; y: number } | undefined)[] = [
+    undefined,
+    { id: a, x: 0, y: 0 },
+    { id: a, x: 40, y: -25 },
+    { id: b, x: -80, y: 60 },
+    { id: a11, x: 999, y: 999 },
+  ];
+  for (const o of offs)
+    sameAsCold(
+      "拖 " + (o ? o.id + " 偏 " + o.x + "," + o.y : "（没拖）") + " 的这一帧 = 整页重排",
+      cur,
+      o ? { liveBranch: o } : {}
+    );
+
+  // 拖动真实的样子：page 不换、只有位移在换。来回切回第一步那一帧必须和最初逐值相同 ——
+  // 位移被缓存累起来（少了一层克隆）就会在这里红。
+  const first = snap(computeLayout(cur, { liveBranch: { id: a, x: 10, y: 10 } }));
+  for (const o of [
+    { id: b, x: -20, y: 5 },
+    { id: a, x: 30, y: -7 },
+    { id: a, x: 10, y: 10 },
+  ])
+    computeLayout(cur, { liveBranch: o });
+  eq(
+    "来回拖同一枝，回到起点那一帧与最初逐值相同（缓存不累积位移）",
+    snap(computeLayout(cur, { liveBranch: { id: a, x: 10, y: 10 } })),
+    first
+  );
+
+  // 缓存键少算任何一个参数，就会拿上一层/上一模式的旧位置当这一帧的答案。
+  // 每一案都先把槽换成"除这一个参数外都对"的那一份：不 priming，前一案的合法失配会替漏键掩护过去
+  // （色板那一案就这么活过一次）。
+  const staleIfKeyMissing = (input: Parameters<typeof computeLayout>[1]) => {
+    computeLayout(cur, {});
+    eq(
+      "换参数就重算：" + JSON.stringify(input),
+      snap(computeLayout(cur, input)),
+      snap(computeLayout({ ...cur }, input))
+    );
+  };
+  for (const input of [
+    { displayLevel: 2 },
+    { displayLevel: 9 },
+    { topicWidthMode: "fixed" as const },
+    { only: [a] },
+    { palette: { accents: ["#123456"], fontSizes: [40], fontFamily: "NoSuchFont" } },
+  ])
+    staleIfKeyMissing(input);
+
+  const r1 = computeLayout(cur);
+  const r2 = computeLayout(cur);
+  eq("两次调用不共享盒子对象（命中缓存也得交一份新的）", r1.boxes[a] === r2.boxes[a], false);
+  r1.boxes[a].x += 1000;
+  r1.boxes[a11].y = 12345;
+  eq(
+    "把上一帧的盒子改坏，下一帧不受影响",
+    computeLayout(cur).boxes[a11].y,
+    r2.boxes[a11].y
+  );
+
+  // 没有这几行，"删掉缓存"这种改法测试全绿、帧率静默退回原样：命中数就是那条底线
+  computeLayout(cur, { displayLevel: 8 }); // 先把槽换成别的键，下面的第一笔必须是失效
+  const p0 = layoutCacheProbe();
+  computeLayout(cur);
+  computeLayout(cur, { liveBranch: { id: a, x: 1, y: 1 } });
+  computeLayout(cur, { liveBranch: { id: a, x: 2, y: 2 } });
+  computeLayout(cur, { liveBranch: { id: b, x: 3, y: 3 } });
+  const p1 = layoutCacheProbe();
+  eq("连着拖三帧只重排一次整页", [p1.hits - p0.hits, p1.misses - p0.misses], [3, 1]);
+
+  // 表格两码不叠位移，画布那边也不许拖枝：缓存这一帧同样一格不能差
+  for (const code of ["treeTableLeft", "treeTableTop"] as LayoutCode[]) {
+    const tb = { ...cur, layout: { ...cur.layout, code } };
+    const live = { liveBranch: { id: a, x: 30, y: 30 } };
+    sameAsCold(code + "：拖那一帧 = 整页重排", tb, live);
+    eq(
+      code + "：格线不叠分支位移（与画布同一个口径）",
+      snap(computeLayout(tb, live)),
+      snap(computeLayout(tb, {}))
+    );
+  }
+
+  const q0 = paintPage(cur, { liveBranch: { id: a, x: 12, y: -8 } });
+  const q1 = paintPage({ ...cur }, { liveBranch: { id: a, x: 12, y: -8 } });
+  const at = (P: typeof q0) => JSON.stringify(P.boxes.map((b) => [b.id, b.x, b.y, b.w, b.h]));
+  eq("画布真正调的 paintPage 那一帧也 = 整页重排", at(q0), at(q1));
+
+  // 空页那条老路：中心主题没了要给 0×0，不能被尾段那句 Math.max(1, …) 撑成 80
+  const gone = computeLayout({ ...cur, shapes: {} });
+  eq(
+    "中心主题不存在：order 空、整页 0×0",
+    [gone.order.length, gone.width, gone.height],
+    [0, 0, 0]
   );
 }
 

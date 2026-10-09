@@ -1287,25 +1287,102 @@ function applyBranchOffsets(
   }
 }
 
-export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult {
-  const displayLevel = input.displayLevel ?? 9;
-  const palette = input.palette ?? defaultPalette();
-  const skip = new Set(input.only ? collectOutside(page, input.only) : []);
-  const fixedW = input.topicWidthMode === "fixed" ? uniformWidth(page, palette) : undefined;
+/**
+ * 与「正在拖哪一枝」无关的那半份布局：量文字、排枝、算格线。
+ *
+ * 拖动中每帧变的只有 `liveBranch`，而它是 collect 之后的一次纯平移（`applyBranchOffsets`），
+ * 不参与前面这些计算 —— 所以这一份能整页缓存，每帧只重做
+ * 「克隆盒子 → 叠位移 → 连线 → 主轴 + 包围盒」那四步便宜的。
+ */
+interface LayoutBase {
+  /** 未叠分支位移的盒子。与 `order`、`grid` 一样是缓存里的那一份，调用方只读。 */
+  boxes: Record<string, NodeBox>;
+  order: string[];
+  grid: TableGrid | null;
+  code: LayoutCode;
+  /** 中心主题不存在或被显示层级挡掉：整页没有盒子，最终结果仍要走那条全零的老路。 */
+  empty: boolean;
+}
+
+/** 几何只吃色板里的字号/字形，但整份签名更保险：换色板就该重算。 */
+const paletteKey = (p: ThemePalette): string =>
+  `${p.fontFamily}|${p.fontSizes.join(",")}|${p.accents.join(",")}`;
+
+/** 单槽缓存：拖动期间 page 引用不换就命中，松手写进 model 后引用换了，自然失效。 */
+let baseCache: {
+  page: Page;
+  displayLevel: number;
+  only: string[] | undefined;
+  widthMode: string;
+  palette: string;
+  base: LayoutBase;
+} | null = null;
+
+const sameIds = (a: string[] | undefined, b: string[] | undefined) =>
+  a === b || (!!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]));
+
+const cacheProbe = { hits: 0, misses: 0 };
+
+/**
+ * 只给测试与基准用：两个计数不参与任何几何判断，删了缓存也看不出差别这种事得能被量出来。
+ * 口径 = 整页重排（buildLayoutBase）跑了几次。
+ */
+export function layoutCacheProbe(): { hits: number; misses: number } {
+  return { ...cacheProbe };
+}
+
+function cachedBase(
+  page: Page,
+  displayLevel: number,
+  only: string[] | undefined,
+  widthMode: "auto" | "fixed" | undefined,
+  palette: ThemePalette
+): LayoutBase {
+  const c = baseCache;
+  if (
+    c &&
+    c.page === page &&
+    c.displayLevel === displayLevel &&
+    c.widthMode === (widthMode ?? "") &&
+    c.palette === paletteKey(palette) &&
+    sameIds(c.only, only)
+  ) {
+    cacheProbe.hits += 1;
+    return c.base;
+  }
+  cacheProbe.misses += 1;
+  const base = buildLayoutBase(page, displayLevel, only, palette, widthMode);
+  baseCache = {
+    page,
+    displayLevel,
+    only,
+    widthMode: widthMode ?? "",
+    palette: paletteKey(palette),
+    base,
+  };
+  return base;
+}
+
+/** 每帧还按老契约交出一份新盒子表：`applyBranchOffsets` 要就地改 x/y，不能碰缓存里那些。 */
+function cloneBoxes(src: Record<string, NodeBox>): Record<string, NodeBox> {
+  const out: Record<string, NodeBox> = {};
+  for (const id in src) out[id] = { ...src[id] };
+  return out;
+}
+
+function buildLayoutBase(
+  page: Page,
+  displayLevel: number,
+  only: string[] | undefined,
+  palette: ThemePalette,
+  topicWidthMode: "auto" | "fixed" | undefined
+): LayoutBase {
+  const skip = new Set(only ? collectOutside(page, only) : []);
+  const fixedW = topicWidthMode === "fixed" ? uniformWidth(page, palette) : undefined;
   const root = buildTree(page, page.rootId, 0, -1, displayLevel, skip, palette, fixedW);
   const boxes: Record<string, NodeBox> = {};
   const order: string[] = [];
-  if (!root)
-    return {
-      boxes,
-      order,
-      connectors: [],
-      axis: null,
-      grid: null,
-      bounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 },
-      width: 0,
-      height: 0,
-    };
+  if (!root) return { boxes, order, grid: null, code: page.layout.code, empty: true };
 
   const s = page.layout;
   let grid: TableGrid | null = null;
@@ -1473,10 +1550,6 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
     order.push(n.id);
   };
   walk([root], collect);
-  // 表格里格线是硬边界：把一整枝挪开会让格子和线对不上，所以这两码不叠分支位移。
-  // 画布那边同样不许在表格版式里拖枝（dragTopic），两边一个口径。
-  if (page.layout.code !== "free" && !TABLE_LAYOUTS.includes(page.layout.code))
-    applyBranchOffsets(page, boxes, input.liveBranch);
   // 浮动主题（P-2 的例外）：根位置是用户拖出来的，整枝子树往右下堆。
   // 层级判据与 buildTree 一致 —— 浮动根自己算第 0 层，displayLevel 管它下面还能看几层；
   // 必须递归到底：只铺一层子的话，孙主题在大纲/看板/甘特里数得到，画布和 SVG 里却没有盒子（P-1）。
@@ -1555,7 +1628,43 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
     }
   }
 
-  const connectors = buildConnectors(page, boxes, s.code);
+  return { boxes, order, grid, code: page.layout.code, empty: false };
+}
+
+/**
+ * 整页布局 = 缓存的那半份（量文字、排枝、算格线，与拖动无关）
+ *          + 每帧重做的一小段（克隆盒子、叠分支位移、连线、主轴、包围盒）。
+ *
+ * 拖动中每帧变的只有 liveBranch，而它只是 collect 之后的一次纯平移，
+ * 所以每帧命中同一份 base —— 大图谱的实时跟随不再"把整页重排一遍"。
+ */
+export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult {
+  const palette = input.palette ?? defaultPalette();
+  const base = cachedBase(
+    page,
+    input.displayLevel ?? 9,
+    input.only,
+    input.topicWidthMode,
+    palette
+  );
+  if (base.empty)
+    return {
+      boxes: {},
+      order: [],
+      connectors: [],
+      axis: null,
+      grid: null,
+      bounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 },
+      width: 0,
+      height: 0,
+    };
+
+  const boxes = cloneBoxes(base.boxes);
+  // 表格里格线是硬边界：把一整枝挪开会让格子和线对不上，所以这两码不叠分支位移。
+  // 画布那边同样不许在表格版式里拖枝（dragTopic），两边一个口径。
+  if (base.code !== "free" && !TABLE_LAYOUTS.includes(base.code))
+    applyBranchOffsets(page, boxes, input.liveBranch);
+  const connectors = buildConnectors(page, boxes, base.code);
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -1580,10 +1689,10 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
   const pad = 40;
   return {
     boxes,
-    order,
+    order: base.order,
     connectors,
-    axis: buildAxis(page, boxes, s.code, palette),
-    grid,
+    axis: buildAxis(page, boxes, base.code, palette),
+    grid: base.grid,
     bounds: { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad },
     width: Math.max(1, maxX - minX + pad * 2),
     height: Math.max(1, maxY - minY + pad * 2),
