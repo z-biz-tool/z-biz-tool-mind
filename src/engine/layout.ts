@@ -1040,6 +1040,12 @@ export interface LayoutInput {
   palette?: ThemePalette;
   /** 主题框宽：fixed 把整页对齐到同一个宽度。 */
   topicWidthMode?: "auto" | "fixed";
+  /**
+   * 正在被拖的那一枝（二级主题 id + 临时位移）。只影响这一帧的呈现：
+   * 不进 model、不进撤销栈，松手时画布才把同样的位移写进 `Shape.offset`。
+   * 走的是 `applyBranchOffsets` 同一条路，所以连线 / 主轴 / 外框跟着整枝走是免费的。
+   */
+  liveBranch?: { id: string; x: number; y: number };
 }
 
 /**
@@ -1053,7 +1059,11 @@ export interface LayoutInput {
  * 加在 collect 之后、连线和主轴之前：那两步都读 boxes，整枝跟着走是免费的。
  * 坐标此前已按整数落定，位移写入时也取整，所以盒心不会漂成小数。
  */
-function applyBranchOffsets(page: Page, boxes: Record<string, NodeBox>): void {
+function applyBranchOffsets(
+  page: Page,
+  boxes: Record<string, NodeBox>,
+  live?: { id: string; x: number; y: number }
+): void {
   const kids = new Map<string, string[]>();
   for (const b of Object.values(boxes)) {
     if (!b.parentId) continue;
@@ -1070,7 +1080,11 @@ function applyBranchOffsets(page: Page, boxes: Record<string, NodeBox>): void {
   };
   for (const c of kids.get(page.rootId) ?? []) {
     const o = page.shapes[c]?.offset;
-    if (o) shift(c, Math.round(o.x), Math.round(o.y));
+    // 拖动中的那一枝：临时位移**叠在已存偏移之上**，松手时画布才把它写进 model。
+    const lv = live && live.id === c ? live : null;
+    const dx = (o?.x ?? 0) + (lv?.x ?? 0);
+    const dy = (o?.y ?? 0) + (lv?.y ?? 0);
+    if (dx || dy) shift(c, Math.round(dx), Math.round(dy));
   }
 }
 
@@ -1239,7 +1253,7 @@ export function computeLayout(page: Page, input: LayoutInput = {}): LayoutResult
     order.push(n.id);
   };
   walk([root], collect);
-  if (page.layout.code !== "free") applyBranchOffsets(page, boxes);
+  if (page.layout.code !== "free") applyBranchOffsets(page, boxes, input.liveBranch);
   // 浮动主题（P-2 的例外）：根位置是用户拖出来的，整枝子树往右下堆。
   // 层级判据与 buildTree 一致 —— 浮动根自己算第 0 层，displayLevel 管它下面还能看几层；
   // 必须递归到底：只铺一层子的话，孙主题在大纲/看板/甘特里数得到，画布和 SVG 里却没有盒子（P-1）。

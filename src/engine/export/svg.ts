@@ -39,6 +39,8 @@ export interface RenderOptions {
   only?: string[];
   /** 主题框宽：fixed 把整页对齐到同一个宽度（与画布同一个开关）。 */
   topicWidthMode?: "auto" | "fixed";
+  /** 画布拖动中的那一枝的临时位移（只用于屏幕上的实时跟随，导出永远不传）。 */
+  liveBranch?: { id: string; x: number; y: number };
 }
 
 export interface ShapePaint {
@@ -89,6 +91,7 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
     only: opts.only,
     palette,
     topicWidthMode: opts.topicWidthMode,
+    liveBranch: opts.liveBranch,
   });
   const boxes: ShapePaint[] = [];
   for (const id of layout.order) {

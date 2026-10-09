@@ -415,6 +415,80 @@ function add(parentId: string, text: string): string {
     onScreen.boxes[a11].x,
     onScreen.boxes[a11].y,
   ]);
+
+  // 拖动中的实时跟随（§1.3-12 遗留）：临时位移只进这一帧的 boxes，不碰 model
+  const liveIn = (page: typeof cur, id: string, x: number, y: number) =>
+    computeLayout(page, { liveBranch: { id, x, y } });
+  const pv = liveIn(cur, a, 30, -10);
+  eq(
+    "预览里整枝跟着走",
+    moved.map((id) => at(pv, id).map((v, i) => v - at(base, id)[i])),
+    [
+      [30, -10],
+      [30, -10],
+      [30, -10],
+    ]
+  );
+  eq(
+    "别的枝与中心主题不动",
+    [...still, root()].map((id) => at(pv, id)),
+    [...still, root()].map((id) => at(base, id))
+  );
+  eq("预览不写 model：位移没落到 Shape.offset 上", "offset" in cur.shapes[a], false);
+  eq(
+    "同一帧再算一次不带预览，就回到存档位置（预览是纯函数，没有残留）",
+    at(computeLayout(cur), a11),
+    at(base, a11)
+  );
+  eq(
+    "预览叠在已存位移之上（接着屏幕走，不是从存档位置重算）",
+    at(liveIn(shiftBranch(cur, a, 40, -25), a, 10, 5), a),
+    [at(base, a)[0] + 50, at(base, a)[1] - 20]
+  );
+  eq(
+    "松手不跳位：提交同样的位移之后，盒子与预览逐值相同",
+    moved.map((id) => at(computeLayout(shiftBranch(cur, a, 30, -10)), id)),
+    moved.map((id) => at(pv, id))
+  );
+  eq("三级上的预览同样不生效（只有二级吃位移）", at(liveIn(cur, a1, 100, 100), a11), at(base, a11));
+  const freeLive = { ...cur, layout: { ...cur.layout, code: "free" as LayoutCode } };
+  eq(
+    "自由布局里没有预览位移这回事（那里的坐标本来就是用户的）",
+    at(liveIn(freeLive, a, 30, -10), a),
+    at(computeLayout(freeLive), a)
+  );
+  eq("预览不改连线条数", pv.connectors.length, base.connectors.length);
+  ok(
+    "预览里连线端点跟着走",
+    pv.connectors.find((c) => c.toId === a1)!.d !== base.connectors.find((c) => c.toId === a1)!.d,
+    ""
+  );
+  eq(
+    "没拖的那一条连线一个字都不差",
+    pv.connectors.find((c) => c.toId === b1)!.d,
+    base.connectors.find((c) => c.toId === b1)!.d
+  );
+  // 画布读的是 paintPage 那一份，参数收下却不转给 computeLayout 就等于没做（真会踩：选项加了、转发漏了）
+  const p0 = paintPage(cur);
+  const p1 = paintPage(cur, { liveBranch: { id: a, x: 30, y: -10 } });
+  const atPaint = (P: typeof p0, id: string) => {
+    const b = P.boxes.find((x) => x.id === id)!;
+    return [b.x, b.y];
+  };
+  eq(
+    "paintPage 转发预览位移：整枝逐值平移",
+    moved.map((id) => atPaint(p1, id).map((v, i) => v - atPaint(p0, id)[i])),
+    [
+      [30, -10],
+      [30, -10],
+      [30, -10],
+    ]
+  );
+  eq(
+    "没拖的盒子一个像素不动",
+    still.map((id) => atPaint(p1, id)),
+    still.map((id) => atPaint(p0, id))
+  );
 }
 
 // ---------------------------------------------------------------- 全码几何回归（03 §1.3-1：过去 20 码只有 2 码有断言）

@@ -299,11 +299,19 @@ export function MindCanvas({ page }: MindCanvasProps) {
   // 按下落在菜单自己身上时不能先收菜单，否则条目永远点不着（见 onWrapPointerDown）
   const menuRef = useRef<HTMLDivElement>(null);
 
+  // 拖动中的那一枝（§1.3-12）：位移只进这一帧的 paint，松手才写进 model，
+  // 所以拖动过程中整枝（含连线）跟着手走，而不是画一个虚框告诉用户"大概落这儿"。
+  const [liveBranch, setLiveBranch] = useState<{ id: string; x: number; y: number } | null>(null);
   // P-2：布局是算出来的。page 是整页快照，换指向就是唯一的失效信号；
   // 框宽模式不在 page 里（它是应用级设置），所以换模式也得重算，否则开关只在下一次编辑时才生效。
   const paint = useMemo(
-    () => paintPage(page, { displayLevel: displayLevels, topicWidthMode }),
-    [page, displayLevels, topicWidthMode]
+    () =>
+      paintPage(page, {
+        displayLevel: displayLevels,
+        topicWidthMode,
+        liveBranch: liveBranch ?? undefined,
+      }),
+    [page, displayLevels, topicWidthMode, liveBranch]
   );
   const lineOf = useMemo(() => new Map(paint.boxes.map((b) => [b.id, b.line])), [paint]);
   const axis = paint.layout.axis;
@@ -516,17 +524,25 @@ export function MindCanvas({ page }: MindCanvasProps) {
       !dragged?.floating &&
       dragged?.parentId === live.current.page.rootId;
     const ownBox =
-      dragged && (freeLayout || (dragged.floating && !dragged.parentId) || branchDrag)
+      dragged && (freeLayout || (dragged.floating && !dragged.parentId))
         ? live.current.paint.boxes.find((b) => b.id === id)
         : undefined;
     let moving = false;
     let target: DropTarget | null = null;
+    // 分支拖动期间的实时位移，每帧都更新；松手时只有"没落到别的主题上"才写进 model
+    let shift: { x: number; y: number } | null = null;
     track(
       (ev) => {
         if (!moving && Math.hypot(ev.clientX - from.x, ev.clientY - from.y) < DRAG_SLOP) return;
         moving = true;
         const w = toWorld(ev.clientX, ev.clientY);
         target = dropTargetAt(live.current.page, live.current.paint, id, w.x, w.y);
+        if (branchDrag) {
+          // 命中别的主题时也要继续跟：一出现挂树预览就把整枝弹回原位，
+          // 拖过邻居那一格会亮一下、枝也退一下，手和框脱节（真机量到过：6 步里第 2、3 步整枝没动）。
+          shift = { x: Math.round(w.x - start.x), y: Math.round(w.y - start.y) };
+          setLiveBranch({ id, x: shift.x, y: shift.y });
+        }
         if (!target && ownBox) {
           target = {
             mode: "move",
@@ -542,17 +558,19 @@ export function MindCanvas({ page }: MindCanvasProps) {
       },
       () => {
         setDrop(null);
+        setLiveBranch(null);
         if (!moving) return;
+        if (branchDrag) {
+          // 拖的是整枝：位移记在二级主题上，枝内还是引擎的相对结构（§3.3）。
+          if (!target && shift && (shift.x || shift.y)) {
+            const d = shift;
+            useDoc.getState().mutate("移动分支", (p) => shiftBranch(p, id, d.x, d.y));
+          }
+          if (!target) return;
+        }
         const t: DropTarget | null = target;
         if (!t) return;
         if (t.mode === "move") {
-          if (branchDrag && ownBox) {
-            // 拖的是整枝：位移记在二级主题上，枝内还是引擎的相对结构（§3.3）。
-            const dx = Math.round(t.x - ownBox.x);
-            const dy = Math.round(t.y - ownBox.y);
-            if (dx || dy) useDoc.getState().mutate("移动分支", (p) => shiftBranch(p, id, dx, dy));
-            return;
-          }
           // 落点盒子是左上角，transform 存的是中心（布局与 .emmx 的 CX/CY 同一个约定）；
           // 不换算的话每拖一次就往左上偏半个盒子。取整：亚像素坐标存进文件只是噪声。
           const x = Math.round(t.x + t.w / 2);
