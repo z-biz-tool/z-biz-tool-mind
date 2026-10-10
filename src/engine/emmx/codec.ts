@@ -1257,9 +1257,9 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
     () => (s.offset ? el("BranchOffset", { V: `${s.offset.x};${s.offset.y}` }) : undefined)
   );
   // 任务信息：同一条自造节点的路。进度/优先级/状态/起止/里程碑/成员/标签/前置全部收进属性，
-  // 空字段不写，重开时 parse 侧还原成 undefined。
-  keep("TaskInfo", coveredBy(rawOf("TaskInfo"), buildTaskInfo(s.extras.task)), () =>
-    buildTaskInfo(s.extras.task)
+  // 空字段不写，重开时 parse 侧还原成 undefined；读侧补的默认值在盘上本来就没有位置，也不许落笔。
+  keep("TaskInfo", coveredBy(rawOf("TaskInfo"), buildTaskInfo(s.extras.task, rawOf("TaskInfo"))), () =>
+    buildTaskInfo(s.extras.task, rawOf("TaskInfo"))
   );
   carryUntouched(s, n, from);
   return n;
@@ -1301,10 +1301,13 @@ function attachmentNode(list: NonNullable<Shape["extras"]["attachments"]>): XmlN
   );
 }
 
+/** 任务信息：读侧给"盘上根本没写"的属性补的那个默认值。省略它们才算无损（重读还是同一个默认）。 */
+const TASK_DEFAULTS: Record<string, string> = { Progress: "0", Priority: "medium", Status: "todo" };
+
 /** 任务信息那一颗自造节点（属性全在 <TaskInfo> 自己身上）。 */
-function buildTaskInfo(t: Shape["extras"]["task"]): XmlNode | undefined {
+function buildTaskInfo(t: Shape["extras"]["task"], raw?: XmlNode): XmlNode | undefined {
   if (!t) return undefined;
-  return el("TaskInfo", {
+  const attrs: Record<string, string | number | undefined> = {
     Progress: round(t.progress),
     Priority: t.priority,
     Status: t.status,
@@ -1315,7 +1318,14 @@ function buildTaskInfo(t: Shape["extras"]["task"]): XmlNode | undefined {
     ...(t.assignees.length ? { Assignees: t.assignees.join(";") } : {}),
     ...(t.tags.length ? { Tags: t.tags.join(";") } : {}),
     ...(t.deps?.length ? { Deps: t.deps.join(";") } : {}),
-  });
+  };
+  // 原节点没写过这一项、而模型里那个值只是读侧补的默认 ⇒ 不落笔：
+  // 否则改一次加粗会让 TaskInfo 凭空长出 Priority/Status 两个键（用户压根没碰过任务）。
+  // 原节点写过的一律跟着走，用户真改成非默认值的也照样落盘 —— 改回默认值这一笔没有盘上记号，
+  // 与 Character@Style 同一个口径（亿图从不写 Style="0"），见 03 §1.3-24 的遗留说明。
+  for (const [k, v] of Object.entries(attrs))
+    if (raw?.attrs[k] === undefined && String(v) === TASK_DEFAULTS[k]) delete attrs[k];
+  return el("TaskInfo", attrs);
 }
 
 /** 比较用的稳定 JSON：键序不同的等价对象要判等（模型对象可能来自编辑路径，键序与解析结果不同）。 */

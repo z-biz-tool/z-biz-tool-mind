@@ -107,6 +107,18 @@ export function plainText(rt: RichText): string {
   return rt.paragraphs.map((p) => p.runs.map((r) => r.text).join("")).join("\n");
 }
 
+/**
+ * 这段文字实际用到的样式序号（`tp@CX` 指向 `Character@IX`，去重后按出现顺序）。
+ * 只数被引用的那些：真亿图文件里确有"写了 Character 但没有任何 run 引用"的条目
+ * （三份 XML 容器样张 525 条里实测 8 条），它们不参与这颗形状的呈现。
+ */
+export function usedCharIx(rt: RichText): number[] {
+  const out: number[] = [];
+  for (const p of rt.paragraphs)
+    for (const r of p.runs) if (!out.includes(r.charIx)) out.push(r.charIx);
+  return out;
+}
+
 export function makeText(text: string): RichText {
   return {
     characters: [{ size: 12, family: "Verdana", color: "#333333" }],

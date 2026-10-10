@@ -8,6 +8,7 @@
  * 否则换一个主题就全塌。
  */
 import type { ColorValue, FontSpec, Page, Shape, ShapeStyle } from "../types/model.ts";
+import { usedCharIx } from "../types/model.ts";
 import { ANGEL_ACCENTS, DEFAULTS } from "../model/constants.ts";
 import { branchIndex, levelOf, updateStyle } from "./tree.ts";
 
@@ -148,12 +149,21 @@ export function styleFor(page: Page, shape: Shape, palette = defaultPalette()): 
     align: 1,
     lineSpacing: 100,
   };
+  // 加粗的家在 `text.characters`（.emmx 把它写成 `Character@Style`，实测取值只有"缺位"和 "1" 两种），
+  // 而上面那行是按层级推的默认值。两边都必须看得见，否则亿图原生的加粗导进来是常规字重
+  // （测试基础 那份 24 颗"被 run 引用"的原生加粗里，18 颗在二级以下 —— 层级推导只粗到一级）。
+  // 顺序：节点级显式取消（01 里 `bold === false` 这一支）> run 级显式加粗 > 节点级显式加粗 > 层级推导。
+  // 节点级那一支没有线上落点（亿图从不写 Style="0"），所以它只在本次会话里生效，见 03 §1.3-24 遗留。
+  const nodeBold = shape.style.font?.bold;
+  const runBold = usedCharIx(shape.text).some((ix) => shape.text.characters[ix]?.bold === true);
+  const bold =
+    nodeBold === false ? false : runBold ? true : nodeBold === true ? true : font.bold;
   return {
     fill,
     line: ownLine ?? shade(base, 25),
     lineWidth: shape.style.line?.weight ?? DEFAULTS.lineWeight,
     rounding: shape.style.line?.rounding ?? DEFAULTS.rounding,
-    font: { ...font, ...shape.style.font },
+    font: { ...font, ...shape.style.font, bold },
     soft: tint(base, 78),
   };
 }

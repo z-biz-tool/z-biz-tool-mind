@@ -14,6 +14,9 @@
  * - B 层（真亿图文件）：改一处 → 存盘 → page.xml 的标签/属性差分只允许出现预期的那几条；
  *   再把没编辑过的那些 Shape 逐颗比字节 —— 没动的东西必须一字节都不差。
  *   缺 `_research/extract/fold/` 里的样张则 skip。
+ *
+ * 批 3I 起还钉一件事：界面点一次加粗（01 A-16），盘上的全部足迹必须只有一条 `Character@Style`。
+ * 顺手钉住同一笔不许顺带发明 TaskInfo 的默认属性 —— 亿图/历史文件里根本没写它们的那些项。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,13 +29,15 @@ import {
   normalize,
   removeShape,
   setCollapsed,
+  setTopicBold,
   updateExtras,
   updateStyle,
   updateText,
   updateTransform,
 } from "../src/engine/tree.ts";
+import { styleFor } from "../src/engine/style.ts";
 import type { DocumentModel, Page, Shape } from "../src/types/model.ts";
-import { plainText } from "../src/types/model.ts";
+import { plainText, usedCharIx } from "../src/types/model.ts";
 
 const FOLD_DIR = join(process.cwd(), "_research", "extract", "fold");
 
@@ -125,6 +130,16 @@ function diff(before: Map<string, number>, after: Map<string, number>): Delta[] 
   }
   return out;
 }
+/** 两份 page.xml 的键级差分，收成一条可读串：A 层用它量"这一笔在盘上到底留了多少足迹"。 */
+const keyDelta = (a: string, b: string): string => {
+  const ca = census(a);
+  const cb = census(b);
+  return diff(ca.tags, cb.tags)
+    .concat(diff(ca.attrs, cb.attrs))
+    .map((x) => `${x.key}:${x.before}→${x.after}`)
+    .sort()
+    .join(" | ");
+};
 
 // ================================================================ A 层：合成夹具
 
@@ -388,11 +403,26 @@ const ORIG = shapeBlocks(PAGE_XML);
     info104
   );
   ok("进度跟着原文件的值走，没被洗成 0", /Progress="50"/.test(info104), info104);
-  ok("原文件没写 Priority，这一项由我们补默认", /Priority="medium"/.test(info104), info104);
+  ok("原文件没写 Priority，这一笔也没碰它 ⇒ 不许发明默认值", !/Priority=/.test(info104), info104);
   eq("改任务不许连累 102", blockOf(tasked, "102"), blockOf(ORIG, "102"));
   const taskBack = (await parseEmmx(await writeEmmx(taskPage))).doc.pages[0];
   eq("重开后任务状态", taskBack.shapes["104"]?.extras.task?.status, "done");
   eq("重开后任务进度", taskBack.shapes["104"]?.extras.task?.progress, 50);
+  eq(
+    "盘上没有的 Priority 读回还是那个默认",
+    taskBack.shapes["104"]?.extras.task?.priority,
+    "medium"
+  );
+  // 把优先级改成非默认值：这一笔必须落盘，不能因为"原节点没写过"而被当成超集带回。
+  const hiXml = await savedXml(
+    withPage(
+      parsed.doc,
+      updateExtras(base, "104", { task: { ...task104!, priority: "high" as const } })
+    )
+  );
+  const hiInfo = /<TaskInfo\b[^>]*>/.exec(blockOf(shapeBlocks(hiXml), "104"))?.[0] ?? "";
+  ok("用户真改了 Priority ⇒ 必须落盘", /Priority="high"/.test(hiInfo), hiInfo);
+  ok("没碰的 Status 仍不落盘", !/Status=/.test(hiInfo), hiInfo);
 
   // -------------------------------------------------- 取消加粗：模型管着的键不许从原文件复活
   const s105 = getShape(base, "105")!;
@@ -426,6 +456,72 @@ const ORIG = shapeBlocks(PAGE_XML);
   );
   ok("取消加粗不牵连 <ShapeFormat> 的掩码", /<ShapeFormat QuickMask="4095">/.test(u105));
   eq("取消加粗不许连累 102", blockOf(unbolded, "102"), blockOf(ORIG, "102"));
+
+  // -------------------------------------------------- 界面点加粗的那一下：全盘足迹只许 Character@Style（01 A-16）
+  {
+    // 基线取"同一套写手、这一次什么都没改"的输出，而不是夹具原文 ——
+    // 比的是"这一笔改了什么"，两边的字节口径必须一致（夹具的 Width/Height 是手写的实测值）。
+    const STYLE = /Character[^>]*\bStyle=/;
+    const STYLE_ALL = new RegExp(STYLE.source, "g");
+    const bare = await savedXml(parsed.doc);
+    const bareBlocks = shapeBlocks(bare);
+    // 亿图只在 105 上写过 Style="1"；中心主题和一级分支明明是粗的，盘上却一个字节都没有 ——
+    // 那个粗是层级推出来的，不是文件里的信息，所以它不许有盘上落点。
+    eq("写手的基线输出：全盘只有 105 那一条原生加粗", all(bare, STYLE_ALL).length, 1);
+    for (const id of ["101", "102", "103", "104"])
+      ok(`推导出的粗不落盘：${id} 没有 Style`, !STYLE.test(blockOf(bareBlocks, id)));
+
+    const boldPage = setTopicBold(base, "104", true);
+    const boldXml = await savedXml(withPage(parsed.doc, boldPage));
+    const boldBlocks = shapeBlocks(boldXml);
+    eq(
+      "点一次加粗，盘上只多一个 Character@Style，其余键计数一个不动",
+      keyDelta(bare, boldXml),
+      "Character@Style:1→2"
+    );
+    const b104 = blockOf(boldBlocks, "104");
+    ok("加粗写在这颗的 Character 上", /<Character[^>]*Style="1"/.test(b104), b104);
+    ok('不许发明亿图不写的 Style="0"', !/Style="0"/.test(boldXml));
+    eq("加粗不许连累正文以外的子节点", withoutText(b104), withoutText(blockOf(ORIG, "104")));
+    for (const id of ["101", "102", "103", "105", "900"])
+      eq(`加粗只动 104，不许连累 ${id}`, blockOf(boldBlocks, id), blockOf(ORIG, id));
+
+    const again = (await parseEmmx(await writeEmmx(withPage(parsed.doc, boldPage)))).doc.pages[0];
+    eq(
+      "重开还是粗：characters[0] 从 Style 读回 true",
+      again.shapes["104"]?.text.characters[0]?.bold,
+      true
+    );
+    ok("重开后界面算出来也是粗", styleFor(again, again.shapes["104"]).font.bold === true);
+    const off = setTopicBold(again, "104", false);
+    const offXml = await savedXml(withPage(parsed.doc, off));
+    ok(
+      '取消加粗后这颗的 Style 整条消失（不是写 Style="0"）',
+      !STYLE.test(blockOf(shapeBlocks(offXml), "104"))
+    );
+    eq("取消加粗的足迹回到零：与没编辑过的输出同键数", keyDelta(bare, offXml), "");
+
+    // 亿图原生的那颗加粗（105）由界面点灭：同一个 op、同一个键。
+    const kill105 = setTopicBold(base, "105", false);
+    const killXml = await savedXml(withPage(parsed.doc, kill105));
+    ok("亿图写过的 105 点灭后 Style 消失", !STYLE.test(blockOf(shapeBlocks(killXml), "105")));
+    eq("点灭 105 后全盘一条 Style 都不剩", all(killXml, STYLE_ALL).length, 0);
+
+    // 钉住已知遗留（03 §1.3-24）：层级默认就粗的那些主题，"取消加粗"在本次会话里生效，
+    // 但亿图没有"显式不加粗"的写法，所以这一笔不落盘 —— 重开又按层级变回粗。
+    const veto = setTopicBold(base, "101", false);
+    ok(
+      "会话内否决生效：中心主题算出来不粗",
+      styleFor(veto, veto.shapes["101"]).font.bold === false
+    );
+    const vetoXml = await savedXml(withPage(parsed.doc, veto));
+    eq("这一笔没有盘上落点（不凭空发明记号）", all(vetoXml, STYLE_ALL).length, 1);
+    const reVeto = (await parseEmmx(await writeEmmx(withPage(parsed.doc, veto)))).doc.pages[0];
+    ok(
+      "重开后按层级仍是粗的（已知遗留，改这条要先确证 TextFormatMask）",
+      styleFor(reVeto, reVeto.shapes["101"]).font.bold === true
+    );
+  }
 
   // -------------------------------------------------- 删叶子：那颗没了，指向它的地方也不许留
   const pruned = shapeBlocks(await savedXml(withPage(parsed.doc, removeShape(base, "104"))));
@@ -556,13 +652,18 @@ const DELETE_KEYS = new Set([
 interface Scenario {
   label: string;
   allow: Set<string>;
-  apply: (doc: DocumentModel) => DocumentModel;
+  apply: (doc: DocumentModel, target?: Shape) => DocumentModel;
   /** 差分里必须出现的键（方向性证明）；缺一条就是"该改的没改"。 */
   expect?: (d: Delta[]) => void;
+  /** 这一条的前提：挑不到这样的主题就整条 skip，而不是让测试替样张的内容背书。 */
+  find?: (doc: DocumentModel) => Shape | undefined;
 }
 
 const someTopic = (p: Page, pick: (s: Shape) => boolean): Shape =>
   Object.values(p.shapes).find((s) => /Topic$/.test(s.type) && s.id !== p.rootId && pick(s))!;
+/** 同上但允许中心主题：亿图原生写下的那几条加粗就在中心主题上（系统测试实测 8 颗根）。 */
+const anyTopic = (p: Page, pick: (s: Shape) => boolean): Shape | undefined =>
+  Object.values(p.shapes).find((s) => (s.type === "MainIdea" || /Topic$/.test(s.type)) && pick(s));
 
 const SCENARIOS: Scenario[] = [
   {
@@ -663,6 +764,47 @@ const SCENARIOS: Scenario[] = [
       );
     },
   },
+  {
+    // 01 A-16 的真文件验收：界面点一次加粗，全盘只许多一条 Character@Style。
+    // 挑"正文只引用一条文字样式、且那条当前不粗"的主题 —— 这样 +1 是唯一可能的结果。
+    // 不限定样式条目总数：真文件里确有写了却没被引用的条目（系统测试实测 8 颗根的粗条目就没被引用），
+    // 它们原样跟着走，不参与这一笔。
+    label: "点一次加粗",
+    allow: new Set(["Character@Style"]),
+    find: (doc) => {
+      const p = doc.pages[0];
+      return anyTopic(p, (x) => {
+        const u = usedCharIx(x.text);
+        return u.length === 1 && x.text.characters[u[0]]?.bold !== true;
+      });
+    },
+    apply: (doc, s) => withPage(doc, setTopicBold(doc.pages[0], s!.id, true)),
+    expect: (d) =>
+      ok(
+        "加粗要真的落笔成 Character@Style",
+        d.some((x) => x.key === "Character@Style" && x.after > x.before),
+        JSON.stringify(d)
+      ),
+  },
+  {
+    // 反过来：亿图原生带 Style="1" 的那些主题，点灭之后只能少、不能改成 Style="0"。
+    // 不锁定"少几条"：同一颗上可能有多条被引用的样式，全按亿图的写法抹掉就是减。
+    label: "点灭亿图原生的加粗",
+    allow: new Set(["Character@Style"]),
+    find: (doc) => {
+      const p = doc.pages[0];
+      return anyTopic(p, (x) =>
+        usedCharIx(x.text).some((ix) => x.text.characters[ix]?.bold === true)
+      );
+    },
+    apply: (doc, s) => withPage(doc, setTopicBold(doc.pages[0], s!.id, false)),
+    expect: (d) =>
+      ok(
+        '点灭要真的把 Style 抹掉，而不是写成 Style="0"',
+        d.some((x) => x.key === "Character@Style" && x.after < x.before),
+        JSON.stringify(d)
+      ),
+  },
 ];
 
 const REAL_FILES = [
@@ -706,7 +848,12 @@ for (const f of REAL_FILES) {
   );
 
   for (const sc of SCENARIOS) {
-    const after = census(await savedXml(sc.apply(original)));
+    const target = sc.find ? sc.find(original) : undefined;
+    if (sc.find && !target) {
+      skip(`${f}｜${sc.label}`, "这份样张里没有满足前提的主题");
+      continue;
+    }
+    const after = census(await savedXml(sc.apply(original, target)));
     const d = diff(before.tags, after.tags).concat(diff(before.attrs, after.attrs));
     const unexpected = d
       .filter((x) => !sc.allow.has(x.key))

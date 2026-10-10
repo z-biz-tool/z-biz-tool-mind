@@ -8,12 +8,15 @@
  * 4) 常量必须与真实 .emmx 的 theme.xml 逐字对齐（主色顺序、8 档字号、Rounding/LineWeight）；
  * 5) styleFor：层级 → 色/字号/字重/字色，分支 → 主色轮转，用户覆盖优先；
  * 6) applyPalette：mask bit0 独立配色不动、幂等、树结构不动、paint 与落地值一致；
- * 7) contrastText 的深底白字阈值。
+ * 7) contrastText 的深底白字阈值；
+ * 8) 加粗的家（01 A-16）：`text.characters` 是 run 级唯一真相，节点级 `style.font.bold` 能否决它，
+ *    两者都没落笔时才回到层级推导。
  */
 import { done, eq } from "./_harness.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { createPage } from "../src/model/factory.ts";
 import { insertChild, updateStyle } from "../src/engine/tree.ts";
+import type { FontSpec, Page } from "../src/types/model.ts";
 import { ANGEL_ACCENTS, DEFAULTS } from "../src/model/constants.ts";
 import {
   accentAt,
@@ -142,6 +145,57 @@ const W = "#ffffff";
   // 引擎缺陷：一级/中心主题的字色硬编码 "#ffffff"，没有走同模块的 contrastText ——
   // Accent6(#f8ae1a)、Accent9、Accent10 亮度已高于 0.62 阈值，白字在这些分支上看不清
   eq("浅底分支的字色应与 contrastText 一致", ylw.font.color, contrastText(ylw.fill));
+}
+
+// ---------------------------------------------------------------- 加粗的家：text.characters（01 A-16）
+{
+  let pg = createPage("加粗口径");
+  const ins1 = insertChild(pg, pg.rootId, "一级");
+  pg = ins1.page;
+  const a = ins1.id;
+  const ins2 = insertChild(pg, a, "二级");
+  pg = ins2.page;
+  const b = ins2.id;
+  const pal = defaultPalette();
+  /** 直接改模型里的样式条目，模拟"从 .emmx 读回来的那一份"（parseCharacter 的产物）。 */
+  const chars = (id: string, list: FontSpec[], runs?: { text: string; charIx: number }[][]): Page => ({
+    ...pg,
+    shapes: {
+      ...pg.shapes,
+      [id]: {
+        ...pg.shapes[id],
+        text: {
+          characters: list,
+          paragraphs: (runs ?? [["x"]]).map((rs, i) => ({
+            runs: rs.map((t, j) => ({ text: t, charIx: j })),
+            align: pg.shapes[id].text.paragraphs[i]?.align ?? 1,
+          })),
+        },
+      },
+    },
+  });
+  const bold = (id: string, p: Page) => styleFor(p, p.shapes[id], pal).font.bold;
+
+  // 亿图把加粗写成 Character@Style="1"，导进来就是 characters[ix].bold = true。
+  // 二级主题按层级推导本来不加粗，所以这一支是唯一能让它显示粗的路。
+  eq("run 级显式加粗 → 二级也粗（亿图原生加粗导进来看得出来）", bold(b, chars(b, [{ bold: true }])), true);
+  eq("普通子主题没这条记录时仍不加粗", bold(b, pg), false);
+  // 读侧对"缺 Style"给的是 bold:false，所以 false 绝不能当"用户显式取消"，
+  // 否则中心主题/一级分支的层级默认粗会被一路降级。
+  eq("run 级 false 是缺省不是否决：中心主题仍按层级推导为粗", bold(pg.rootId, chars(pg.rootId, [{ bold: false }])), true);
+  // 真亿图文件里有 38 条没人引用的 Character（实测），它们不参与这颗形状的呈现。
+  eq("没被任何 run 引用的样式条目不算数", bold(b, chars(b, [{ bold: false }, { bold: true }])), false);
+  eq("run 引用到哪条就看哪条：IX=1 粗", bold(b, chars(b, [{ bold: false }, { bold: true }], [["a", "b"]])), true);
+  // 盒级近似：画布一颗主题只有一种字重，"半个标题粗"取"任一被引用的 run 粗"。
+  // 实测 9 份样张 1352 颗带样式的形状里混合加粗 0 例，所以现在这一步不丢任何东西。
+  eq("混用 IX=0/IX=1 一粗一不粗 → 整颗粗", bold(b, chars(b, [{ bold: true }, { bold: false }], [["a", "b"]])), true);
+  // 节点级显式取消（工具栏那颗在中心主题上点"取消加粗"）必须按得动，压过 run 级。
+  eq("节点级显式 false 压过 run 级 true", bold(b, updateStyle(chars(b, [{ bold: true }]), b, { font: { bold: false } })), false);
+  eq(
+    "中心主题显式取消加粗，本次会话里真的不粗",
+    bold(pg.rootId, updateStyle(chars(pg.rootId, [{ bold: false }]), pg.rootId, { font: { bold: false } })),
+    false
+  );
 }
 
 // ---------------------------------------------------------------- applyPalette：换主题

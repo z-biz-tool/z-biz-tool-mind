@@ -14,7 +14,7 @@
  */
 
 import type { Page, RelationshipShape, Shape } from "../types/model.ts";
-import { isTopic, makeText } from "../types/model.ts";
+import { isTopic, makeText, usedCharIx } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
 import { createShape, nextShapeId, topicTypeFor } from "../model/factory.ts";
 
@@ -457,6 +457,29 @@ export function updateText(page: Page, id: string, text: string): Page {
   return patch(page, id, {
     ...s,
     text: { ...s.text, paragraphs: [{ runs: [{ text, charIx: 0 }], align: 1 }] },
+  });
+}
+
+/**
+ * 加粗落在 `text.characters` 上 —— 那是它唯一有线上落点的位置（`.emmx` 写成 `Character@Style`，
+ * 实测亿图只写 "1"、不加粗就把属性整个省掉），保存时 `buildTextNode` 也只从这里取。
+ * 只改被 run 引用的那几条样式：亿图的文件里确实躺着没人引用的 Character（三份 XML 样张 525 条里 8 条），
+ * 跟着改就是无谓地动别人的字节。
+ *
+ * 顺带把节点级 `style.font.bold` 记成同一个值：亿图没有"显式不加粗"的写法，
+ * 那一位纯粹用来让中心主题/一级分支（层级默认就是粗）在本次会话里按得动，不至于看起来没反应。
+ */
+export function setTopicBold(page: Page, id: string, bold: boolean): Page {
+  const s = page.shapes[id];
+  if (!s) return page;
+  const used = new Set(usedCharIx(s.text));
+  const characters = s.text.characters.map((c, ix) =>
+    used.has(ix) ? { ...c, bold: bold ? true : undefined } : c
+  );
+  return patch(page, id, {
+    ...s,
+    text: { ...s.text, characters },
+    style: { ...s.style, font: { ...s.style.font, bold } },
   });
 }
 

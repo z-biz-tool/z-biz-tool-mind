@@ -28,6 +28,7 @@ import {
   resetBranch,
   setCollapsed,
   setFloating,
+  setTopicBold,
   shiftBranch,
   siblingIndex,
   swapSibling,
@@ -38,6 +39,7 @@ import {
   visibleChildren,
 } from "../src/engine/tree.ts";
 import { plainText } from "../src/types/model.ts";
+import type { Page } from "../src/types/model.ts";
 import { computeLayout } from "../src/engine/layout.ts";
 
 let p = createPage("测试");
@@ -205,6 +207,40 @@ eq("branchIndex 从 0 起", branchIndex(fixed, fixed.shapes[fixed.rootId].childI
 const noop = updateText(p, "不存在的id", "x");
 eq("updateText 对未知 id 是空操作", Object.keys(noop.shapes).length, Object.keys(p.shapes).length);
 eq("文本读回", plainText(updateText(p, A, "改过").shapes[A].text), "改过");
+
+// --- 加粗的落点：text.characters（01 A-16 —— 那是它在 .emmx 里唯一有家可回的地方）
+{
+  const on = setTopicBold(p, A, true);
+  eq("工具栏那颗写进 characters[0].bold", on.shapes[A].text.characters[0].bold, true);
+  eq(
+    "同时记一份节点级覆盖（亿图没有「显式不加粗」的写法，靠它让中心主题那一下按得动）",
+    on.shapes[A].style.font?.bold,
+    true
+  );
+  eq("再点一次回到不加粗", setTopicBold(on, A, false).shapes[A].text.characters[0].bold, undefined);
+  eq("取消时节点级记 false", setTopicBold(on, A, false).shapes[A].style.font?.bold, false);
+  eq("翻转不动字号", setTopicBold(on, A, false).shapes[A].text.characters[0].size, p.shapes[A].text.characters[0].size);
+  eq("未知 id 是空操作（连页面对象都不换）", setTopicBold(p, "不存在的id", true), p);
+  // 只改被 run 引用的那几条：亿图文件里实测有 38 条没人引用的样式条目，跟着改就是无谓动别人的字节。
+  const multi: Page = {
+    ...p,
+    shapes: {
+      ...p.shapes,
+      [A]: {
+        ...p.shapes[A],
+        text: {
+          paragraphs: [{ runs: [{ text: "甲", charIx: 0 }], align: 1 }],
+          characters: [{ size: 12 }, { size: 14 }],
+        },
+      },
+    },
+  };
+  const t = setTopicBold(multi, A, true).shapes[A].text.characters;
+  eq("IX=0 被引用 → 改它", t[0].bold, true);
+  eq("IX=1 没人引用 → 原样不动", t[1].bold, undefined);
+  eq("样式条目数量不许增减", t.length, 2);
+  eq("段落结构不动", plainText(setTopicBold(multi, A, true).shapes[A].text), "甲");
+}
 
 // --- 自由布局：新建主题的位置是用户数据，不给位置就叠在中心主题上
 {

@@ -16,6 +16,10 @@
  *    必须还是亿图的写法（Version/DocGuid 在 <Document> 上，属性是 <X V/> 子节点）。
  * 9) 分支自由布局（00 §3.3）的位移只存在我们自造的 <BranchOffset> 上：它必须进语义指纹，
  *    否则"拖一整枝"这种只改一个字段的编辑会被判成没动过，原节点原样带回，位移静默丢失。
+ * 10) 加粗的落点（01 A-16）：界面那一下要写成 `Character@Style="1"`，重开必须仍然显示粗；
+ *    反过来，层级推导出来的粗（中心主题/一级分支）一个字都不许落到盘上。
+ *    导入方向同样要成立：亿图标在 Character@Style 上的粗（真样张 24 颗，18 颗在二级以下）
+ *    按层级推不出来，只能读回来 —— 读丢的那些开一次就是"字体变细了"。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,14 +30,16 @@ import type { XmlNode } from "../src/engine/emmx/xparse.ts";
 import { modelEquals, parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
 import {
   insertChild,
+  levelOf,
+  setTopicBold,
   shiftBranch,
   updateExtras,
   updateStyle,
   updateText,
 } from "../src/engine/tree.ts";
 import { createDocument } from "../src/model/factory.ts";
-import { applyPalette } from "../src/engine/style.ts";
-import { plainText } from "../src/types/model.ts";
+import { applyPalette, styleFor } from "../src/engine/style.ts";
+import { plainText, usedCharIx } from "../src/types/model.ts";
 import type { Page } from "../src/types/model.ts";
 
 const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
@@ -157,6 +163,48 @@ const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
     "复用通道里只改位移也重写了这个节点",
     (await parseEmmx(await writeEmmx(rawDoc))).doc.pages[0].shapes[pinned].offset,
     { x: -80, y: 20 }
+  );
+
+  // --- 加粗的线上落点（01 A-16）：写在 Character@Style 上，实测亿图只写 "1"、不加粗就整个省掉。
+  const shapeBlock = (xml: string, id: string): string => {
+    const m = new RegExp(`<Shape[^>]*\\bID="${id}"[\\s\\S]*?(?=<Shape\\b|$)`).exec(
+      xml.replace(/>\s+</g, "><")
+    );
+    return m ? m[0] : "";
+  };
+  const bareXml = await pageXml(await writeEmmx(withPage(colored)));
+  eq(
+    "层级推导出来的粗绝不落到盘上（不然每次存盘都凭空多出一串 Style）",
+    /Style="1"/.test(bareXml),
+    false
+  );
+  const bolded = setTopicBold(colored, g.id, true);
+  const bxml = await pageXml(await writeEmmx(withPage(bolded)));
+  ok("加粗的那颗写进了 Character@Style", /<Character[^>]*Style="1"/.test(shapeBlock(bxml, g.id)));
+  eq("只多这一颗，别的一颗都不长", (bxml.match(/Style="1"/g) ?? []).length, 1);
+  const bParsed = await parseEmmx(await writeEmmx(withPage(bolded)));
+  const bPage = bParsed.doc.pages[0];
+  eq("重开读回 run 级样式", bPage.shapes[g.id].text.characters[0]?.bold, true);
+  eq("重开仍显示粗（显示与盘上同源）", styleFor(bPage, bPage.shapes[g.id]).font.bold, true);
+  eq("没点加粗的那颗读回不加粗", bPage.shapes[kids[2]].text.characters[0]?.bold, false);
+  eq(
+    "取消加粗再存，Style 整条消失（亿图没有 Style=\"0\" 这种写法）",
+    /Style="1"/.test(await pageXml(await writeEmmx(withPage(setTopicBold(bolded, g.id, false))))),
+    false
+  );
+  // 工具栏那一下按的是"显示出来的字重"，不是"style 里存没存过"：中心主题显示本来就是粗，
+  // 第一下必须落在取消上。按存没存过取反会得到"再粗一次"—— 用户看是空转，盘上还凭空多一条 Style。
+  const flip = (p: Page, id: string) => setTopicBold(p, id, !styleFor(p, p.shapes[id]).font.bold);
+  const rootFlip = flip(colored, colored.rootId);
+  eq(
+    "中心主题第一下就是取消（显示字重取反，不是空转）",
+    styleFor(rootFlip, rootFlip.shapes[rootFlip.rootId]).font.bold,
+    false
+  );
+  eq(
+    "取消推导粗的这一笔不落盘",
+    /Style="1"/.test(await pageXml(await writeEmmx(withPage(rootFlip)))),
+    false
   );
 
   // --- 批注 / 超链接 / 标签
@@ -324,6 +372,29 @@ if (!existsSync(FIXTURE)) {
   const rootCount = Object.values(page.shapes).filter((s) => s.type === "MainIdea").length;
   eq("只有一个中心主题", rootCount, 1);
   eq("主分支数", page.shapes[page.rootId].childIds.length, 5);
+
+  // --- 亿图原生的加粗看得出来（01 A-16）：那一位写在 Character@Style 上，层级推不出来
+  {
+    let refBold = 0;
+    let deep = 0;
+    let missed = 0;
+    const ids: string[] = [];
+    for (const p of doc.pages)
+      for (const s of Object.values(p.shapes)) {
+        if (!usedCharIx(s.text).some((ix) => s.text.characters[ix]?.bold === true)) continue;
+        refBold++;
+        if (levelOf(p, s.id) >= 2) deep++;
+        if (!styleFor(p, s).font.bold) {
+          missed++;
+          if (ids.length < 8) ids.push(`${s.id}@L${levelOf(p, s.id)}`);
+        }
+      }
+    // 这份样张 82 颗主题里 24 颗被亿图标了粗，其中 18 颗是二级以下 ——
+    // 那 18 颗正是"按层级推默认字重"覆盖不到的部分，只能从 Character@Style 读。
+    eq("真样张里被引用的原生加粗数量", refBold, 24);
+    eq("其中层级推导给不出来的那些（二级及以下）", deep, 18);
+    ok("导入后一颗都不许看不出来", missed === 0, `算丢 ${missed}：${ids.join(",")}`);
+  }
 
   // --- 保存：未编辑的文件必须原样回写
   const saved = await writeEmmx(doc);

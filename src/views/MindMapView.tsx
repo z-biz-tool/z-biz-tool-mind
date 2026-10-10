@@ -9,7 +9,7 @@ import { useMemo } from "react";
 import { Button, ColorPicker, Segmented, Select, Tooltip } from "antd";
 import { LAYOUT_LABELS } from "../model/constants.ts";
 import { toFreeLayout } from "../engine/layout.ts";
-import { countTopics, maxDepth, updateStyle } from "../engine/tree.ts";
+import { countTopics, maxDepth, setTopicBold, updateStyle } from "../engine/tree.ts";
 import { applyPalette, styleFor } from "../engine/style.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { usePalette } from "../stores/usePalette.ts";
@@ -170,17 +170,21 @@ export function MindMapView({ page }: { page: Page }) {
             styleSelected("改字号", (s) => ({ font: { ...s.style.font, size } }))
           }
         />
-        <Tooltip title="加粗只改选中的主题">
+        <Tooltip title="加粗只改选中的主题：写在文字样式上，存盘会带走。中心主题和一级分支本来默认就粗，那一下是取消。">
           <Button
             size="small"
             type={look?.font.bold ? "primary" : "default"}
             disabled={!picked}
             onClick={() =>
-              // 取推导值来翻转：中心主题本来就没存 bold，对着 undefined 取反会得到 true，
-              // 用户看下去就是"第一次点没反应"。
-              styleSelected("切换加粗", (s) => ({
-                font: { ...s.style.font, bold: !styleFor(page, s).font.bold },
-              }))
+              // 按"显示出来的那个字重"翻转，不是按 style 里存没存过：层级默认就是粗，
+              // 对着 undefined 取反会得到 true，用户看下去就是"第一次点没反应"。
+              mutate("切换加粗", (p) => {
+                let out = p;
+                for (const id of selection)
+                  if (out.shapes[id])
+                    out = setTopicBold(out, id, !styleFor(out, out.shapes[id]).font.bold);
+                return out;
+              })
             }
           >
             <b>B</b>
