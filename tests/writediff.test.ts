@@ -39,6 +39,8 @@ import {
   updateTransform,
 } from "../src/engine/tree.ts";
 import { styleFor } from "../src/engine/style.ts";
+import { detectEol, parseXml, serializeXml } from "../src/engine/emmx/xparse.ts";
+import { createDocument } from "../src/model/factory.ts";
 import type { DocumentModel, Page, Shape } from "../src/types/model.ts";
 import { plainText, referencedChar, usedCharIx } from "../src/types/model.ts";
 
@@ -104,8 +106,10 @@ const untouchedOf = (block: string): string =>
     .replace(/<Geometries>[\s\S]*?<\/Geometries>|<Geometries\/>/, "§");
 
 /**
- * 比较用的规范化：亿图把 `>` 直接写在正文里（合法），我们的序列化器写 `&gt;` ——
- * 同一种内容的两种写法，不算差异。所以比的是解码之后的字节。
+ * 比较用的规范化：把实体解回字符再比字节。
+ * 批 3O 之前这里还有一个理由 —— 亿图把 `>` 裸写在正文里，我们的序列化器写 `&gt;`，
+ * 同一种内容两种写法。现在序列化器跟着亿图裸写了（01 A-25），这条规范化只剩"两边都可能
+ * 出现 `&amp;` 之类同一字符的两种写法"这个用途，留着比去掉稳。
  */
 const ENTITY: Record<string, string> = { gt: ">", lt: "<", quot: '"', apos: "'", amp: "&" };
 const decoded = (block: string): string =>
@@ -663,10 +667,7 @@ const ORIG = shapeBlocks(PAGE_XML);
     ...base,
     relationships: base.relationships.map((x) => (x.id === "901" ? { ...x, endId: "104" } : x)),
   };
-  const m901 = blockOf(
-    shapeBlocks(await savedXml(withPage(parsed.doc, movedRel))),
-    "901"
-  );
+  const m901 = blockOf(shapeBlocks(await savedXml(withPage(parsed.doc, movedRel))), "901");
   ok("端点换了号，ConnectMap 跟着改", /<ConnectMap\b[^>]*\bTo="104"/.test(m901), m901);
   eq("端点一动，旧曲线不留在盘上", geoOf(m901), "<Geometries/>");
   ok("端点一动，旧坐标也不留", !m901.includes(`<BeginPt X="1156.76"`), m901.slice(0, 240));
@@ -851,7 +852,11 @@ const ORIG = shapeBlocks(PAGE_XML);
       return m ? `${m[1]}x${m[2]}` : "";
     };
     const bare = await savedXml(parsed.doc);
-    eq("基线：夹具 5 颗主题 + 2 条关系线，各带一条 Character", all(bare, /<Character\b/g).length, 7);
+    eq(
+      "基线：夹具 5 颗主题 + 2 条关系线，各带一条 Character",
+      all(bare, /<Character\b/g).length,
+      7
+    );
 
     // ① 字号：落在被引用的那一条上，文字盒宽高跟着重算，其余一颗都不许动。
     const up = setTopicFont(base, "104", { size: 16 });
@@ -873,7 +878,11 @@ const ORIG = shapeBlocks(PAGE_XML);
     for (const id of ["101", "102", "103", "105", "900"])
       eq(`改 104 的字号不许连累 ${id}`, blockOf(upBlocks, id), blockOf(ORIG, id));
     const upBack = (await parseEmmx(await writeEmmx(withPage(parsed.doc, up)))).doc.pages[0];
-    eq("重开读回 16：文件写了就照它（01 A-17）", referencedChar(upBack.shapes["104"].text)?.size, 16);
+    eq(
+      "重开读回 16：文件写了就照它（01 A-17）",
+      referencedChar(upBack.shapes["104"].text)?.size,
+      16
+    );
     eq("画布也算出同一个 16", styleFor(upBack, upBack.shapes["104"]).font.size, 16);
 
     // ② 字色：`Character@Color` 和文字盒底色 `<Color V>` 是同一个来源，改色两处一起走。
@@ -883,11 +892,7 @@ const ORIG = shapeBlocks(PAGE_XML);
     eq("盒底色同一个值，补齐成亿图的 8 位写法", attrOf(d104, "Color", "V"), "#ffe91e63");
     eq("改字色不许重测文字盒（样式位沿用原盒 88×18）", textBoxWH(d104), "88x18");
     const dyedBack = (await parseEmmx(await writeEmmx(withPage(parsed.doc, dyed)))).doc.pages[0];
-    eq(
-      "重开读回同一个字色",
-      referencedChar(dyedBack.shapes["104"].text)?.color,
-      "#e91e63"
-    );
+    eq("重开读回同一个字色", referencedChar(dyedBack.shapes["104"].text)?.color, "#e91e63");
     eq(
       "画布也按它画，不再用底色推出来的那个",
       styleFor(dyedBack, dyedBack.shapes["104"]).font.color,
@@ -900,11 +905,7 @@ const ORIG = shapeBlocks(PAGE_XML);
     eq("字体族写在 Character@Family 上", attrOf(f104, "Character", "Family"), "宋体");
     eq("改字体族也不重测文字盒", textBoxWH(f104), "88x18");
     const facedBack = (await parseEmmx(await writeEmmx(withPage(parsed.doc, faced)))).doc.pages[0];
-    eq(
-      "重开读回同一个字族",
-      referencedChar(facedBack.shapes["104"].text)?.family,
-      "宋体"
-    );
+    eq("重开读回同一个字族", referencedChar(facedBack.shapes["104"].text)?.family, "宋体");
 
     // ④ 两个家存不同值时的裁决：节点级 `style.font` 在推导链上排得更外层，
     //    旧写法（只改它）画布看得见、存盘带不走；这一笔必须把它清掉，否则用户刚点的值被旧值压住。
@@ -912,7 +913,11 @@ const ORIG = shapeBlocks(PAGE_XML);
     eq("旧写法的节点级值确实会盖住文件里那条", styleFor(stale, stale.shapes["104"]).font.size, 20);
     eq(
       "而它没有线上落点：盘上还是文件写的那条",
-      attrOf(blockOf(shapeBlocks(await savedXml(withPage(parsed.doc, stale))), "104"), "Character", "Size"),
+      attrOf(
+        blockOf(shapeBlocks(await savedXml(withPage(parsed.doc, stale))), "104"),
+        "Character",
+        "Size"
+      ),
       "12"
     );
     const fixed = setTopicFont(stale, "104", { size: 16 });
@@ -929,7 +934,11 @@ const ORIG = shapeBlocks(PAGE_XML);
     const kidPage = normalize(kid.page);
     const kBlock = blockOf(shapeBlocks(await savedXml(withPage(parsed.doc, kidPage))), kid.id);
     const want = styleFor(kidPage, getShape(kidPage, kid.id)!);
-    eq("新主题的 Size 落的是画布推导的那个", attrOf(kBlock, "Character", "Size"), String(want.font.size));
+    eq(
+      "新主题的 Size 落的是画布推导的那个",
+      attrOf(kBlock, "Character", "Size"),
+      String(want.font.size)
+    );
     eq("Family 同样跟主题走，不跟常数走", attrOf(kBlock, "Character", "Family"), want.font.family);
     eq("Color 也一样", attrOf(kBlock, "Character", "Color"), want.font.color);
     ok("新主题不落 Style：没点加粗就不发明记号", !/Character[^>]*Style=/.test(kBlock));
@@ -939,11 +948,7 @@ const ORIG = shapeBlocks(PAGE_XML);
       styleFor(kidBack, kidBack.shapes[kid.id]).font.size,
       want.font.size
     );
-    eq(
-      "文字盒宽高也从同一个字号量起：4 + 2 字 ×(10+4)、1 段 ×10×1.75",
-      textBoxWH(kBlock),
-      "32x18"
-    );
+    eq("文字盒宽高也从同一个字号量起：4 + 2 字 ×(10+4)、1 段 ×10×1.75", textBoxWH(kBlock), "32x18");
     eq("新建那颗的形状盒按亿图的内缩补齐，不再是 0×0", boxWH(kBlock), "46x23.5");
   }
 
@@ -957,9 +962,7 @@ const ORIG = shapeBlocks(PAGE_XML);
     eq("没编辑的那颗：文字盒锚点原样", padOf(geom(blockOf(bare, "102"))), "7.0/2.4");
 
     // ② 改标题：盒子变窄 36pt ⇒ 锚点只许随半边移动 18pt，内缩 7.0/2.4 必须原封不动。
-    const rn = shapeBlocks(
-      await savedXml(withPage(parsed.doc, updateText(base, "102", "改名了")))
-    );
+    const rn = shapeBlocks(await savedXml(withPage(parsed.doc, updateText(base, "102", "改名了"))));
     const r102 = geom(blockOf(rn, "102"));
     eq("改标题重算了文字盒：4 + 3 字 ×16、1 段 ×12×1.75", `${r102.tw}x${r102.th}`, "52x21");
     eq("锚点按内缩反推：51+(52−88)/2、11.4+(21−18)/2", `${r102.cx}/${r102.cy}`, "33/12.9");
@@ -999,7 +1002,9 @@ const ORIG = shapeBlocks(PAGE_XML);
 
     // ⑥ 反推出来的锚点带尾数时按全篇统一的两位精度收口（夹具 104 的锚点故意写成 51.006/11.449）。
     //    不收口的话浮点尾数会一次比一次长地写进盘里，重开再存一次就多一位。
-    const prec = shapeBlocks(await savedXml(withPage(parsed.doc, updateText(base, "104", "改名了"))));
+    const prec = shapeBlocks(
+      await savedXml(withPage(parsed.doc, updateText(base, "104", "改名了")))
+    );
     const p104 = geom(blockOf(prec, "104"));
     eq("51.006+(52−88)/2、11.449+(21−18)/2 ⇒ 两位精度", `${p104.cx}/${p104.cy}`, "33.01/12.95");
     ok("这一笔也没把锚点写回 0", p104.cx !== 0 && p104.cy !== 0);
@@ -1008,7 +1013,9 @@ const ORIG = shapeBlocks(PAGE_XML);
     //    走形状盒中心 —— 拿半边项去补一个不存在的原宽度会得到 NaN，写进盘里就是坏文件。
     //    这一颗的形状盒也拿不到自己的内缩，于是按 MainIdea 的实测众数 39/30 补（01 A-21）：
     //    "改名了"量出 52×21 ⇒ 新盒 91×51 ⇒ 中心 45.5/25.5。
-    const partial = shapeBlocks(await savedXml(withPage(parsed.doc, updateText(base, "101", "改名了"))));
+    const partial = shapeBlocks(
+      await savedXml(withPage(parsed.doc, updateText(base, "101", "改名了")))
+    );
     const q101 = geom(blockOf(partial, "101"));
     eq("缺 Width/Height ⇒ 按类型众数补盒子（91×51）后取中心", `${q101.cx}/${q101.cy}`, "45.5/25.5");
     ok("算不出内缩也不许写 NaN", Number.isFinite(q101.cx) && Number.isFinite(q101.cy));
@@ -1421,11 +1428,7 @@ for (const f of REAL_FILES) {
       g1.cx !== 0 && g1.cy !== 0,
       `${JSON.stringify(g0)} → ${JSON.stringify(g1)}`
     );
-    eq(
-      `${f}｜改名后文字盒内缩不变（锚点只随半边移动）`,
-      textBoxPad(g1),
-      textBoxPad(g0)
-    );
+    eq(`${f}｜改名后文字盒内缩不变（锚点只随半边移动）`, textBoxPad(g1), textBoxPad(g0));
   }
 
   // 值级第二刀（01 A-17）：改字号。census 只数出现次数，Size 从原值变到 16 它是盲的，
@@ -1482,11 +1485,7 @@ for (const f of REAL_FILES) {
         ""
       );
       const back = (await parseEmmx(await writeEmmx(withPage(original, sized)))).doc.pages[0];
-      eq(
-        `${f}｜重开读回 16`,
-        referencedChar(back.shapes[target.id].text)?.size,
-        16
-      );
+      eq(`${f}｜重开读回 16`, referencedChar(back.shapes[target.id].text)?.size, 16);
       eq(`${f}｜画布也算出 16`, styleFor(back, back.shapes[target.id]).font.size, 16);
     }
   }
@@ -1505,6 +1504,151 @@ for (const f of REAL_FILES) {
     eq(`${f}｜${sc.label}：差分只允许预期那几条`, unexpected.join(" | "), "");
     if (sc.expect) sc.expect(d);
   }
+}
+
+// ================================================================ 未编辑往返的逐字节口径（01 A-19 行尾 / A-25 正文 `>`）
+
+/** 这份文件里的部件按哪种行尾落。单行部件读不出倾向，所以判"整档一条"要看别的部件说话（实测亿图从不跨部件混用）。 */
+const eolOf = (t: string): string =>
+  t.includes("\r\n") ? "CRLF" : t.includes("\n") ? "LF" : "单行";
+const partOf = async (bytes: Uint8Array, re: RegExp): Promise<string> => {
+  const e = (await readZip(bytes)).find((x) => re.test(norm(x.name)));
+  if (!e) throw new Error(`包里没有 ${re.source} 这个条目`);
+  return decodeBytes(e.data);
+};
+const crlfx = (t: string): string => t.replace(/\n/g, "\r\n");
+
+{
+  // detectEol 的三条判据 + serializeXml 的 eol 参数（含结尾那一个）。
+  eq("detectEol：含 \\r\\n 就判 CRLF", detectEol("a\r\nb\nc"), "\r\n");
+  eq("detectEol：纯 LF 判 LF", detectEol("a\nb"), "\n");
+  eq("detectEol：整块没换行时不硬判", detectEol("abc"), "\n");
+  const shapeNode = parseXml('<A><B V="1"/></A>');
+  eq(
+    "serializeXml 的 eol 同时管连接与结尾",
+    serializeXml(shapeNode, "  ", "\r\n"),
+    '<?xml version="1.0" encoding="utf-8"?>\r\n<A>\r\n  <B V="1"/>\r\n</A>\r\n'
+  );
+  eq(
+    "不传 eol 时仍是 LF（新建文档那条路）",
+    serializeXml(shapeNode, "  "),
+    '<?xml version="1.0" encoding="utf-8"?>\n<A>\n  <B V="1"/>\n</A>\n'
+  );
+}
+
+{
+  // 亿图的部件全是 CRLF。旧写法无条件用 "\n" 拼接，于是"打开一次再存"就把整份文件的行尾洗掉，
+  // 前面所有"没动的东西一字节都不差"的验收因此只能在去空白之后比（compact/decoded 那套规范化就是为此存在的）。
+  // theme.xml 走的是"缓存原节点"那条路（不经过任何 build*），rels 是现造的，
+  // 这两类都必须显式接整档行尾 —— 少接一个，那份部件就在 CRLF 的文件里落成 LF。
+  const crlfZip = await writeZip([
+    { name: "document.xml", data: encodeText(crlfx(DOC_XML)) },
+    { name: "theme.xml", data: encodeText(crlfx(`<Theme><Fill><c FColor="1;0"/></Fill></Theme>`)) },
+    { name: "page/page.xml", data: encodeText(PAGE_XML) },
+    { name: "rels/page_rels.xml", data: encodeText(crlfx(`<Relationships/>`)) },
+  ]);
+  const saved = await writeEmmx((await parseEmmx(crlfZip)).doc);
+  eq("CRLF 的文件保存后还是 CRLF", eolOf(await partOf(saved, /document\.xml$/i)), "CRLF");
+  // page.xml 原文是挤在一行的（单行部件自己判不出行尾），落盘必须跟着整档的约定走；
+  // rels 那份是保存时现造的、根本没有源节点，同样只能靠整档这一条。
+  eq("单行的 page.xml 跟着整档落", eolOf(await partOf(saved, /page\/page\.xml$/i)), "CRLF");
+  eq("照搬的 theme.xml 跟着整档落", eolOf(await partOf(saved, /theme\.xml$/i)), "CRLF");
+  eq("现造的 rels 也跟着整档落", eolOf(await partOf(saved, /page_rels\.xml$/i)), "CRLF");
+
+  const lfZip = await writeZip([
+    { name: "document.xml", data: encodeText(DOC_XML) },
+    { name: "theme.xml", data: encodeText(`<Theme><Fill><c FColor="1;0"/></Fill></Theme>`) },
+    { name: "page/page.xml", data: encodeText(PAGE_XML) },
+  ]);
+  const savedLf = await writeEmmx((await parseEmmx(lfZip)).doc);
+  eq("LF 的文件保存后还是 LF", eolOf(await partOf(savedLf, /document\.xml$/i)), "LF");
+  eq("page.xml 继承整档：这里该是 LF", eolOf(await partOf(savedLf, /page\/page\.xml$/i)), "LF");
+  eq("theme.xml 继承整档：这里该是 LF", eolOf(await partOf(savedLf, /theme\.xml$/i)), "LF");
+
+  // 新建的文档根本没有部件可读，那条路必须还是 LF —— 别让"沿用原文"顺手改掉无源可依的默认值。
+  eq(
+    "新建文档没有源可循，按 LF 落",
+    eolOf(await partOf(await writeEmmx(createDocument()), /document\.xml$/i)),
+    "LF"
+  );
+}
+
+{
+  // 正文里的 `>` 亿图裸写：121 份真文件里 `&gt;` 出现 0 次，而含裸 `>` 的正文有 40 处。
+  // 旧序列化无条件转义，于是用户敲的一个箭头每次保存都被换成实体 —— 行尾修好之后，
+  // 逐字节比对第一次把这一处暴露出来（同一颗主题：`--->` 变成 `--&gt;`）。
+  const bytes = await writeZip([
+    { name: "document.xml", data: encodeText(DOC_XML) },
+    { name: "page/page.xml", data: encodeText(PAGE_XML) },
+    { name: "rels/page_rels.xml", data: encodeText(`<Relationships/>`) },
+  ]);
+  const { doc } = await parseEmmx(bytes);
+  const page = doc.pages[0];
+  const arrowed = withPage(doc, updateText(page, "102", "甲>乙"));
+  const xml = await savedXml(arrowed);
+  ok(
+    "正文里的 > 不再被改成实体",
+    xml.includes('<tp CX="0">甲>乙</tp>') && !xml.includes("&gt;"),
+    xml.slice(0, 200)
+  );
+  const backArrow = (await parseEmmx(await writeEmmx(arrowed))).doc;
+  eq("含 > 的正文重开还是原样", plainText(backArrow.pages[0].shapes["102"].text), "甲>乙");
+
+  // 唯一必须转义的是 `]]>`：那是字符数据的结束符，裸写会让节点在中间被截断。
+  const bracket = withPage(doc, updateText(page, "102", "甲]]>乙"));
+  const bracketXml = await savedXml(bracket);
+  ok(
+    "]]> 仍然转义（否则字符数据提前结束）",
+    bracketXml.includes("甲]]&gt;乙"),
+    bracketXml.slice(0, 200)
+  );
+  const backBracket = (await parseEmmx(await writeEmmx(bracket))).doc;
+  eq("含 ]]> 的正文重开还是原样", plainText(backBracket.pages[0].shapes["102"].text), "甲]]>乙");
+}
+
+const REAL_PARTS = /(^|\/)(document\.xml|theme\.xml|page\/page\.xml)$/i;
+
+for (const f of REAL_FILES) {
+  const path = join(FOLD_DIR, f);
+  if (!existsSync(path)) {
+    skip(`${f}｜未编辑往返每个部件逐字节一致`, "真亿图样张不在仓库里（_research/extract/fold/）");
+    continue;
+  }
+  const bytes = new Uint8Array(readFileSync(path));
+  const out = await writeEmmx((await parseEmmx(bytes)).doc);
+  const before = await readZip(bytes);
+  const after = await readZip(out);
+  const bad: string[] = [];
+  let seen = 0;
+  for (const e of before) {
+    if (!REAL_PARTS.test(norm(e.name))) continue;
+    seen += 1;
+    const a = after.find((x) => norm(x.name) === norm(e.name));
+    if (!a) {
+      bad.push(`${e.name}：整条没了`);
+      continue;
+    }
+    if (decodeBytes(a.data) !== decodeBytes(e.data)) bad.push(e.name);
+  }
+  // 这一条是 A-19/A-25 的终点：那两处（行尾、正文 > ）任何一个复发，这里立刻不是一字节。
+  // 先钉"可比部件真的有三个"，免得整条断言在空集合上恒真（01 A-20 那条口径）。
+  eq(`${f}｜这份样张该有三个可比部件`, seen, 3);
+  ok(`${f}｜什么都不改，存盘的每个部件逐字节一致（原文全 CRLF）`, bad.length === 0, bad.join(","));
+  // rels 不进上面这条：亿图写 `<Relationship Target Id>`、我们写 `<Relationship Id Target>`，
+  // 属性顺序早先已定为非复刻目标（11 份 39178 个点普查）。这里只钉"条目一条不少、值一个不改"。
+  const relsOf = async (b: Uint8Array): Promise<string> => {
+    const t = await partOf(b, /page_rels\.xml$/i).catch(() => "");
+    return [...t.matchAll(/<Relationship\b[^>]*\/>/g)]
+      .map((m) =>
+        [...m[0].matchAll(/="([^"]*)"/g)]
+          .map((q) => q[1])
+          .sort()
+          .join("=")
+      )
+      .sort()
+      .join("|");
+  };
+  eq(`${f}｜rels 条目与值原样带走（属性顺序不比）`, await relsOf(out), await relsOf(bytes));
 }
 
 done();

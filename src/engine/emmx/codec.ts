@@ -37,6 +37,7 @@ import { createPage, newGanttOption } from "../../model/factory.ts";
 import { readZip, writeZip, encodeText, decodeBytes, type ZipEntry } from "./zip.ts";
 import {
   attr,
+  detectEol,
   el,
   findAll,
   find,
@@ -47,6 +48,7 @@ import {
   valueOrText,
   vnode,
   vNode,
+  type XmlEol,
   type XmlNode,
 } from "./xparse.ts";
 // 回写要按"画布怎么推导这一颗"补齐未声明的样式（01 A-17），所以这里必须用同一套推导，
@@ -111,9 +113,7 @@ export async function parseEmmx(bytes: Uint8Array): Promise<ParseResult> {
     // varint/TLV 流里，包里根本没有 page/*.xml（01 A-14）。不猜着解 —— 猜出来的 reader
     // 只会把"打不开"换成更坏的"打开了但内容是编的"。但这句话得让用户知道下一步做什么：
     // 实测用户自己在亿图里另存的文件走的是 XML 容器，所以"打开后另存一份"是真能走通的路。
-    const v12 = entries.some(
-      (e) => /(^|\/)page\.bin$/i.test(e.name) || /\.bkiwi$/i.test(e.name)
-    );
+    const v12 = entries.some((e) => /(^|\/)page\.bin$/i.test(e.name) || /\.bkiwi$/i.test(e.name));
     throw new EmmxError(
       v12
         ? "这份 .emmx 用的是亿图 V12 的二进制页面容器（page.bin），本程序只能打开 XML 容器的文件。请在亿图里打开它再「另存为」成 .emmx，或改用 XMind / Markdown 等格式走「导入」。"
@@ -121,7 +121,10 @@ export async function parseEmmx(bytes: Uint8Array): Promise<ParseResult> {
     );
   }
 
-  const docRoot = parseXml(decodeBytes(docEntry.data));
+  const docText = decodeBytes(docEntry.data);
+  const docRoot = parseXml(docText);
+  // 行尾要跟着原文落（01 A-19）：整档判一条，判据见 xparse.detectEol 的实测注释。
+  const eolSeen: XmlEol[] = [detectEol(docText)];
   const media: Record<string, Uint8Array> = {};
   for (const e of entries) if (/^media\//i.test(e.name)) media[e.name] = e.data;
   // 亿图在包里另存一张 thumbnail.jpeg 给"打开"对话框做预览：它不属于任何 Shape，
@@ -129,12 +132,18 @@ export async function parseEmmx(bytes: Uint8Array): Promise<ParseResult> {
   const thumb = entries.find((e) => /^thumbnail\.\w+$/i.test(e.name));
   if (thumb) media[thumb.name] = thumb.data;
   // 空的 <Relationships/> 亿图也照样写一条；"有没有这个文件"和"里面有没有条目"是两件事。
+  const theme = pageThemeRoot(entries);
+  eolSeen.push(theme.eol);
+  // 空的 <Relationships/> 亿图也照样写一条；"有没有这个文件"和"里面有没有条目"是两件事。
   const relsPresent = entries.some((e) => /^rels\/page_rels\.xml$/i.test(e.name));
 
   const rels = parseRels(entries);
+  eolSeen.push(rels.eol);
   const pages: Page[] = [];
   for (const pe of pageEntries) {
-    pages.push(parsePage(pe.name, decodeBytes(pe.data), rels.map, warnings));
+    const pageText = decodeBytes(pe.data);
+    eolSeen.push(detectEol(pageText));
+    pages.push(parsePage(pe.name, pageText, rels.map, warnings));
   }
 
   const propsNode = find(docRoot, "Properties");
@@ -150,7 +159,9 @@ export async function parseEmmx(bytes: Uint8Array): Promise<ParseResult> {
   const raw: Record<string, unknown> = {
     documentRoot: docRoot,
     documentSig: sigOfDocument(props, gantt, pages.length),
-    themeRoot: pageThemeRoot(entries),
+    themeRoot: theme.root,
+    // 存盘要沿用的行尾：任一部件用 CRLF 就整档按 CRLF 落（01 A-19）。
+    docEol: eolSeen.includes("\r\n") ? "\r\n" : "\n",
     // 原 rels 清单：原样回写的 Shape 不会经过 buildShape，它们的 rId 只能靠这份表恢复。
     relEntries: rels.list,
     relsPresent,
@@ -178,27 +189,32 @@ function pickEntry(entries: ZipEntry[], want: string): ZipEntry | undefined {
   return entries.find((e) => e.name.replace(/\\/g, "/").toLowerCase() === want.toLowerCase());
 }
 
-function pageThemeRoot(entries: ZipEntry[]): XmlNode | undefined {
+function pageThemeRoot(entries: ZipEntry[]): { root?: XmlNode; eol: XmlEol } {
   const hit = entries.find((e) => /^theme\.xml$/i.test(e.name));
-  if (!hit) return undefined;
+  if (!hit) return { eol: "\n" };
+  const text = decodeBytes(hit.data);
   try {
-    return parseXml(decodeBytes(hit.data));
+    return { root: parseXml(text), eol: detectEol(text) };
   } catch {
-    return undefined;
+    return { eol: detectEol(text) };
   }
 }
 
 function parseRels(entries: ZipEntry[]): {
   map: Record<string, string>;
   list: { id: string; target: string }[];
+  eol: XmlEol;
 } {
   const map: Record<string, string> = {};
   const list: { id: string; target: string }[] = [];
+  let eol: XmlEol = "\n";
   for (const e of entries) {
     if (!/^rels\/.*\.xml$/i.test(e.name)) continue;
+    const text = decodeBytes(e.data);
+    if (detectEol(text) === "\r\n") eol = "\r\n";
     let root: XmlNode;
     try {
-      root = parseXml(decodeBytes(e.data));
+      root = parseXml(text);
     } catch {
       continue;
     }
@@ -211,7 +227,7 @@ function parseRels(entries: ZipEntry[]): {
       map[id] = target;
     }
   }
-  return { map, list };
+  return { map, list, eol };
 }
 
 // ---------------------------------------------------------------- document.xml
@@ -786,7 +802,12 @@ function buildTextNode(
     tb.children.push(ch);
   });
   rt.paragraphs.forEach((p, ix) => {
-    const para = el("Paragraph", { SpLine: "100", Align: p.align ?? 1, IX: ix, IndFirst: p.indentFirst });
+    const para = el("Paragraph", {
+      SpLine: "100",
+      Align: p.align ?? 1,
+      IX: ix,
+      IndFirst: p.indentFirst,
+    });
     adoptAttrs(para, rawParas.get(String(ix)), ["SpLine", "Align", "IX", "IndFirst"]);
     tb.children.push(para);
   });
@@ -1017,26 +1038,31 @@ export async function writeEmmx(doc: DocumentModel): Promise<Uint8Array> {
   const entries: ZipEntry[] = [];
   const seeded = (doc.rawUnknown?.relEntries as { id: string; target: string }[] | undefined) ?? [];
   const ctx: WriteCtx = { rels: seeded.map((r) => ({ ...r })), media: doc.media };
+  // 行尾跟着原文走（01 A-19）：亿图的部件全是 CRLF，我们旧版无条件用 "\n"，
+  // 于是一份没动过的文件保存一次就多出一万次行尾改动——"最小编辑不动别处"因此只在语义层成立。
+  // 新建的文档没有源可读，按 "\n" 落。
+  const eol = (doc.rawUnknown?.docEol as XmlEol | undefined) ?? "\n";
   const docRoot = buildDocumentXml(doc);
-  entries.push({ name: DOC_XML, data: encodeText(serializeXml(docRoot)) });
+  entries.push({ name: DOC_XML, data: encodeText(serializeXml(docRoot, "    ", eol)) });
 
   doc.pages.forEach((page, ix) => {
     ctx.page = page;
     ctx.palette = paletteForDoc(doc, page);
     entries.push({
       name: pageEntryName(ix),
-      data: encodeText(serializeXml(buildPageXml(page, ctx))),
+      data: encodeText(serializeXml(buildPageXml(page, ctx), "    ", eol)),
     });
   });
 
   const themeRaw = doc.rawUnknown?.themeRoot as XmlNode | undefined;
-  if (themeRaw) entries.push({ name: THEME_XML, data: encodeText(serializeXml(themeRaw)) });
+  if (themeRaw)
+    entries.push({ name: THEME_XML, data: encodeText(serializeXml(themeRaw, "    ", eol)) });
   const relsPresent = Boolean(doc.rawUnknown?.relsPresent);
   if (ctx.rels.length || relsPresent) {
     const r = el("Relationships");
     for (const x of ctx.rels)
       r.children.push(el("Relationship", { Id: x.id, Target: `../${x.target}` }));
-    entries.push({ name: RELS_XML, data: encodeText(serializeXml(r)) });
+    entries.push({ name: RELS_XML, data: encodeText(serializeXml(r, "    ", eol)) });
   }
   for (const [name, data] of Object.entries(doc.media)) entries.push({ name, data });
 
@@ -1361,7 +1387,9 @@ function rebuildShape(
   if (type === "RelatConnector") {
     const rel = page.relationships.find((r) => r.id === id);
     if (!rel) return raw.nodes[key];
-    return sigOfRelationship(rel) === raw.sig[key] ? raw.nodes[key] : buildRelationship(rel, ctx, raw.nodes[key]);
+    return sigOfRelationship(rel) === raw.sig[key]
+      ? raw.nodes[key]
+      : buildRelationship(rel, ctx, raw.nodes[key]);
   }
   const shape = page.shapes[id];
   if (!shape) return undefined; // 用户删掉的 Shape：不再回写
@@ -1458,7 +1486,9 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
     if (s.parentId) ld.children.push(vNode("Super", s.parentId));
     // 亿图在同一个 <LevelData> 里还挂着我们没建模的兄弟节点（ToSuper、TogglerID…）：
     // 父子指针真的变了也得把它们带回来，不然删一次折叠标记就顺手抹掉一条指针缓存。
-    if (rawLevel) for (const c of rawLevel.children) if (c.tag !== "Super" && c.tag !== "SubLevel") ld.children.push(c);
+    if (rawLevel)
+      for (const c of rawLevel.children)
+        if (c.tag !== "Super" && c.tag !== "SubLevel") ld.children.push(c);
     if (s.childIds.length) ld.children.push(vNode("SubLevel", s.childIds.join(";")));
     return ld;
   };
@@ -1534,8 +1564,10 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
   );
   // 任务信息：同一条自造节点的路。进度/优先级/状态/起止/里程碑/成员/标签/前置全部收进属性，
   // 空字段不写，重开时 parse 侧还原成 undefined；读侧补的默认值在盘上本来就没有位置，也不许落笔。
-  keep("TaskInfo", coveredBy(rawOf("TaskInfo"), buildTaskInfo(s.extras.task, rawOf("TaskInfo"))), () =>
-    buildTaskInfo(s.extras.task, rawOf("TaskInfo"))
+  keep(
+    "TaskInfo",
+    coveredBy(rawOf("TaskInfo"), buildTaskInfo(s.extras.task, rawOf("TaskInfo"))),
+    () => buildTaskInfo(s.extras.task, rawOf("TaskInfo"))
   );
   carryUntouched(s, n, from);
   return n;
@@ -1757,13 +1789,17 @@ function relEndpoints(from: XmlNode): { beginId: string; endId: string } {
 }
 
 /** 亿图自己写关系线时的先后次序（重建时没建模的那几段要跟着它，见 01 A-24 的两份观察）。 */
-const REL_ORDER = ["ConnectMap", "BeginPt", "EndPt", "Text", "ShapeFormat", "StyleMask", "Geometries"];
+const REL_ORDER = [
+  "ConnectMap",
+  "BeginPt",
+  "EndPt",
+  "Text",
+  "ShapeFormat",
+  "StyleMask",
+  "Geometries",
+];
 
-function buildRelationship(
-  r: RelationshipShape,
-  ctx: WriteCtx,
-  from?: XmlNode
-): XmlNode {
+function buildRelationship(r: RelationshipShape, ctx: WriteCtx, from?: XmlNode): XmlNode {
   void ctx;
   const n = el("Shape", { Type: "RelatConnector", ID: r.id });
   const rawOf = (tag: string): XmlNode | undefined => (from ? find(from, tag) : undefined);
@@ -1800,7 +1836,11 @@ function buildRelationship(
     BeginPt: sameEnds ? rawOf("BeginPt") : undefined,
     EndPt: sameEnds ? rawOf("EndPt") : undefined,
     Text: sameText ? rawText : textNode(),
-    ShapeFormat: sameStyle ? rawSf : sf.children.length || Object.keys(sf.attrs).length ? sf : undefined,
+    ShapeFormat: sameStyle
+      ? rawSf
+      : sf.children.length || Object.keys(sf.attrs).length
+        ? sf
+        : undefined,
     StyleMask: r.style.mask !== undefined ? el("StyleMask", { V: r.style.mask }) : undefined,
     Geometries: (sameEnds ? rawOf("Geometries") : undefined) ?? el("Geometries"),
   };

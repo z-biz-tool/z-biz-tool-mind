@@ -48,7 +48,10 @@ export function decodeEntities(s: string): string {
 }
 
 export function encodeText(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // `>` 裸写：121 份亿图真文件里正文含 `>` 的有 40 处，而整份文件里 `&gt;` 出现 0 次 ——
+  // XML 本来就允许正文和属性值里的 `>` 裸着，只有 `]]>` 是字符数据结束符必须转义。
+  // 旧写法无条件转义，于是用户敲的一个箭头每次保存都被改成实体，逐字节比对白差一处（01 A-25）。
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/]]>/g, "]]&gt;");
 }
 
 export function encodeAttr(s: string): string {
@@ -61,7 +64,11 @@ export function vNode(tag: string, v: string | number): XmlNode {
   return n;
 }
 
-export function el(tag: string, attrs: Record<string, string | number | undefined> = {}, children: XmlNode[] = []): XmlNode {
+export function el(
+  tag: string,
+  attrs: Record<string, string | number | undefined> = {},
+  children: XmlNode[] = []
+): XmlNode {
   const a: Record<string, string> = {};
   for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== "") a[k] = String(v);
   return { tag, attrs: a, children, text: "" };
@@ -162,7 +169,7 @@ function parseTagHead(inner: string): { name: string; attrs: Record<string, stri
   let hit: RegExpExecArray | null;
   while ((hit = re.exec(rest))) {
     const key = hit[1];
-    const value = hit[3] !== undefined ? hit[3] : hit[4] ?? "";
+    const value = hit[3] !== undefined ? hit[3] : (hit[4] ?? "");
     attrs[key] = decodeEntities(value);
   }
   return { name, attrs };
@@ -207,10 +214,22 @@ export function valueOrText(node: XmlNode | undefined, dflt = ""): string {
   return node.attrs.V ?? (node.text || dflt);
 }
 
-export function serializeXml(root: XmlNode, indent = "    "): string {
+export function serializeXml(root: XmlNode, indent = "    ", eol: XmlEol = "\n"): string {
   const out: string[] = ['<?xml version="1.0" encoding="utf-8"?>'];
   emit(root, 0, indent, out);
-  return out.join("\n") + "\n";
+  return out.join(eol) + eol;
+}
+
+/** 行尾只有这两种形态：亿图的文件全用 `\r\n`，我们新建的用 `\n`。 */
+export type XmlEol = "\r\n" | "\n";
+
+/**
+ * 按原文的行尾判定。实测 535 份亿图文件里，一份文件的各 XML 部件行尾从不混用
+ * （部件内 0 例、跨部件 0 例），所以整档判一条就够，不必逐部件记。
+ * 只含 `\r\n` 的判 CRLF；单行无换行的文件读不出倾向，留给同档别的部件说话。
+ */
+export function detectEol(src: string): XmlEol {
+  return src.includes("\r\n") ? "\r\n" : "\n";
 }
 
 function emit(node: XmlNode, depth: number, indent: string, out: string[]): void {
