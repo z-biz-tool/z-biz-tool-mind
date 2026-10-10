@@ -487,6 +487,53 @@ if (!existsSync(FIXTURE)) {
     ok("导入后一颗都不许看不出来", missed === 0, `算丢 ${missed}：${ids.join(",")}`);
   }
 
+  // --- 亿图给每一颗文字盒都写了中心锚（01 A-18 的底数：锚住在 `<Text><Transform><CX/CY>`）
+  //     这条钉的是"居中假设"值不值：居中只能对上一部分，其余那些内缩本来就不对称。
+  {
+    let boxes = 0;
+    let noAnchor = 0;
+    let zeroAnchor = 0;
+    let centered = 0;
+    let worst = 0;
+    const offenders: { id: string; pad: number; half: number }[] = [];
+    for (const s of xmlShapes) {
+      const textNode = findAll(s, "Text")[0];
+      if (!textNode) continue;
+      const xf = findAll(textNode, "Transform")[0];
+      if (!xf) continue;
+      boxes += 1;
+      const cx = numVnode(xf, "CX", NaN);
+      const cy = numVnode(xf, "CY", NaN);
+      if (Number.isNaN(cx) || Number.isNaN(cy)) {
+        noAnchor += 1;
+        continue;
+      }
+      if (cx === 0 && cy === 0) zeroAnchor += 1;
+      const sw = numVnode(findAll(s, "Transform")[0], "Width", NaN);
+      const tw = numVnode(xf, "Width", NaN);
+      const pad = cx - tw / 2;
+      const half = (sw - tw) / 2;
+      const gap = Math.abs(pad - half);
+      if (gap < 0.001) centered += 1;
+      if (gap > worst) worst = gap;
+      if (gap > 1) offenders.push({ id: attr(s, "ID") ?? "", pad, half });
+    }
+    eq("这一份里带文字盒的形状", boxes, 82);
+    eq("没有锚点的（亿图不这么写）", noAnchor, 0);
+    eq("锚点写成 0 的 —— 那是我们旧写手发明的值，真文件里一个都没有", zeroAnchor, 0);
+    // 只有 58/82 恰好居中；20 颗差 ±0.2/±0.8（亿图自己的取整与不对称内缩），
+    // 4 颗差到 9.7（文字靠左排、盒子右边留一大截白）。照"形状盒中心"写会把这 24 颗的锚点全改掉 ——
+    // 所以这条规则只能"从原节点反推内缩"，不能猜居中。
+    eq("按形状盒居中对得上的颗数", centered, 58);
+    eq("明显偏离居中的颗数（>1pt）", offenders.length, 4);
+    ok(
+      "偏离的那几颗全都偏左（pad < 半边），不是随机散布",
+      offenders.every((o) => o.pad < o.half),
+      offenders.map((o) => `${o.id} pad=${o.pad.toFixed(1)} 居中=${o.half.toFixed(1)}`).join(",")
+    );
+    eq("最大偏离（pt）", worst.toFixed(1), "9.7");
+  }
+
   // --- 保存：未编辑的文件必须原样回写
   const saved = await writeEmmx(doc);
   const reEntries = await readZip(saved);

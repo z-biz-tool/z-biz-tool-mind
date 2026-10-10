@@ -735,7 +735,12 @@ function fontHint(ctx: WriteCtx, s: Shape): FontSpec | undefined {
   return { family: f.family, size: f.size, color: f.color };
 }
 
-function buildTextNode(rt: RichText, src?: XmlNode, hint?: FontSpec): XmlNode {
+function buildTextNode(
+  rt: RichText,
+  src?: XmlNode,
+  hint?: FontSpec,
+  box?: { w: number; h: number }
+): XmlNode {
   const rawTb = src ? find(src, "TextBlock") : undefined;
   const rawByIx = (tag: string): Map<string, XmlNode> => {
     const m = new Map<string, XmlNode>();
@@ -788,15 +793,49 @@ function buildTextNode(rt: RichText, src?: XmlNode, hint?: FontSpec): XmlNode {
   tb.children.push(inner);
   const tw = Math.max(1, Math.round(measureTextWidth(rt, size)));
   const th = Math.max(1, Math.round(rt.paragraphs.length * size * TEXT_LINE_H));
+  const rawXf = src ? find(src, "Transform") : undefined;
+  const a = textAnchors(rawXf, tw, th, box);
   return el("Text", {}, [
     el("Transform", {}, [
       vNode("Width", tw),
       vNode("Height", th),
-      attachP(vNode("CX", 0), "1"),
-      attachP(vNode("CY", 0), "2"),
+      attachP(vNode("CX", round(a.cx)), "1"),
+      attachP(vNode("CY", round(a.cy)), "2"),
     ]),
     tb,
   ]);
+}
+
+/**
+ * 文字盒的中心锚（01 A-18）。亿图给每一颗带文字盒的形状都写了 CX/CY（10 份 XML 容器样张、1344 个文字盒，
+ * 全非 0、一根 0 都没有），那个值是"文字盒在形状盒里的内缩 + 自身半边"。实测内缩不对称也不居中：
+ * 二级主题多为 7.0/8.3，中心主题 19.3，标注框 10.3~13.3，连线标签 −38.5（文字盒比形状盒还宽）。
+ * 所以"中心 = 形状盒中心"这个假设站不住，只能从原节点反推内缩量再套新盒子 ——
+ * 盒子尺寸没变时算回原值（逐字节一致），改名/改字号时内缩照旧、中心只随半边移动。
+ *
+ * 那个 0 是我们旧写手发明的（写死在 CX/CY 上），照它反推会得到负内缩（把文字摁到左上角外），
+ * 所以"两根轴都是 0"按没声明处理，走形状盒中心 —— 亿图自己新建的主题实测左右内缩相等（empty.emmx 25.9/26.3）。
+ * 原节点压根没有锚的只有我们新建的形状，同一条路。
+ */
+function textAnchors(
+  rawXf: XmlNode | undefined,
+  tw: number,
+  th: number,
+  box?: { w: number; h: number }
+): { cx: number; cy: number } {
+  const rawCx = rawXf ? numVnode(rawXf, "CX", NaN) : NaN;
+  const rawCy = rawXf ? numVnode(rawXf, "CY", NaN) : NaN;
+  const rawTw = rawXf ? numVnode(rawXf, "Width", NaN) : NaN;
+  const rawTh = rawXf ? numVnode(rawXf, "Height", NaN) : NaN;
+  const declared =
+    [rawCx, rawCy, rawTw, rawTh].every((n) => Number.isFinite(n)) && !(rawCx === 0 && rawCy === 0);
+  if (declared) return { cx: rawCx + (tw - rawTw) / 2, cy: rawCy + (th - rawTh) / 2 };
+  // 形状盒还没算出来（w=0，合成夹具里新建的那颗就是）时退成"内缩 0"，
+  // 免得把中心压回 0 —— 那正是这条要修掉的那个值。
+  return {
+    cx: (box && box.w > 0 ? box.w : tw) / 2,
+    cy: (box && box.h > 0 ? box.h : th) / 2,
+  };
 }
 
 /**
@@ -1220,7 +1259,11 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
   const rawText = rawOf("Text");
   const sameText = rawText !== undefined && canon(parseRichText(rawText)) === canon(s.text);
   keep("Text", sameText, () => {
-    const t = buildTextNode(s.text, rawText, fontHint(ctx, s));
+    // 形状盒按我们这一批写到盘上的那个值传，锚点与盒子才是同一个尺。
+    const t = buildTextNode(s.text, rawText, fontHint(ctx, s), {
+      w: Number(round(s.transform.w)),
+      h: Number(round(s.transform.h)),
+    });
     carryParagraphRecords(rawText, t);
     return t;
   });

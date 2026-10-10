@@ -92,6 +92,25 @@ const hasTag = (block: string, tag: string, attrs: Record<string, string>): bool
     new RegExp(`<${tag}\\b[^>]*\\b${k}="${v}"[^>]*>`).test(block)
   );
 
+/**
+ * 抓文字盒那一层：一颗 Shape 里有两个 `<Transform>`，先来的是形状盒（布局给的），
+ * `<Text><Transform>` 起的才是文字盒（01 A-18 的锚点住在这里）。
+ * 属性顺序两份样张就不一样（`测试基础` 写 `<Width V="60"/>`、`系统测试` 写 `<Width B="3" P="0" V="60"/>`），
+ * 所以先切区间、再逐标签抓 V，不假设顺序。
+ */
+const textBoxGeom = (block: string): { tw: number; th: number; cx: number; cy: number } => {
+  const m = /<Text><Transform>([\s\S]*?)<\/Transform>/.exec(block);
+  if (!m) return { tw: NaN, th: NaN, cx: NaN, cy: NaN };
+  const val = (tag: string): number => {
+    const e = new RegExp(`<${tag}\\b([^>]*?)\\/>`).exec(m[1]);
+    return e ? Number(/\bV="([^"]+)"/.exec(e[1])?.[1] ?? "NaN") : NaN;
+  };
+  return { tw: val("Width"), th: val("Height"), cx: val("CX"), cy: val("CY") };
+};
+/** 亿图的口径：锚 = 文字盒在形状盒里的左/上内缩 + 自身半边。内缩是版式属性，我们不建模，只许跟着走。 */
+const textBoxPad = (g: { tw: number; th: number; cx: number; cy: number }): string =>
+  `${(g.cx - g.tw / 2).toFixed(1)}/${(g.cy - g.th / 2).toFixed(1)}`;
+
 const pageXmlOf = async (bytes: Uint8Array): Promise<string> => {
   const e = (await readZip(bytes)).find((x) => /page\/page\.xml$/i.test(norm(x.name)));
   if (!e) throw new Error("没有 page/page.xml");
@@ -161,13 +180,27 @@ const DOC_XML = `<?xml version="1.0" encoding="UTF-8"?>
  * 亿图正文盒的写法。mask/bk/space 这几处是我们的模型完全没建模的键，
  * 专门种下来看它们活不活得过存盘；extra 那条是"样式记录比正文段落多"的第二条 Paragraph。
  * style 反过来：Character@Style 是模型**管着**的键（加粗），亿图写了、模型取消后就不许被带回来。
+ * cx/cy 是文字盒中心锚：亿图实测写的是"形状盒里的左/上内缩 + 自身半边"（88×18 那颗 → 7.0/2.4 内缩），
+ * 而形状盒夹具是 120 宽 ⇒ 内缩不对称，"按形状盒中心写"会得到 60，两种规则才分得开（01 A-18）。
+ * noWH 是"只有锚、没有盒子尺寸"的残缺写法：内缩反推不出来，整条得按没声明处理。
  */
 function textBox(
   label: string,
-  opts: { mask?: string; bk?: string; style?: string; extra?: string } = {}
+  opts: {
+    mask?: string;
+    bk?: string;
+    style?: string;
+    extra?: string;
+    cx?: string;
+    cy?: string;
+    noWH?: boolean;
+  } = {}
 ): string {
+  const wh = opts.noWH ? "" : `<Width V="88"/><Height V="18"/>`;
   return (
-    `<Text><Transform><Width V="88"/><Height V="18"/><CX V="0" B="1" P="0"/><CY V="0" B="2" P="0"/></Transform>` +
+    `<Text><Transform>` +
+    wh +
+    `<CX V="${opts.cx ?? "51"}" B="1" P="0"/><CY V="${opts.cy ?? "11.4"}" B="2" P="0"/></Transform>` +
     `<TextBlock TextFormatMask="${opts.mask ?? "10224"}"><Color V="#ff282828"/>` +
     `<Character IX="0" Family="微软雅黑" Size="12" Color="#282828"${opts.bk ? ` BkColor="${opts.bk}"` : ""}${
       opts.style ? ` Style="${opts.style}"` : ""
@@ -194,7 +227,8 @@ const SHAPE_101 =
   `<Shape ID="101" Type="MainIdea">` +
   `<Transform><Width V="140"/><Height V="32"/><CX V="500" B="1" P="0"/><CY V="300" B="2" P="0"/></Transform>` +
   `<ShapeFormat QuickMask="0"><FillFormat/><LineFormat><LineWeight V="1"/></LineFormat></ShapeFormat>` +
-  textBox("中心") +
+  // 101 的文字盒故意缺 Width/Height：四值不齐就没法反推内缩，必须按"没声明"走形状盒中心（01 A-18）。
+  textBox("中心", { noWH: true }) +
   `<LevelData><SubLevel V="102;103"/></LevelData><Geometries/><ShapeStyle V="1"/></Shape>`;
 
 // 102 是"浑身种满没建模的码"的那一颗：ToSuper、QuickMask=4095、第二条 Paragraph、路径缓存、
@@ -224,16 +258,20 @@ const SHAPE_103 =
   `<Layout><LayoutDirection V="1"/>${LAYOUT_MATES}</Layout></Shape>`;
 
 // 叶子的两种特殊写法：style 那颗是"亿图写了加粗"，task 那颗是"属性只写了一半的自造节点"。
+// 105 另外带着一根"两根轴都是 0"的锚 —— 那是我们旧写手发明的写法，亿图 1344/1344 个文字盒都不这么写，
+// 拿它反推内缩会得到负内缩，所以必须按"没声明"处理（01 A-18）。
 const leaf = (
   id: string,
   superId: string,
   label: string,
-  opts: { style?: string; task?: string } = {}
+  opts: { style?: string; task?: string; cx?: string; cy?: string } = {}
 ): string =>
   `<Shape ID="${id}" Type="SubTopic">` +
-  `<Transform><Width V="100"/><Height V="24"/><CX V="${Number(id) * 3}" B="1" P="0"/><CY V="${Number(id) * 7}" B="2" P="0"/></Transform>` +
+  `<Transform><Width V="100"/><Height V="24"/><CX V="${Number(id) * 3}" B="1" P="0"/><CY V="${
+    Number(id) * 7
+  }" B="2" P="0"/></Transform>` +
   `<ShapeFormat QuickMask="4095"><FillFormat/><LineFormat><LineWeight V="1"/></LineFormat></ShapeFormat>` +
-  textBox(label, { style: opts.style }) +
+  textBox(label, { style: opts.style, cx: opts.cx, cy: opts.cy }) +
   `<LevelData><Super V="${superId}"/></LevelData><Geometries/><ShapeStyle V="1"/>${
     opts.task ?? ""
   }</Shape>`;
@@ -256,8 +294,9 @@ const PAGE_XML =
   SHAPE_101 +
   SHAPE_102 +
   SHAPE_103 +
-  leaf("104", "102", "甲的叶子", { task: `<TaskInfo Progress="50"/>` }) +
-  leaf("105", "103", "乙的叶子", { style: "1" }) +
+  // 104 的锚点故意带三位小数：反推出来的中心是 33.006 这种值，看存盘有没有按全篇的两位精度收口。
+  leaf("104", "102", "甲的叶子", { task: `<TaskInfo Progress="50"/>`, cx: "51.006", cy: "11.449" }) +
+  leaf("105", "103", "乙的叶子", { style: "1", cx: "0", cy: "0" }) +
   CONNECTOR_900 +
   `</Page>`;
 
@@ -621,6 +660,67 @@ const ORIG = shapeBlocks(PAGE_XML);
     );
   }
 
+  // -------------------------------------------------- 文字盒中心锚：内缩从原节点反推，不是居中也不是 0（01 A-18）
+  {
+    const geom = textBoxGeom;
+    const padOf = textBoxPad;
+
+    // ① 什么都没改：原节点整颗带回，锚点连字节都不动（这是"不许把 51 洗成 0"的最直接的一条）。
+    const bare = shapeBlocks(await savedXml(parsed.doc));
+    eq("没编辑的那颗：文字盒锚点原样", padOf(geom(blockOf(bare, "102"))), "7.0/2.4");
+
+    // ② 改标题：盒子变窄 36pt ⇒ 锚点只许随半边移动 18pt，内缩 7.0/2.4 必须原封不动。
+    const rn = shapeBlocks(
+      await savedXml(withPage(parsed.doc, updateText(base, "102", "改名了")))
+    );
+    const r102 = geom(blockOf(rn, "102"));
+    eq("改标题重算了文字盒：4 + 3 字 ×16、1 段 ×12×1.75", `${r102.tw}x${r102.th}`, "52x21");
+    eq("锚点按内缩反推：51+(52−88)/2、11.4+(21−18)/2", `${r102.cx}/${r102.cy}`, "33/12.9");
+    eq("内缩一个点都没变", padOf(r102), "7.0/2.4");
+    ok("不是写死 0（那是旧写手发明的）", r102.cx !== 0 && r102.cy !== 0);
+    ok("也不是「形状盒中心」那个假设（120/2=60）", r102.cx !== 60);
+
+    // ③ 改字号：同一条规则，锚点随半边移动；键级差分对纯值变更是盲的，所以按值钉。
+    const up = shapeBlocks(
+      await savedXml(withPage(parsed.doc, setTopicFont(base, "102", { size: 16 })))
+    );
+    const u102 = geom(blockOf(up, "102"));
+    eq("改字号后的锚点：51+(64−88)/2、11.4+(28−18)/2", `${u102.cx}/${u102.cy}`, "39/16.4");
+    eq("内缩还是那一份内缩", padOf(u102), "7.0/2.4");
+
+    // ④ 我们旧写手洗成 0 的那些文件（夹具 105 就是这种）：按"没声明"处理，走形状盒中心，
+    //    否则拿 0 反推会得到负内缩（把文字摁出形状盒），比原 bug 更糟。
+    const zero = shapeBlocks(
+      await savedXml(withPage(parsed.doc, updateText(base, "105", "乙改名")))
+    );
+    const z105 = geom(blockOf(zero, "105"));
+    eq("0/0 的锚 + 形状盒 100×24 ⇒ 按形状盒中心", `${z105.cx}/${z105.cy}`, "50/12");
+    ok("绝不反推成负内缩", z105.cx > 0 && z105.cx <= 100 && z105.cy > 0 && z105.cy <= 24);
+
+    // ⑤ 新建的主题：没有原节点，形状盒也还没算出来（夹具不跑布局，w=0）⇒ 退成内缩 0，仍然不是那个 0。
+    const kid = insertChild(base, "102", "新枝");
+    const kidPage = normalize(kid.page);
+    const k102 = geom(
+      blockOf(shapeBlocks(await savedXml(withPage(parsed.doc, kidPage))), kid.id)
+    );
+    eq("新建那颗：锚点 = 自身半边（形状盒缺席时的兜底）", `${k102.cx}/${k102.cy}`, "16/9");
+    ok("新建那颗不落 0", k102.cx !== 0 && k102.cy !== 0);
+
+    // ⑥ 反推出来的锚点带尾数时按全篇统一的两位精度收口（夹具 104 的锚点故意写成 51.006/11.449）。
+    //    不收口的话浮点尾数会一次比一次长地写进盘里，重开再存一次就多一位。
+    const prec = shapeBlocks(await savedXml(withPage(parsed.doc, updateText(base, "104", "改名了"))));
+    const p104 = geom(blockOf(prec, "104"));
+    eq("51.006+(52−88)/2、11.449+(21−18)/2 ⇒ 两位精度", `${p104.cx}/${p104.cy}`, "33.01/12.95");
+    ok("这一笔也没把锚点写回 0", p104.cx !== 0 && p104.cy !== 0);
+
+    // ⑦ 只有锚、没有盒子尺寸的那种残缺节点（夹具 101）：反推不出内缩，整条按"没声明"处理，
+    //    走形状盒中心 —— 拿半边项去补一个不存在的原宽度会得到 NaN，写进盘里就是坏文件。
+    const partial = shapeBlocks(await savedXml(withPage(parsed.doc, updateText(base, "101", "改名了"))));
+    const q101 = geom(blockOf(partial, "101"));
+    eq("缺 Width/Height ⇒ 形状盒 140×32 的中心", `${q101.cx}/${q101.cy}`, "70/16");
+    ok("算不出内缩也不许写 NaN", Number.isFinite(q101.cx) && Number.isFinite(q101.cy));
+  }
+
   // -------------------------------------------------- 删叶子：那颗没了，指向它的地方也不许留
   const pruned = shapeBlocks(await savedXml(withPage(parsed.doc, removeShape(base, "104"))));
   eq("删掉的叶子不再回写", blockOf(pruned, "104"), "");
@@ -945,6 +1045,28 @@ for (const f of REAL_FILES) {
     withoutText(blockOf(blocksBefore, editedId))
   );
 
+  // 值级第一刀的补充（01 A-18）：正文一动，文字盒就要重建，锚点（`<Text><Transform><CX/CY>`）
+  // 以前被写死成 0 —— 亿图 10 份样张 1344 个文字盒里一个 0 都没有。锚点按值比，键级点名器看不见。
+  {
+    const g0 = textBoxGeom(blockOf(blocksBefore, editedId));
+    const g1 = textBoxGeom(blockOf(blocksAfter, editedId));
+    ok(
+      `${f}｜样张自己的锚点非 0（亿图从不写 0）`,
+      g0.cx !== 0 && g0.cy !== 0 && Number.isFinite(g0.cx),
+      JSON.stringify(g0)
+    );
+    ok(
+      `${f}｜改名重建后的锚点不再是 0`,
+      g1.cx !== 0 && g1.cy !== 0,
+      `${JSON.stringify(g0)} → ${JSON.stringify(g1)}`
+    );
+    eq(
+      `${f}｜改名后文字盒内缩不变（锚点只随半边移动）`,
+      textBoxPad(g1),
+      textBoxPad(g0)
+    );
+  }
+
   // 值级第二刀（01 A-17）：改字号。census 只数出现次数，Size 从原值变到 16 它是盲的，
   // 所以这里必须逐颗比字节，再按亿图自己的落点（Character@Size）断言值本身。
   {
@@ -974,6 +1096,13 @@ for (const f of REAL_FILES) {
         /<Character[^>]*Size="16"/.test(blk),
         blk.slice(0, 240)
       );
+      {
+        // 盒子换尺寸时锚点必须跟着半边移动，内缩那份不许变（01 A-18）。
+        const g0 = textBoxGeom(blockOf(blocksBefore, target.id));
+        const g1 = textBoxGeom(blk);
+        eq(`${f}｜改字号后文字盒内缩不变`, textBoxPad(g1), textBoxPad(g0));
+        ok(`${f}｜改字号后锚点非 0`, g1.cx !== 0 && g1.cy !== 0, JSON.stringify(g1));
+      }
       eq(
         `${f}｜改字号不许连累这颗正文以外的东西`,
         withoutText(blk),
