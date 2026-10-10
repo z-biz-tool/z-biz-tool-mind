@@ -16,7 +16,14 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { done, eq, ok, skip } from "./_harness.ts";
-import { attr, find, nodeEquals, parseXml, serializeXml } from "../src/engine/emmx/xparse.ts";
+import {
+  attr,
+  find,
+  nodeEquals,
+  parseXml,
+  serializeXml,
+  type XmlNode,
+} from "../src/engine/emmx/xparse.ts";
 import { parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
 import {
   colorNameOf,
@@ -46,7 +53,7 @@ import {
   THEME_REASON_TEXT,
   type StoredTheme,
 } from "../src/engine/themelib.ts";
-import { activePage, createDocument, withActivePage } from "../src/model/factory.ts";
+import { activePage, createDocument } from "../src/model/factory.ts";
 import { ANGEL_ACCENTS } from "../src/model/constants.ts";
 import { defaultPalette, EDRAW_FONT_FAMILY, EDRAW_FONT_SIZES } from "../src/engine/style.ts";
 import { DEFAULT_SETTINGS, useSettings } from "../src/stores/settingsStore.ts";
@@ -70,6 +77,13 @@ const pal = (accents: string[], fontSizes: number[], fontFamily: string) => ({
   fontSizes,
   fontFamily,
 });
+
+/** find() 找不到给的是 undefined，喂给 attr() 就读空 —— 报错看不出"少了哪个标签"。缺标签是硬失败。 */
+function needTag(root: XmlNode, tag: string): XmlNode {
+  const n = find(root, tag);
+  if (!n) throw new Error(`没有 <${tag}>`);
+  return n;
+}
 
 // ---------------------------------------------------------------- 写：读完必须相等（读写同规矩）
 {
@@ -136,18 +150,18 @@ const pal = (accents: string[], fontSizes: number[], fontFamily: string) => ({
     textId: 8,
     themeName: "新建的一套",
   });
-  const theme = find(out, "Theme");
+  const theme = needTag(out, "Theme");
   eq(
     "<Theme> 下的书写顺序是 ThemeColor → ThemeEffect → ThemeText → ThemeShape",
-    (theme?.children ?? []).map((c) => c.tag),
+    theme.children.map((c) => c.tag),
     ["ThemeColor", "ThemeEffect", "ThemeText", "ThemeShape"]
   );
-  eq("补出来的 ThemeColor 用页面绑的槽位号", attr(find(theme, "ThemeColor"), "ID"), "3");
-  eq("补出来的 ThemeText 同理", attr(find(theme, "ThemeText"), "ID"), "8");
+  eq("补出来的 ThemeColor 用页面绑的槽位号", attr(needTag(theme, "ThemeColor"), "ID"), "3");
+  eq("补出来的 ThemeText 同理", attr(needTag(theme, "ThemeText"), "ID"), "8");
   eq("名字盖在新建的这一套上", colorNameOf(out, 3), "新建的一套");
   eq(
     "已有的两套用原样待着",
-    [attr(find(theme, "ThemeEffect"), "ID"), attr(find(theme, "ThemeShape"), "ID")],
+    [attr(needTag(theme, "ThemeEffect"), "ID"), attr(needTag(theme, "ThemeShape"), "ID")],
     ["31", "31"]
   );
   eq(

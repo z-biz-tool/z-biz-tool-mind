@@ -28,7 +28,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { done, eq, ok, rejects, skip } from "./_harness.ts";
-import { readZip, writeZip, decodeBytes, encodeText } from "../src/engine/emmx/zip.ts";
+import {
+  readZip,
+  writeZip,
+  decodeBytes,
+  encodeText,
+  type ZipEntry,
+} from "../src/engine/emmx/zip.ts";
 import { nodeEquals, parseXml, findAll, attr, numVnode, vnode } from "../src/engine/emmx/xparse.ts";
 import type { XmlNode } from "../src/engine/emmx/xparse.ts";
 import { modelEquals, parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
@@ -49,6 +55,20 @@ import type { FontSpec, Page } from "../src/types/model.ts";
 
 const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
 
+/** 包里两个必有条目：一个的姓名是固定的，另一个要靠正则认。 */
+const PAGE_XML = /page\/page\.xml$/;
+const DOC_XML = "document.xml";
+
+/** .find() 找不到给的是 undefined，下一句 .data 就炸成 "Cannot read properties of undefined" ——
+ *  报错里看不见"包里少了哪个条目"这件事。少条目是硬失败，抛带条目名的错，让这份文件整个红掉。 */
+function needEntry(entries: ZipEntry[], what: RegExp | string): ZipEntry {
+  const hit = entries.find((e) =>
+    typeof what === "string" ? e.name === what : what.test(e.name)
+  );
+  if (!hit) throw new Error(`包里没有条目 ${typeof what === "string" ? what : what.source}`);
+  return hit;
+}
+
 // ---------------------------------------------------------------- 合成夹具（03 §1.3-2）
 // 真亿图文件没入库（345 KB 且是别人的作品），CI 里整份 emmx.test.ts 直接 skip → 0/0，
 // 绿得毫无意义。这一段用 factory 现造的文档跑同一批核心承诺，任何环境都会执行。
@@ -68,7 +88,7 @@ const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
     pages: base.pages.map((x) => (x.id === p.id ? p : x)),
   });
   const pageXml = async (bytes: Uint8Array) =>
-    decodeBytes((await readZip(bytes)).find((e) => /page\/page\.xml$/.test(e.name)).data);
+    decodeBytes(needEntry(await readZip(bytes), PAGE_XML).data);
   const layoutV = (xml: string) => /<Layout V="(\d+)"/.exec(xml)?.[1];
   const node = (
     tag: string,
@@ -427,7 +447,7 @@ if (!existsSync(FIXTURE)) {
     "ZIP 里保住了中文文件名",
     names.some((n) => /media\/.*\.(png|jpg)/i.test(n) && /[^\x00-\x7f]/.test(n))
   );
-  const pageSrc = decodeBytes(entries.find((e) => /page\/page\.xml$/.test(e.name)).data);
+  const pageSrc = decodeBytes(needEntry(entries, PAGE_XML).data);
   ok("page.xml 体积合理", pageSrc.length > 100_000, String(pageSrc.length));
 
   // --- XML
@@ -587,16 +607,15 @@ if (!existsSync(FIXTURE)) {
   // --- 保存：未编辑的文件必须原样回写
   const saved = await writeEmmx(doc);
   const reEntries = await readZip(saved);
-  const rePage = reEntries.find((e) => /page\/page\.xml$/.test(e.name));
-  ok("保存后仍含 page.xml", Boolean(rePage));
+  const rePage = needEntry(reEntries, PAGE_XML);
   const a = parseXml(pageSrc);
   const b = parseXml(decodeBytes(rePage.data));
   ok("保存后的 page.xml 与原文件结构等价", nodeEquals(a, b));
   ok(
     "document.xml 也结构等价",
     nodeEquals(
-      parseXml(decodeBytes(entries.find((e) => e.name === "document.xml").data)),
-      parseXml(decodeBytes(reEntries.find((e) => e.name === "document.xml").data))
+      parseXml(decodeBytes(needEntry(entries, DOC_XML).data)),
+      parseXml(decodeBytes(needEntry(reEntries, DOC_XML).data))
     )
   );
 
@@ -607,7 +626,7 @@ if (!existsSync(FIXTURE)) {
     properties: { ...doc.properties, modifiedDate: "2026-01-02 03:04:05" },
   };
   const stEntries = await readZip(await writeEmmx(stamped));
-  const stRoot = parseXml(decodeBytes(stEntries.find((e) => e.name === "document.xml").data));
+  const stRoot = parseXml(decodeBytes(needEntry(stEntries, DOC_XML).data));
   const stProps = findAll(stRoot, "Properties")[0];
   const stGantt = findAll(stRoot, "GanttOption")[0];
   eq("Version 挂在 <Document> 上", attr(stRoot, "Version"), "7.2");
@@ -653,12 +672,12 @@ if (!existsSync(FIXTURE)) {
   };
   const saved2 = await writeEmmx(editedDoc);
   const re2 = await readZip(saved2);
-  const p2 = parseXml(decodeBytes(re2.find((e) => /page\/page\.xml$/.test(e.name)).data));
+  const p2 = parseXml(decodeBytes(needEntry(re2, PAGE_XML).data));
   const shapes2 = findAll(p2, "Shape");
   eq("编辑后 Shape 数量不变", shapes2.length, 163);
   ok(
     "编辑命中的那个分支文本已更新",
-    decodeBytes(re2.find((e) => /page\/page\.xml$/.test(e.name)).data).includes("改过的分支")
+    decodeBytes(needEntry(re2, PAGE_XML).data).includes("改过的分支")
   );
   const roundEdited = await parseEmmx(saved2);
   const rp = roundEdited.doc.pages[0];
@@ -688,9 +707,7 @@ if (!existsSync(FIXTURE)) {
   };
   const withPages = (p: Page) => ({ ...doc, pages: doc.pages.map((x) => (x.id === p.id ? p : x)) });
   const foreignXml = decodeBytes(
-    (await readZip(await writeEmmx(withPages(foreignPage)))).find((e) =>
-      /page\/page\.xml$/.test(e.name)
-    ).data
+    needEntry(await readZip(await writeEmmx(withPages(foreignPage))), PAGE_XML).data
   );
   eq("陌生码 V=7 原样写回，不降级成 6", vOf(foreignXml), "7");
   eq(
@@ -704,9 +721,7 @@ if (!existsSync(FIXTURE)) {
     layout: { ...foreignPage.layout, code: "logicRight" as const },
   };
   const switchedXml = decodeBytes(
-    (await readZip(await writeEmmx(withPages(switchedPage)))).find((e) =>
-      /page\/page\.xml$/.test(e.name)
-    ).data
+    needEntry(await readZip(await writeEmmx(withPages(switchedPage))), PAGE_XML).data
   );
   eq("改过布局后按新码写回", vOf(switchedXml), "8");
 
@@ -803,8 +818,7 @@ if (!existsSync(FIXTURE)) {
   })();
   const edited = updateText(updateText(seeded, noteId, "改了正文"), linkId, "也改了正文");
   const editedXml = decodeBytes(
-    (await readZip(await writeEmmx(withPages(edited)))).find((e) => /page\/page\.xml$/.test(e.name))
-      .data
+    needEntry(await readZip(await writeEmmx(withPages(edited))), PAGE_XML).data
   );
   ok("没建模的元素原样带回", editedXml.includes("FutureTag"));
   ok("没改过的标签保留亿图的尾分号写法", editedXml.includes('V="原型;草稿;"'));

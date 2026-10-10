@@ -70,7 +70,7 @@ ok(
   badgeed[0].x >= bBadge.x + badgeExtent(bBadge),
   `${badgeed[0].x} vs ${bBadge.x + badgeExtent(bBadge)}`
 );
-ok("角标还是那两条", cornerBadgePaths(bBadge).length, 2);
+eq("角标还是那两条", cornerBadgePaths(bBadge).length, 2);
 
 // 真正会被吞的那条路径：窄框 + 多标签。必须换行，一条都不能少。
 const bMany = box(page, many);

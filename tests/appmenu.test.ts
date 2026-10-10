@@ -20,6 +20,8 @@ import {
 import { setShortcutOverrides } from "../src/utils/shortcuts.ts";
 
 type IdNode = Extract<SpecLeaf, { id: string }>;
+/** need() 找的是"能灰能勾"的叶子项：子菜单也带 id，但它没有 enabled/checked。 */
+type LeafNode = Extract<SpecLeaf, { kind: "item" | "check" }>;
 
 const BASE: MenuState = {
   mac: false,
@@ -46,13 +48,21 @@ function nodes(menus: SpecMenu[]): SpecLeaf[] {
   return out;
 }
 
-function need(menus: SpecMenu[], id: string): IdNode {
-  const hit = nodes(menus).find((n): n is IdNode => "id" in n && n.id === id);
+function need(menus: SpecMenu[], id: string): LeafNode {
+  const hit = nodes(menus).find(
+    (n): n is LeafNode => n.kind !== "sub" && "id" in n && n.id === id
+  );
   if (!hit) throw new Error(`菜单里没有 ${id}`);
   return hit;
 }
 
 const tops = (menus: SpecMenu[]): string[] => menus.map((m) => m.text);
+/** 勾选项专属：kind 不是 check 就报错，这样"侧栏该项其实退成了普通项"也会被抓住。 */
+function checkAt(menus: SpecMenu[], id: string): Extract<SpecLeaf, { kind: "check" }> {
+  const n = need(menus, id);
+  if (n.kind !== "check") throw new Error(`${id} 不是勾选项（kind=${n.kind}）`);
+  return n;
+}
 /** 按中文名找菜单只是让断言好读；真正定位用 id，这样顶层文案加不加助记键都不影响断言。 */
 const MENU_ID: Record<string, string> = {
   文件: "file",
@@ -72,6 +82,8 @@ const childIds = (menus: SpecMenu[], menu: string): string[] =>
     .map((c) => (c as IdNode).id);
 const pres = (menus: SpecMenu[], menu: string): string[] =>
   byName(menus, menu).children.flatMap((c) => (c.kind === "pre" ? [c.pre] : []));
+/** 不用 Array.prototype.at：tsconfig 的 lib 是 ES2020，测试和源码得守同一条线。 */
+const tail = (ids: string[]): string => ids[ids.length - 1] ?? "";
 
 // ---- 顶层结构
 // Windows 的顶层标题带 Alt 助记键（Alt+F 展开文件），mac 的标题里没有 & 这套约定。
@@ -87,16 +99,13 @@ eq("mac 的应用菜单只有系统项", pres(spec({ mac: true }), "z-biz-tool-m
 
 // ---- 退出 / 关于的落点
 // 「退出」两边都是自定义项（预定义项直接退进程，会绕过未保存检查），只是位置按各自惯例放。
-ok("Windows 的文件菜单以退出收尾", childIds(spec(), "文件").at(-1) === "file-quit");
+ok("Windows 的文件菜单以退出收尾", tail(childIds(spec(), "文件")) === "file-quit");
 eq("Windows 的帮助菜单带关于", pres(spec(), "帮助"), ["About"]);
 ok(
   "mac 的文件菜单不放退出（在应用菜单里）",
   !childIds(spec({ mac: true }), "文件").includes("file-quit")
 );
-ok(
-  "mac 的退出在应用菜单末尾",
-  childIds(spec({ mac: true }), "z-biz-tool-mind").at(-1) === "file-quit"
-);
+ok("mac 的退出在应用菜单末尾", tail(childIds(spec({ mac: true }), "z-biz-tool-mind")) === "file-quit");
 eq("mac 的帮助菜单不放关于", pres(spec({ mac: true }), "帮助"), []);
 eq("mac 的应用菜单放关于与系统项", pres(spec({ mac: true }), "z-biz-tool-mind"), [
   "About",
@@ -216,8 +225,8 @@ eq(
     .map((c) => c.id),
   ["theme-system"]
 );
-eq("侧栏勾着", need(spec(), "view-sidebar").checked, true);
-eq("侧栏收起就不勾", need(spec({ sidebar: false }), "view-sidebar").checked, false);
+eq("侧栏勾着", checkAt(spec(), "view-sidebar").checked, true);
+eq("侧栏收起就不勾", checkAt(spec({ sidebar: false }), "view-sidebar").checked, false);
 
 // ---- 不给原生加速键（抢在网页之前吃掉按键的那条路一律不走）
 ok(

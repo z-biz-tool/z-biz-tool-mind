@@ -1681,18 +1681,20 @@ function add(parentId: string, text: string): string {
   add(s, "孙题");
   const L = computeLayout(cur);
   const palette = defaultPalette();
+  // 下面两条断言共用这一个字号：宽度那条要的是 number，字号那条要的是"推得出来"这件事。
+  // 真推不出来时宁可抛错，也不要 undefined 混进 textWidth 把宽度算成一个说不清的数。
+  const sizeOf = (id: string): number => {
+    const n = styleFor(cur, cur.shapes[id], palette).font.size;
+    if (n === undefined) throw new Error(`${id} 的字号推不出来`);
+    return n;
+  };
   eq(
     "每层盒子的宽度 = 该层样式字号量出来的文字宽（topicMinW 兜底）",
     [root(), m, s].map((id) => L.boxes[id].w),
     [root(), m, s].map((id) =>
       Math.max(
         DEFAULTS.topicMinW,
-        Math.round(
-          textWidth(
-            plainText(cur.shapes[id].text),
-            styleFor(cur, cur.shapes[id], palette).font.size
-          ) + PAD
-        )
+        Math.round(textWidth(plainText(cur.shapes[id].text), sizeOf(id)) + PAD)
       )
     )
   );

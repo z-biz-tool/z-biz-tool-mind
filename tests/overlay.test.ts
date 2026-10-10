@@ -39,6 +39,21 @@ const DOC4 = join(process.cwd(), "_research", "extract", "doc4", "doc.zip");
 /** 覆盖层的留白，与 layout.ts 里的 OVERLAY_PAD 同一个数。 */
 const PAD = 12;
 
+/**
+ * 从一条路径里取出真正画出来的 x。
+ * brace 的 `x/y/w/h` 是**朝外各让了 10 的包围盒**（`layout.ts:399`），拿它判"在不在主题外侧"必然判错，
+ * 所以这条判据读 `d`：每个命令的数按 (x y) 成对出现，取偶数位就是 x（含 Q 的两个控制点，它们只会让区间更宽）。
+ */
+function drawnXs(d: string): number[] {
+  const xs: number[] = [];
+  for (const seg of d.match(/[A-Za-z][^A-Za-z]*/g) ?? []) {
+    const nums = seg.slice(1).match(/-?\d+(?:\.\d+)?/g);
+    if (!nums) continue;
+    for (let i = 0; i < nums.length; i += 2) xs.push(Number(nums[i]));
+  }
+  return xs;
+}
+
 function addShape(p: Page, s: Shape): Page {
   return { ...p, shapes: { ...p.shapes, [s.id]: s } };
 }
@@ -211,7 +226,7 @@ if (!existsSync(DOC4)) {
     0
   );
 
-  // 左侧分支的大括号必须在并集左边
+  // 右侧分支的大括号画出来的部分必须在并集右边（x/y/w/h 只是留了 10px 余量的包围盒，看它会把这条判错）
   let sum = addShape(boxed, {
     ...createShape("901", "Summary", "", null),
     childIds: ["902"],
@@ -222,10 +237,13 @@ if (!existsSync(DOC4)) {
   const brace = pick(overlayShapes(sum, sBoxes), "brace")[0];
   const ub = union(sum, [b]);
   const side = sBoxes[b].side;
+  const drawn = drawnXs(brace.d ?? "");
+  const lo = Math.min(...drawn);
+  const hi = Math.max(...drawn);
   ok(
-    side > 0 ? brace.x >= ub.x1 : brace.x + brace.w <= ub.x0 + 1,
-    `大括号长在主题${side > 0 ? "右" : "左"}侧外面`,
-    `brace.x=${brace.x} 并集 ${ub.x0}..${ub.x1} side=${side}`
+    `大括号画出来的部分全在主题${side > 0 ? "右" : "左"}侧外面`,
+    side > 0 ? lo >= ub.x1 : hi <= ub.x0,
+    `画出的 x ${lo}..${hi}，并集 ${ub.x0}..${ub.x1} side=${side}（包围盒 x=${brace.x} w=${brace.w}）`
   );
   const label = pick(overlayShapes(sum, sBoxes), "label")[0];
   ok("概要主题排在括号尖之外，不压着主题", label.x > brace.x, JSON.stringify([label.x, brace.x]));

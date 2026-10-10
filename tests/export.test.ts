@@ -64,7 +64,7 @@ function add(parentId: string, text: string): string {
 // ---------------------------------------------------------------- 样张：三层 + 备注 + 标签 + 任务 + 链接 + 折叠 + 浮动
 const dev = add(root(), "开发");
 const login = add(dev, "登录联调");
-cur = updateExtras(cur, login, { note: "接口要\n对齐两次", labels: ["紧急", "安全"], hyperlink: { target: "https://example.com/a?x=1&y=2" } });
+cur = updateExtras(cur, login, { note: "接口要\n对齐两次", labels: ["紧急", "安全"], hyperlink: { kind: "web", target: "https://example.com/a?x=1&y=2" } });
 const report = add(dev, "报表导出");
 cur = updateExtras(cur, report, { task: { status: "done", progress: 100, assignees: ["张三"], priority: "high", start: Date.UTC(2026, 9, 1), finish: Date.UTC(2026, 9, 3), duration: 3, tags: [], milestone: false } });
 const qa = add(root(), "测试");
@@ -200,7 +200,7 @@ const total = 9;
   const count = (ns: any[]): number => ns.reduce((n, x) => n + 1 + count(x.children ?? []), 0);
   const allTopics = Object.values(page.shapes).filter((s) => isTopic(s.type)).length;
   eq("折叠掉的子树也在 JSON 里（这是数据面，不是视图）", count(doc.roots), allTopics);
-  ok("同一样张的大纲系少一枝，两条判据确实不同", [count(doc.roots), outlineRows(page).length], [10, 9]);
+  eq("同一样张的大纲系少一枝，两条判据确实不同", [count(doc.roots), outlineRows(page).length], [10, 9]);
   eq("中心主题在第一根，浮动主题另起一根", doc.roots.length, 2);
   eq("浮动主题的根就是那个浮动主题", doc.roots[1].id, memo);
   // 这些变量名一律带 j 前缀：外层样张里 dev/login/report 是主题 id（字符串），
@@ -298,7 +298,7 @@ const total = 9;
   ok("结尾有 %%EOF", bytes.trimEnd().endsWith("%%EOF"), "");
   ok("中文走标准 CID 字体，不嵌字体文件", bytes.includes("/UniGB-UCS2-H") && !bytes.includes("/FontFile"), "");
   ok("大纲文字进了内容流", bytes.includes("Tj"), "");
-  ok("图形页是矢量：连线走 path，不塞位图", pages[0].ops.some((o) => o.k === "path" && o.d.includes("C")), true);
+  ok("图形页是矢量：连线走 path，不塞位图", pages[0].ops.some((o) => o.k === "path" && o.d.includes("C")));
   eq("图形页里没有 image 算子", pages[0].ops.some((o) => o.k === "image"), false);
 }
 
@@ -323,7 +323,11 @@ const total = 9;
   await rejects("PNG 在没有 canvas 的环境里明确报错而不是给一张空图", exportArtifact(page, "png"), "应用窗口");
   await rejects("位图 PDF 同一条路", exportArtifact(page, "pdf"), "应用窗口");
   await rejects("不支持的格式直接拒绝", exportArtifact(page, "docx" as never), "不支持的导出格式");
-  ok("emmx 不在这里产出（它走 saveAs）", FORMATS.find((f) => f.id === "emmx")?.group, "文档");
+  await rejects(
+    "emmx 不在这里产出（它走 saveAs）",
+    exportArtifact(page, "emmx"),
+    "不在这里产出"
+  );
 }
 
 // ---------------------------------------------------------------- path 映射

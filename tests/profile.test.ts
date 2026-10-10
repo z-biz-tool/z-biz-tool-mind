@@ -49,8 +49,11 @@ const MENU_XML_SHAPE = /k="([^"]+)"/g;
 
 // ---------- 右键菜单：空 = 全部显示，顺序按菜单 ----------
 const allXml = menuProfileXml([]);
-ok('空列表写成 mode="all"', allXml.includes('mode="all"'));
-ok("全给的文件不列 12 条 Action", !allXml.includes("<Action"));
+ok("空列表写成 mode=\"all\"", allXml.includes('mode="all"'));
+ok(
+  `全给的文件一条 Action 都不列（动作表有 ${MENU_ACTION_GROUPS.length} 个键）`,
+  !allXml.includes("<Action")
+);
 ok("文件头带着版本号", allXml.includes('version="1"'));
 eq("全给加载回来还是空列表（= 全部显示）", menuOf(parseProfile(allXml)), []);
 eq("全给的文件没有跳过项", skipped(parseProfile(allXml)), []);
@@ -107,7 +110,7 @@ eq(
   false
 );
 
-for (const r of [
+const KEYMAP_CASES: { custom: Record<string, string>; want: Record<string, string> }[] = [
   { custom: {}, want: {} },
   { custom: { save: "ctrl+alt+s" }, want: { save: "ctrl+alt+s" } },
   // 成对调换：保存挪走，另存为接走 Ctrl+S。这是方案文件里最常见的一类"整套"改动。
@@ -123,7 +126,8 @@ for (const r of [
     custom: { options: "f2", undo: "", redo: defaultChordOf("redo") },
     want: { options: "f2", undo: "" },
   },
-]) {
+];
+for (const r of KEYMAP_CASES) {
   const back = parseProfile(keymapProfileXml(r.custom));
   eq(`往返 ${mapText(r.want)}`, mapText(keysOf(back)), mapText(r.want));
   eq(`往返 ${mapText(r.want)} 不该有跳过`, skipped(back).length, 0);

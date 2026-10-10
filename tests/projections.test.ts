@@ -65,10 +65,10 @@ const login = add(dev, "登录联调", {
   task: T({ status: "doing", progress: 40, priority: "high", assignees: ["张三", "李四"], finish: MON + 3 * DAY }),
 });
 const api = add(login, "接口对齐", { task: T({ status: "done" }) });
-const report = add(dev, "报表导出", { task: T({ status: "done", tags: ["需求"] }) });
+add(dev, "报表导出", { task: T({ status: "done", tags: ["需求"] }) });
 const test = add("101", "测试", { note: "两轮" });
-const qa = add(test, "回归用例", { task: T({ status: "done", progress: 100 }) });
-const launch = add("101", "上线", { task: T({ milestone: true }) });
+add(test, "回归用例", { task: T({ status: "done", progress: 100 }) });
+add("101", "上线", { task: T({ milestone: true }) });
 const memo = add("101", "散记");
 const memoTodo = add(memo, "浮动待办", { task: T({ status: "doing", progress: 10 }) });
 cur = updateText(setFloating(cur, memo, 320, -210), "101", "发布计划");
@@ -188,14 +188,29 @@ const barsOf = (p: Page, g: GanttOption) => ganttSchedule(p, g);
   eq("里程碑与概要标记", bars.map((b) => `${b.id}:${b.milestone ? "M" : "-"}${b.isSummary ? "S" : "-"}`).join(" "), "102:-S 103:-S 104:-- 105:-S 106:-- 107:-- 108:M- 109:--");
   eq("偏移以毫秒相对甘特起点换算，可负", [bar(g0)?.offsetDays, bar(g3)?.offsetDays], [-2, 6]);
 
-  // 引擎缺陷：projections.ts:210-216 只求长度不抬起点 —— 子条比父条早开工时父条整体画错
+  // 概要条自己 5 号开工、子条 2 号起：父条必须把起点一起抬上去（projections.ts 的包络重算）。
+  // 只加长度的话父条整条画在错的位置上，这条断言钉的就是"两端都跟着抬"。
   set(createPage("概要"));
   const sum = add("101", "阶段", { task: T({ start: MON + 5 * DAY, duration: 1 }) });
   const sumKid = add(sum, "任务", { task: T({ start: MON + 2 * DAY, duration: 4 }) });
   const sBars = ganttSchedule(cur, gantt);
-  const sParent = sBars.find((b) => b.id === sum);
-  const sChild = sBars.find((b) => b.id === sumKid);
-  eq("子条落在父条区间内（模块自述：父条要罩住子条）", [sParent?.offsetDays, sParent?.offsetDays + sParent?.lengthDays, sChild?.offsetDays, sChild?.offsetDays + sChild?.lengthDays], [2, 6, 2, 6]);
+  const barOf = (id: string) => {
+    const b = sBars.find((x) => x.id === id);
+    if (!b) throw new Error(`甘特排期里没有 ${id} 的条`);
+    return b;
+  };
+  const sParent = barOf(sum);
+  const sChild = barOf(sumKid);
+  eq(
+    "子条落在父条区间内（模块自述：父条要罩住子条）",
+    [
+      sParent.offsetDays,
+      sParent.offsetDays + sParent.lengthDays,
+      sChild.offsetDays,
+      sChild.offsetDays + sChild.lengthDays,
+    ],
+    [2, 6, 2, 6]
+  );
 
   eq("横轴覆盖负偏移并把 0 也算进跨度", ganttTicks(bars, gantt), { days: 9, unitWidth: 100, total: 900 });
   eq("空甘特也给得出 1 天刻度", ganttTicks([], gantt), { days: 1, unitWidth: 100, total: 100 });
@@ -335,7 +350,7 @@ const barsOf = (p: Page, g: GanttOption) => ganttSchedule(p, g);
     p = r.page;
     return r.id;
   };
-  const b1 = mk(p.rootId, "第一页");
+  mk(p.rootId, "第一页");
   const b2 = mk(p.rootId, "第二页");
   p = updateExtras(p, b2, { slideHidden: true });
   const deck = slideDeck(p);

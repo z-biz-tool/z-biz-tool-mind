@@ -30,7 +30,13 @@ import {
   stepIndex,
 } from "../src/engine/search.ts";
 import { outlineRows } from "../src/engine/projections.ts";
-import { plainText, type DocumentModel, type Page, type ShapeExtras } from "../src/types/model.ts";
+import {
+  plainText,
+  type DocumentModel,
+  type Page,
+  type Shape,
+  type ShapeExtras,
+} from "../src/types/model.ts";
 
 let pg = createPage("查找");
 const add = (parent: string, text: string, extras: ShapeExtras = {}): string => {
@@ -119,8 +125,19 @@ const spots = (page: Page, q: string, opts = {}): string[] => findMatches(page, 
 const multiId = "900";
 /** 段内混排：一条主题两个段落两段文字 */
 function withTwoParagraphs(): Page {
-  const root = pg.shapes["101"];
-  const shape = { ...root, id: multiId, parentId: "101", childIds: [] as string[], text: { characters: [], paragraphs: [{ runs: [{ text: "上行", charIx: 0 }], align: 1 }, { runs: [{ text: "下行", charIx: 0 }], align: 1 }] } };
+  const shape: Shape = {
+    ...pg.shapes["101"],
+    id: multiId,
+    parentId: "101",
+    childIds: [],
+    text: {
+      characters: [],
+      paragraphs: [
+        { runs: [{ text: "上行", charIx: 0 }], align: 1 },
+        { runs: [{ text: "下行", charIx: 0 }], align: 1 },
+      ],
+    },
+  };
   return { ...pg, shapes: { ...pg.shapes, [multiId]: shape } };
 }
 {
