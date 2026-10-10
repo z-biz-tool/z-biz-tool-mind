@@ -13,7 +13,7 @@ import { MENU_ACTION_GROUPS, MENU_PRESETS, keepActions } from "../src/canvas/men
 const KEYS = MENU_ACTION_GROUPS.map((g) => g.k);
 
 // ---- 目录：键唯一，标签非空
-eq("动作目录条数", KEYS.length, 13);
+eq("动作目录条数", KEYS.length, 14);
 eq("动作键不重复", new Set(KEYS).size, KEYS.length);
 ok(
   "每条都有中文标签",
@@ -52,7 +52,7 @@ const items = MENU_ACTION_GROUPS;
 
 // 空 = 不裁剪：必须是内容相同的新数组，不能把目录本身交出去让人改。
 const all = keepActions(items, []);
-eq("空白名单给满 13 条", all.length, 13);
+eq("空白名单给满 14 条", all.length, 14);
 ok(
   "空白名单不改原目录",
   items.every((g, i) => all[i] === g)

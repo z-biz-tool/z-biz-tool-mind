@@ -287,6 +287,8 @@ export const useDoc = create<DocStore>((set, get) => ({
   mutate(label, fn, opts) {
     const s = get();
     if (!s.hist) return false;
+    // AI 生成期间的画布锁（§3.13）：所有内容写路的必经之地，AI 自己的提交在解锁之后，不受影响。
+    if (useUi.getState().aiBusy) return false;
     const doc = currentDoc(s.hist);
     const page = pageOf(doc, s.activePageId);
     const next = normalizePage(doc, page, fn(page));
@@ -310,6 +312,7 @@ export const useDoc = create<DocStore>((set, get) => ({
   mutateDoc(label, fn) {
     const s = get();
     if (!s.hist) return false;
+    if (useUi.getState().aiBusy) return false;
     set({ hist: commit(s.hist, fn(currentDoc(s.hist)), label) });
     return true;
   },

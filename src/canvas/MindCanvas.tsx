@@ -280,6 +280,7 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const displayLevels = useUi((s) => s.displayLevels);
   // 关系线"打开时自动展开"的揭示表：只影响绘制，模型不动（uiStore 的注释里有来龙去脉）。
   const reveal = useUi((s) => s.revealByPage[page.id]);
+  const aiBusy = useUi((s) => s.aiBusy);
   const selection = useDoc((s) => s.selection);
   const editingId = useDoc((s) => s.editingId);
   const dragButton = useSettings((s) => s.settings.general.canvasDragButton);
@@ -948,6 +949,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
           tip: "在这个主题上挂一个标注框",
           run: () => useDoc.getState().mutate("新建标注", (p) => addCallout(p, id, "").page),
         });
+        out.push({
+          k: "ai",
+          label: "AI 助手",
+          tip: "AI 生成子主题 / 丰富 / 精简 / 重新生成",
+          run: () => useUi.getState().openDialog("aiTopic"),
+        });
       }
     }
     if (ids.length >= 2 && boxes.length === ids.length) {
@@ -1502,6 +1509,29 @@ export function MindCanvas({ page }: MindCanvasProps) {
             userSelect: "text",
           }}
         />
+      )}
+
+      {/* AI 生成期间的画布锁：写路在 docStore.mutate 那里也关着，这里是让用户看得见。
+          盖在最上层收走一切指针事件，生成完自己消失，不留可点的残渣。 */}
+      {aiBusy && (
+        <div
+          data-testid="ai-lock"
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 50,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(255, 255, 255, 0.55)",
+            cursor: "progress",
+            pointerEvents: "auto",
+            fontSize: 13,
+            color: "#333333",
+          }}
+        >
+          <span>AI 生成中…（画布已锁定）</span>
+        </div>
       )}
     </div>
   );

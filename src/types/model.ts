@@ -251,6 +251,11 @@ export interface ShapeExtras {
   collapsed?: boolean;
   /** 幻灯片隐藏页（§3.8）：编辑器照常列出，放映跳过。只挂在主分支上。 */
   slideHidden?: boolean;
+  /**
+   * AI 生成的内容打标（§3.13 机制层）。会话级：.emmx 没有对应键（亿图把 AI 记在它自己的
+   * 云端账号体系里，文件里没有证据就不发明键），存盘重开即丢 —— 与 slideHidden 同一条口径。
+   */
+  ai?: boolean;
 }
 
 export interface Shape {

@@ -21,7 +21,7 @@ export const PROJECTIONS: { id: Projection; label: string }[] = [
 ];
 
 export type DialogKind =
-  "export" | "print" | "options" | "search" | "history" | "share" | "topicInfo" | "themes" | null;
+  "export" | "print" | "options" | "search" | "history" | "share" | "topicInfo" | "themes" | "aiTopic" | null;
 
 interface UiState {
   projection: Projection;
@@ -61,6 +61,12 @@ interface UiState {
   setDisplayLevels: (n: number) => void;
   setReveal: (map: Record<string, string[]>) => void;
   removeReveal: (pageId: string, id: string) => void;
+  /**
+   * AI 生成期间的画布锁（§3.13 机制层）：true 时 docStore 的 mutate/mutateDoc 一律拒绝，
+   * 画布上再盖一层遮罩挡住指针。收放只在 services/ai.ts 的生成流程里，别处不要碰。
+   */
+  aiBusy: boolean;
+  setAiBusy: (v: boolean) => void;
   openDialog: (d: DialogKind) => void;
   closeDialog: () => void;
   setExportFormat: (f: ExportFormat) => void;
@@ -137,6 +143,8 @@ export const useUi = create<UiState>((set, get) => ({
       if (!list?.includes(id)) return s;
       return { revealByPage: { ...s.revealByPage, [pageId]: list.filter((x) => x !== id) } };
     }),
+  aiBusy: false,
+  setAiBusy: (aiBusy) => set({ aiBusy }),
   openDialog: (dialog) => set({ dialog, searchOpen: dialog === "search" }),
   closeDialog: () => set({ dialog: null, searchOpen: false }),
   setExportFormat: (exportFormat) => set({ exportFormat }),

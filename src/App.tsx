@@ -33,6 +33,7 @@ import { HistoryPanel } from "./views/HistoryPanel.tsx";
 import { ExportDialog } from "./views/ExportDialog.tsx";
 import { PrintDialog } from "./views/PrintDialog.tsx";
 import { TopicInfoDialog } from "./views/TopicInfoDialog.tsx";
+import { AiTopicDialog } from "./views/AiTopicDialog.tsx";
 import { OptionsView } from "./views/OptionsView.tsx";
 import { ThemePanel } from "./views/ThemePanel.tsx";
 import { activeDoc, activePage, depthOf, dirtyOf, useDoc } from "./stores/docStore.ts";
@@ -880,6 +881,7 @@ function Shell() {
       <OptionsView open={dialog === "options"} onClose={closeDialog} />
       <ThemePanel open={dialog === "themes"} onClose={closeDialog} />
       <TopicInfoDialog page={page} onClose={closeDialog} />
+      <AiTopicDialog open={dialog === "aiTopic"} onClose={closeDialog} />
 
       <Modal
         open={Boolean(pendingSwitch)}
@@ -936,7 +938,7 @@ function Shell() {
         // 这颗框是一个决定，不是一个可以"先关掉再说"的通知：右上角的叉、点遮罩、按 Esc
         // 走的都是 onCancel，而 onCancel 现在真的会删东西 —— 留这三个出口等于给用户挖坑。
         closable={false}
-        maskClosable={false}
+        mask={{ closable: false }}
         keyboard={false}
         onCancel={() => {
           // 「忽略」= 这一份到此为止：先从盘上带走，再收弹窗。以前只是关弹窗，快照留在原地，
