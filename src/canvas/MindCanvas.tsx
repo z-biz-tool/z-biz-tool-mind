@@ -278,6 +278,8 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const setZoom = useUi((s) => s.setZoom);
   const fitNonce = useUi((s) => s.fitNonce);
   const displayLevels = useUi((s) => s.displayLevels);
+  // 关系线"打开时自动展开"的揭示表：只影响绘制，模型不动（uiStore 的注释里有来龙去脉）。
+  const reveal = useUi((s) => s.revealByPage[page.id]);
   const selection = useDoc((s) => s.selection);
   const editingId = useDoc((s) => s.editingId);
   const dragButton = useSettings((s) => s.settings.general.canvasDragButton);
@@ -316,8 +318,9 @@ export function MindCanvas({ page }: MindCanvasProps) {
         topicWidthMode,
         liveBranch: liveBranch ?? undefined,
         palette,
+        reveal,
       }),
-    [page, displayLevels, topicWidthMode, liveBranch, palette]
+    [page, displayLevels, topicWidthMode, liveBranch, palette, reveal]
   );
   const lineOf = useMemo(() => new Map(paint.boxes.map((b) => [b.id, b.line])), [paint]);
   const axis = paint.layout.axis;
@@ -685,8 +688,11 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const toggleFold = (id: string) => {
     const doc = useDoc.getState();
     if (!doc.hist) return;
-    const label = live.current.page.shapes[id]?.extras.collapsed ? "展开分支" : "折叠分支";
+    const collapsing = !live.current.page.shapes[id]?.extras.collapsed;
+    const label = collapsing ? "折叠分支" : "展开分支";
     doc.mutate(label, (p) => toggleCollapsed(p, id));
+    // 揭示表里的 id 在绘制上永远当展开算：手动折叠的那一下要把它摘掉，用户才有真折叠可用。
+    if (collapsing) useUi.getState().removeReveal(live.current.page.id, id);
   };
 
   // 键盘和快捷操作条共用同一批操作。两条入口各写一份 mutate，

@@ -16,6 +16,7 @@ import { accentAt } from "../engine/style.ts";
 import { usePalette } from "../stores/usePalette.ts";
 import { branchIndex, demote, insertSibling, promote, removeShape, setCollapsed, updateText } from "../engine/tree.ts";
 import { useDoc } from "../stores/docStore.ts";
+import { useUi } from "../stores/uiStore.ts";
 import type { Page } from "../types/model.ts";
 
 interface OutlineViewProps {
@@ -224,6 +225,8 @@ export function OutlineView({ page }: OutlineViewProps) {
                     if (!row.hasChildren) return;
                     const label = row.collapsed ? "展开分支" : "折叠分支";
                     mutate(label, (p) => setCollapsed(p, row.id, !row.collapsed));
+                    // 与画布同一条规则：手动折叠要把它从关系线的揭示表里摘掉，否则绘制层永远当展开算。
+                    if (!row.collapsed) useUi.getState().removeReveal(page.id, row.id);
                   }}
                 >
                   {row.hasChildren ? (row.collapsed ? "▸" : "▾") : "·"}

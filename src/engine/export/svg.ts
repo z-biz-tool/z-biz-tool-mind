@@ -20,7 +20,7 @@ import {
   type OverlayPaint,
   type RelationshipPaint,
 } from "../layout.ts";
-import { descendants } from "../tree.ts";
+import { descendants, revealCollapsed } from "../tree.ts";
 import {
   EDRAW_FONT_FAMILY,
   contrastText,
@@ -42,6 +42,12 @@ export interface RenderOptions {
   topicWidthMode?: "auto" | "fixed";
   /** 画布拖动中的那一枝的临时位移（只用于屏幕上的实时跟随，导出永远不传）。 */
   liveBranch?: { id: string; x: number; y: number };
+  /**
+   * 关系线"打开时自动展开"的揭示表（uiStore.revealByPage[page.id]）：
+   * 这些 id 的 collapsed 在绘制里视为 false。揭示是视图态，paintPage 在派生副本上动手，
+   * 模型不动 —— 画布与 SVG / PNG / PDF / 打印读同一份 opts，所见即所得不破。
+   */
+  reveal?: string[];
 }
 
 export interface ShapePaint {
@@ -88,6 +94,8 @@ export interface Paint {
 }
 
 export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
+  // 揭示只活在这份派生页里：徽标数、盒子、关系线全部跟着它走，原始 page 一个字节都不碰。
+  if (opts.reveal?.length) page = revealCollapsed(page, opts.reveal);
   const palette = opts.palette ?? defaultPalette();
   const layout = computeLayout(page, {
     displayLevel: opts.displayLevel ?? 9,

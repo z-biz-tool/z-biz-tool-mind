@@ -413,6 +413,55 @@ export function toggleCollapsed(page: Page, id: string): Page {
 }
 
 /**
+ * 关系线的"打开时自动展开"要揭示什么：端点看得见，线才画得出来（relationshipPaths
+ * 的规则是端点没盒子就不画）。返回两件事 —— 挡住端点的折叠祖先（视图层要摘掉 collapsed
+ * 的那些 id），以及端点所在的最大深度（displayLevel 要抬到的位置，root 的孩子是 1）。
+ */
+export function relationshipReveal(page: Page): { ids: string[]; maxLevel: number } {
+  const depth = new Map<string, number>([[page.rootId, 0]]);
+  const queue: string[] = [page.rootId];
+  while (queue.length) {
+    const id = queue.shift() as string;
+    const d = depth.get(id) as number;
+    for (const c of page.shapes[id]?.childIds ?? []) {
+      if (!depth.has(c)) {
+        depth.set(c, d + 1);
+        queue.push(c);
+      }
+    }
+  }
+  const ids = new Set<string>();
+  let maxLevel = 0;
+  for (const r of page.relationships) {
+    for (const end of [r.beginId, r.endId]) {
+      const d = depth.get(end);
+      if (d === undefined) continue;
+      if (d > maxLevel) maxLevel = d;
+      for (const a of ancestors(page, end)) {
+        if (page.shapes[a]?.extras.collapsed) ids.add(a);
+      }
+    }
+  }
+  return { ids: [...ids], maxLevel };
+}
+
+/**
+ * 揭示的落笔方式：在派生副本上把这些 id 的 collapsed 摘掉，模型原封不动。
+ * 折叠的真相源是 .emmx 的 <Toggler>（批 3F），在模型上展开会把亿图记的折叠态洗掉；
+ * 这里连 page.shapes 都不换引用，序列化器拿到的一定还是原对象。
+ */
+export function revealCollapsed(page: Page, ids: readonly string[]): Page {
+  let next: Page | null = null;
+  for (const id of ids) {
+    const s = (next ?? page).shapes[id];
+    if (!s?.extras.collapsed) continue;
+    if (!next) next = { ...page, shapes: { ...page.shapes } };
+    next.shapes[id] = { ...s, extras: { ...s.extras, collapsed: false } };
+  }
+  return next ?? page;
+}
+
+/**
  * 转为 / 取消浮动主题。
  * 浮动主题的位置是用户拖出来的（P-2 的唯一定位例外），所以它脱离主树：
  * parentId 置空，由布局层按存储坐标原样摆放；取消浮动时挂回中心主题。

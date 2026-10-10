@@ -7,9 +7,11 @@ import { createDocument, createPage } from "../src/model/factory.ts";
 import {
   insertChild,
   relationshipBetween,
+  relationshipReveal,
   removeShape,
   setCollapsed,
   setRelationshipText,
+  revealCollapsed,
   toggleRelationship,
 } from "../src/engine/tree.ts";
 import { computeLayout, relationshipPaths } from "../src/engine/layout.ts";
@@ -192,5 +194,66 @@ ok(
   "几何读得到这条标注",
   relationshipPaths(named, computeLayout(named).boxes).some((r) => r.text === "依赖")
 );
+
+// ---- 关系线"打开时自动展开"（03 §1.3-31）：揭示是视图态，模型与 <Toggler> 一个字节都不动 ----
+
+eq(
+  "没有关系线就无事可做",
+  JSON.stringify(relationshipReveal(page)),
+  JSON.stringify({ ids: [], maxLevel: 0 })
+);
+
+// rels1：a 被折叠，第二条关系线从 c 连到 a 的折叠子树里（深度 2）
+const rev1 = relationshipReveal(rels1);
+ok(
+  "揭示表抓住折叠祖先",
+  rev1.ids.length === 1 && rev1.ids[0] === a,
+  JSON.stringify(rev1)
+);
+eq("端点深度决定要抬的层级", rev1.maxLevel, 2);
+
+// 深处的端点被两层折叠挡住：两层都要揭示，层级抬到端点那一层
+const deep1 = insertChild(rels1, a, "深层一").page;
+const deep1Id = deep1.shapes[a].childIds[deep1.shapes[a].childIds.length - 1];
+const deep2 = insertChild(deep1, deep1Id, "深层二").page;
+const deepEnd = deep2.shapes[deep1Id].childIds[0];
+const deepRel = withRels(deep2, [
+  ...deep2.relationships,
+  { id: "9002", beginId: b, endId: deepEnd, text: deep2.shapes[deepEnd].text, style: {} },
+]);
+const folded2 = setCollapsed(deepRel, deep1Id, true);
+const rev2 = relationshipReveal(folded2);
+ok(
+  "两层折叠祖先都在表里",
+  rev2.ids.length === 2 && rev2.ids.includes(a) && rev2.ids.includes(deep1Id),
+  JSON.stringify(rev2)
+);
+eq("层级抬到端点那一层", rev2.maxLevel, 3);
+
+// 揭示的落笔方式：派生副本摘 collapsed，原页保持同一引用、同一字节
+const snapshot = JSON.stringify(rels1);
+const shown = revealCollapsed(rels1, rev1.ids);
+ok("派生页上折叠被摘掉", shown.shapes[a].extras.collapsed === false, String(shown.shapes[a].extras.collapsed));
+eq("原始页一个字节都没动", JSON.stringify(rels1), snapshot);
+eq("没列进表的形状保持同一引用", shown.shapes[b], rels1.shapes[b]);
+ok("揭示列表为空就原样返回", revealCollapsed(rels1, []) === rels1);
+
+// 绘制层：折叠挡住的那条线回来了，徽标跟着归零，模型仍然折叠
+eq("揭示前那条线不画", paintPage(rels1).rels.length, 1);
+const paintShown = paintPage(rels1, { reveal: rev1.ids });
+eq("揭示后画布看得见那条线", paintShown.rels.length, 2);
+ok(
+  "揭示后的折叠徽标归零（画的份数与看见的一致）",
+  paintShown.boxes.find((x) => x.id === a)?.hiddenCount === 0,
+  JSON.stringify(paintShown.boxes.find((x) => x.id === a))
+);
+eq("绘制不洗模型", JSON.stringify(rels1), snapshot);
+
+// 导出同一份 opts：SVG 里也多出那条线；不加 reveal 就是没有
+const svgPlain = buildSvg(rels1);
+const svgShown = buildSvg(rels1, { reveal: rev1.ids });
+const shownPath = paintShown.rels.find((r) => r.toId === rels1.relationships[1].endId)?.d;
+ok("揭示后的 SVG 里就是那条路径", Boolean(shownPath) && svgShown.includes(`d="${shownPath}"`), shownPath ?? "");
+ok("不加揭示的 SVG 里没有它", Boolean(shownPath) && svgPlain.includes(`d="${shownPath}"`) === false, shownPath ?? "");
 
 done();

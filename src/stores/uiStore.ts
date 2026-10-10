@@ -28,6 +28,12 @@ interface UiState {
   zoom: number;
   /** 1..9，亿图的"显示层级数"。 */
   displayLevels: number;
+  /**
+   * 关系线"打开时自动展开"的揭示表：页 id → 要在视图层强制展开的主题 id。
+   * 只影响绘制（paintPage 在派生副本上摘 collapsed），模型与 .emmx 的 <Toggler> 不动；
+   * applyDoc 每次装文档都整表重算，手动折叠会把 id 从表里摘掉（用户仍然可以真折叠）。
+   */
+  revealByPage: Record<string, string[]>;
   dialog: DialogKind;
   exportFormat: ExportFormat;
   searchOpen: boolean;
@@ -53,6 +59,8 @@ interface UiState {
   /** 每 +1 就让画布重新求一次"整张图装进视口"的缩放与位移。 */
   fitNonce: number;
   setDisplayLevels: (n: number) => void;
+  setReveal: (map: Record<string, string[]>) => void;
+  removeReveal: (pageId: string, id: string) => void;
   openDialog: (d: DialogKind) => void;
   closeDialog: () => void;
   setExportFormat: (f: ExportFormat) => void;
@@ -80,6 +88,7 @@ export const useUi = create<UiState>((set, get) => ({
   projection: "mindmap",
   zoom: 1,
   displayLevels: 3,
+  revealByPage: {},
   dialog: null,
   exportFormat: "png",
   searchOpen: false,
@@ -121,6 +130,13 @@ export const useUi = create<UiState>((set, get) => ({
   fitZoom: () => set((s) => ({ fitNonce: s.fitNonce + 1 })),
   setDisplayLevels: (n) =>
     set({ displayLevels: DISPLAY_LEVELS.includes(n) ? n : get().displayLevels }),
+  setReveal: (revealByPage) => set({ revealByPage }),
+  removeReveal: (pageId, id) =>
+    set((s) => {
+      const list = s.revealByPage[pageId];
+      if (!list?.includes(id)) return s;
+      return { revealByPage: { ...s.revealByPage, [pageId]: list.filter((x) => x !== id) } };
+    }),
   openDialog: (dialog) => set({ dialog, searchOpen: dialog === "search" }),
   closeDialog: () => set({ dialog: null, searchOpen: false }),
   setExportFormat: (exportFormat) => set({ exportFormat }),

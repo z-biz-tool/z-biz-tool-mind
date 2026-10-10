@@ -26,6 +26,7 @@ import {
 } from "../engine/export/index.ts";
 import { dirOf, native, pickSavePath } from "../services/native.ts";
 import { computeLayout } from "../engine/layout.ts";
+import { revealCollapsed } from "../engine/tree.ts";
 import { outlineRows } from "../engine/projections.ts";
 import { activeDoc, activePage, useDoc } from "../stores/docStore.ts";
 import { usePalette } from "../stores/usePalette.ts";
@@ -68,6 +69,8 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
   const doc = useDoc((s) => activeDoc(s));
   const page = useDoc((s) => activePage(s));
   const title = useDoc((s) => s.title);
+  // 关系线"打开时自动展开"：导出与画布同一份揭示表，所见即所得不破（reveal 由 paintPage 落笔）。
+  const reveal = useUi((s) => (page ? s.revealByPage[page.id] : undefined));
   // 导出的颜色必须和屏幕上同源：这份色板来自文档自己的 theme.xml，与画布用的是同一个 hook。
   const palette = usePalette();
 
@@ -111,12 +114,14 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
       return Object.values(page.shapes).filter((s) => isTopic(s.type)).length;
     }
     if (!GRAPHIC_FORMATS.has(format)) return outlineRows(page).length;
-    const layout = computeLayout(page, { displayLevel: levels, palette });
+    // 图形系要跟 paintPage 算到同一份页上：揭示表把折叠祖先摘掉之后子树才是可见的。
+    const shown = reveal?.length ? revealCollapsed(page, reveal) : page;
+    const layout = computeLayout(shown, { displayLevel: levels, palette });
     return layout.order.filter((id) => {
-      const s = page.shapes[id];
+      const s = shown.shapes[id];
       return s && isTopic(s.type);
     }).length;
-  }, [page, levels, format, palette]);
+  }, [page, levels, format, palette, reveal]);
 
   const totalTopics = useMemo(
     () => (page ? Object.values(page.shapes).filter((s) => isTopic(s.type)).length : 0),
@@ -125,6 +130,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
 
   function options(): ExportOptions {
     const opts: ExportOptions = { scale, displayLevel: levels, padding, palette };
+    if (reveal?.length) opts.reveal = reveal;
     if (background) opts.background = background;
     if (format === "jpg") opts.quality = quality;
     if (format === "pdf") {

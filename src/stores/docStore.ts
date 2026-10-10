@@ -12,9 +12,9 @@ import { create } from "zustand";
 import type { DocumentModel, LayoutCode, Page, Shape } from "../types/model.ts";
 import { plainText } from "../types/model.ts";
 import { createDocument, createPage } from "../model/factory.ts";
-import { LAYOUT_LABELS } from "../model/constants.ts";
+import { LAYOUT_LABELS, DISPLAY_LEVELS } from "../model/constants.ts";
 import { canRedo, canUndo, commit, createHistory, currentDoc, redo, reset, stackDepth, undo, type HistoryState } from "../engine/history.ts";
-import { normalize } from "../engine/tree.ts";
+import { normalize, relationshipReveal } from "../engine/tree.ts";
 import { parseEmmx, writeEmmx } from "../engine/emmx/codec.ts";
 import { applyTheme, findTheme } from "../engine/themelib.ts";
 import { native } from "../services/native.ts";
@@ -156,6 +156,7 @@ export const useDoc = create<DocStore>((set, get) => ({
     });
     // 新建是一张干净的画布：上一份文档留下的 30% 不该跟着过来。
     useUi.getState().setZoom(1);
+    useUi.getState().setReveal({});
   },
 
   async openBytes(bytes, path, title) {
@@ -197,6 +198,22 @@ export const useDoc = create<DocStore>((set, get) => ({
       error: null,
     }));
     if (path) void native.recentTouch(path, deriveTitle(path, first, "未命名脑图"), "local").catch(() => undefined);
+    // 关系线"打开时自动展开"（用户裁定）：端点被折叠或层级挡住时线一条都看不见。
+    // 揭示只动视图 —— <Toggler> 是亿图的折叠真相，在模型上展开会把文件洗掉（批 3F 的回归）；
+    // 显示层级只抬不降，用户手动收回去是自己的选择。
+    const reveal: Record<string, string[]> = {};
+    let maxLevel = 0;
+    for (const p of clean.pages) {
+      if (!p.relationships.length) continue;
+      const r = relationshipReveal(p);
+      if (r.ids.length) reveal[p.id] = r.ids;
+      if (r.maxLevel > maxLevel) maxLevel = r.maxLevel;
+    }
+    const ui = useUi.getState();
+    ui.setReveal(reveal);
+    if (maxLevel > ui.displayLevels) {
+      ui.setDisplayLevels(DISPLAY_LEVELS.find((n) => n >= maxLevel) ?? DISPLAY_LEVELS[DISPLAY_LEVELS.length - 1]);
+    }
     // 打开文档总要让视口归位，但归哪儿由选项决定：勾了"打开时自动适应画布"就把整张图装进窗口，
     // 没勾就照文件自己记的缩放（亿图把它写在 <Page Zoom>，我们一直在读，却从来没用上）。
     if (useSettings.getState().settings.format.autoFitOnOpen) useUi.getState().fitZoom();

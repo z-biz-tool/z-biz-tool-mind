@@ -80,6 +80,8 @@ interface PrintDialogProps {
 export function PrintDialog({ open, onClose }: PrintDialogProps) {
   const page = useDoc((s) => activePage(s));
   const selection = useDoc((s) => s.selection);
+  // 关系线"打开时自动展开"：打印与画布、导出同一份揭示表（reveal 由 paintPage 落笔）。
+  const reveal = useUi((s) => (page ? s.revealByPage[page.id] : undefined));
   // 打出来的颜色要和屏幕上、与导出件同源：都取文档自己的 theme.xml。
   const palette = usePalette();
 
@@ -117,6 +119,7 @@ export function PrintDialog({ open, onClose }: PrintDialogProps) {
       keepIds: selection,
       bounds: bounded ? bounds : null,
       displayLevel: levels,
+      reveal: reveal?.length ? reveal : undefined,
       palette,
     }),
     [
@@ -133,6 +136,7 @@ export function PrintDialog({ open, onClose }: PrintDialogProps) {
       bounded,
       bounds,
       levels,
+      reveal,
       palette,
     ]
   );
