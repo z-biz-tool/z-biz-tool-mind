@@ -8,9 +8,11 @@
  * 但为了让用户用亿图打开我们保存的文件时看不出差别，未改动的节点必须**原样回写**。
  *
  * 做法：解析时把每个子节点的原始 XmlNode 与它的"语义指纹"一起存进 rawUnknown；
- * 保存时逐个 Shape 比指纹 —— 指纹没变就写回原始节点，变过了就按模型重新生成。
+ * 保存时先逐个 Shape 比指纹 —— 指纹没变就写回原始节点；变过了也只**一颗子节点一颗子节点**地比，
+ * 没动的那几颗继续带回原节点（01 A-12：整颗重建会把我们没建模的 ToSuper、Geometries 缓存、
+ * 第二个 Paragraph、ShapeFormat@QuickMask、CX@B 一并抹掉）。
  * 于是得到一条可测的保证：`write(parse(x))` 与 `x` 结构等价，
- * 而任何编辑都会落到重新生成的分支上。
+ * 而任何编辑都只落到"真的被模型改过的那一颗子节点"上。
  */
 import type {
   ColorValue,
@@ -685,25 +687,51 @@ function characterStyle(f: FontSpec): number {
   return (f.bold ? 1 : 0) | (f.italic ? 2 : 0) | (f.underline ? 4 : 0);
 }
 
-function buildTextNode(rt: RichText): XmlNode {
-  const tb = el("TextBlock", { TextFormatMask: "10224" });
+/**
+ * 重建出来的节点只带建模过的属性；亿图写在同一颗上的其余属性一律跟着走。
+ * modeled 是"模型会管这些键"的名单，即使本次没落笔也不许从原节点带回来 ——
+ * 否则用户刚取消的加粗会被原样复活。modeled 之外的键模型压根不知道存在，带回才是无损。
+ */
+function adoptAttrs(built: XmlNode, raw: XmlNode | undefined, modeled: string[]): void {
+  if (!raw) return;
+  const skip = new Set([...modeled, ...Object.keys(built.attrs)]);
+  for (const [k, v] of Object.entries(raw.attrs)) if (!skip.has(k)) built.attrs[k] = v;
+}
+
+function buildTextNode(rt: RichText, src?: XmlNode): XmlNode {
+  const rawTb = src ? find(src, "TextBlock") : undefined;
+  const rawByIx = (tag: string): Map<string, XmlNode> => {
+    const m = new Map<string, XmlNode>();
+    if (rawTb) for (const c of findAll(rawTb, tag)) m.set(c.attrs.IX ?? "", c);
+    return m;
+  };
+  const rawChars = rawByIx("Character");
+  const rawParas = rawByIx("Paragraph");
+  const tb = el("TextBlock", {
+    // 掩码表达"哪些文本项算独立覆盖主题"，我们完全不建模：原节点写过就跟着走，
+    // 只有新建的主题才用亿图主题节点上实测到的那个常数。
+    TextFormatMask: rawTb?.attrs.TextFormatMask ?? "10224",
+  });
   const font = rt.characters[0] ?? { size: DEFAULTS.fontSize };
   tb.children.push(el("Color", { V: withAlpha(font.color ?? DEFAULTS.textColor) }));
   rt.characters.forEach((c, ix) => {
-    tb.children.push(
-      el("Character", {
-        Style: characterStyle(c),
-        Family: c.family ?? DEFAULTS.fontFamily,
-        IX: ix,
-        Size: c.size ?? DEFAULTS.fontSize,
-        Color: (c.color ?? DEFAULTS.textColor).replace(/^#ff(?=[0-9a-f]{6}$)/i, "#"),
-      })
-    );
+    const style = characterStyle(c);
+    const ch = el("Character", {
+      // Style 是按位标志，没加粗/斜体/下划线时亿图根本不写这个属性（实测），我们也就不写。
+      Style: style || undefined,
+      Family: c.family ?? DEFAULTS.fontFamily,
+      IX: ix,
+      Size: c.size ?? DEFAULTS.fontSize,
+      Color: (c.color ?? DEFAULTS.textColor).replace(/^#ff(?=[0-9a-f]{6}$)/i, "#"),
+    });
+    // 文字背景色之类我们读不到也写不出的键，改字号/改名时不该跟着蒸发。
+    adoptAttrs(ch, rawChars.get(String(ix)), ["Style", "Family", "IX", "Size", "Color"]);
+    tb.children.push(ch);
   });
   rt.paragraphs.forEach((p, ix) => {
-    tb.children.push(
-      el("Paragraph", { SpLine: "100", Align: p.align ?? 1, IX: ix, IndFirst: p.indentFirst })
-    );
+    const para = el("Paragraph", { SpLine: "100", Align: p.align ?? 1, IX: ix, IndFirst: p.indentFirst });
+    adoptAttrs(para, rawParas.get(String(ix)), ["SpLine", "Align", "IX", "IndFirst"]);
+    tb.children.push(para);
   });
   const inner = el("Text");
   rt.paragraphs.forEach((p) => {
@@ -720,7 +748,7 @@ function buildTextNode(rt: RichText): XmlNode {
     el("Transform", {}, [
       vNode("Width", tw),
       vNode("Height", th),
-      vNode("CX", 0),
+      attachP(vNode("CX", 0), "1"),
       attachP(vNode("CY", 0), "2"),
     ]),
     tb,
@@ -984,15 +1012,20 @@ function buildPageXml(page: Page, ctx: WriteCtx): XmlNode {
   // 已有文件：按原始子节点顺序回写，未改动的 Shape 用原节点（见文件头的取舍）。
   // 新建页面：没有 raw，走下面的 defaultOrder。
   const order = raw ? raw.order : defaultOrder(page);
+  // 已经在上面的循环里回写过的"模型形状 id"。判据要跟着 Type 一起看：
+  // MMConnector / RelatConnector 这两类原始键也带 id，把它们算进来会把新增形状误判成"已回写"
+  //（亿图里连线和主题共用一个号段，实测 系统测试.emmx 的 #MMConnector:529 就压住了新发的 529 号）。
+  const emittedIds = new Set<string>();
   for (const key of order) {
     if (key.startsWith("#")) {
-      const { id } = splitShapeKey(key);
+      const { type, id } = splitShapeKey(key);
       if (!raw) {
         const fresh = page.shapes[id];
         const built = fresh ? buildShape(fresh, ctx) : undefined;
         if (built) {
           root.children.push(built);
           emitted.add(key);
+          emittedIds.add(id);
         }
         continue;
       }
@@ -1000,6 +1033,7 @@ function buildPageXml(page: Page, ctx: WriteCtx): XmlNode {
       if (rebuilt) {
         root.children.push(rebuilt);
         emitted.add(key);
+        if (type !== "MMConnector" && type !== "RelatConnector") emittedIds.add(id);
       }
       continue;
     }
@@ -1027,6 +1061,17 @@ function buildPageXml(page: Page, ctx: WriteCtx): XmlNode {
       emitted.add(key);
     }
   }
+  // 模型里新长出来的形状（在导入的图上加枝/加自由主题）不在 raw.order 里，
+  // 只按原顺序回写就会静默丢掉那一颗 —— 而父亲的 SubLevel 已经指向它，等于又丢数据又留悬空引用。
+  // 补在页面末尾，走与新建页同一条构造路径（没有 raw 节点可复用）。
+  for (const s of Object.values(page.shapes)) {
+    if (emittedIds.has(s.id)) continue;
+    const built = buildShape(s, ctx);
+    if (built) {
+      root.children.push(built);
+      emittedIds.add(s.id);
+    }
+  }
   return root;
 }
 
@@ -1047,7 +1092,7 @@ function rebuildShape(
   if (type === "RelatConnector") {
     const rel = page.relationships.find((r) => r.id === id);
     if (!rel) return raw.nodes[key];
-    return sigOfRelationship(rel) === raw.sig[key] ? raw.nodes[key] : buildRelationship(rel, ctx);
+    return sigOfRelationship(rel) === raw.sig[key] ? raw.nodes[key] : buildRelationship(rel, ctx, raw.nodes[key]);
   }
   const shape = page.shapes[id];
   if (!shape) return undefined; // 用户删掉的 Shape：不再回写
@@ -1058,67 +1103,254 @@ function rebuildShape(
 function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefined {
   if (!s.id) return undefined;
   const n = el("Shape", { Type: s.type, ID: s.id });
-  n.children.push(
+  // 回写粒度：一颗子节点决定一次"复用原文件里那一份，还是按模型重建"。
+  // 旧写法是整颗 Shape 重建（sigOfShape 一变就全交给我们自己的 build），于是改一个字
+  // 都会顺手抹掉 buildShape 不建模的那几块 —— 装机差分实测丢过 ToSuper、<Geometries> 路径缓存、
+  // 第二个 <Paragraph>、ShapeFormat@QuickMask、CX 上的 B/P，同时凭空多出我们发明的默认值。
+  // 现在没动过的子节点是**原节点对象**，一个字节都不经过我们的想象。
+  const rawOf = (tag: string) => (from ? find(from, tag) : undefined);
+  const keep = (tag: string, same: boolean, built: () => XmlNode | undefined): void => {
+    const r = rawOf(tag);
+    const node = r && same ? r : built();
+    if (node) n.children.push(node);
+  };
+
+  // 两边都过一遍 round 再比：亿图写 707.621、我们写 707.62，那是量具的精度差，
+  // 不是用户挪了位置 —— 按原始字符串比会把每一颗 Shape 都判成改过。
+  const rawTransform = rawOf("Transform");
+  const sameTransform =
+    Boolean(rawTransform) &&
+    (["CX", "CY", "Width", "Height"] as const).every(
+      (tag, i) =>
+        round(numVnode(rawTransform, tag, NaN)) ===
+        round(s.transform[(["x", "y", "w", "h"] as const)[i]])
+    );
+  keep("Transform", sameTransform, () =>
     el("Transform", {}, [
-      vNode("CX", round(s.transform.x)),
+      // 亿图给每个 CX/CY 都写了 B/P 锚点标记（实测 660/660），重建时照它的写法补齐，
+      // 不然改一次标题就会让 CX@B、CX@P 各少一条。
+      attachP(vNode("CX", round(s.transform.x)), "1"),
       attachP(vNode("CY", round(s.transform.y)), "2"),
       vNode("Width", round(s.transform.w)),
       vNode("Height", round(s.transform.h)),
     ])
   );
-  const sf = el("ShapeFormat");
-  if (s.style.fill) sf.children.push(buildFill(s.style.fill));
-  if (s.style.line) sf.children.push(buildLine(s.style.line));
-  n.children.push(sf);
-  n.children.push(buildTextNode(s.text));
 
-  const ld = el("LevelData");
-  if (s.parentId) ld.children.push(vNode("Super", s.parentId));
-  if (s.childIds.length) ld.children.push(vNode("SubLevel", s.childIds.join(";")));
-  n.children.push(ld);
-  // Geometries 留空：P-2 布局是算出来的，亿图重开时会按 Transform 重新生成路径缓存。
-  n.children.push(el("Geometries"));
-  n.children.push(el("ShapeStyle", { V: "1" }));
+  // 样式与正文用"读一遍原文再比"而不是比 XML：亿图写 `<FillFormat/>` 表示无填充，
+  // 我们写 `<FillFormat Type="None"/>`，字面不同而语义相同 —— 按读侧的口径比才不会白重建一次。
+  const rawShapeFormat = rawOf("ShapeFormat");
+  const sameShapeFormat =
+    Boolean(rawShapeFormat) &&
+    canon(readStyle(rawShapeFormat)) === canon({ fill: s.style.fill, line: s.style.line });
+  keep("ShapeFormat", sameShapeFormat, () => {
+    const sf = el("ShapeFormat");
+    if (s.style.fill) sf.children.push(buildFill(s.style.fill));
+    if (s.style.line)
+      sf.children.push(
+        buildLine(s.style.line, rawShapeFormat && find(rawShapeFormat, "LineFormat"))
+      );
+    // 亿图每个 ShapeFormat 都带一张我们没建模的 QuickMask（实测 4095，意思是"这些项算独立覆盖"）；
+    // 改一次颜色不该把这张掩码洗掉，所以原节点上的其它属性一律跟着走。
+    for (const [k, v] of Object.entries(rawShapeFormat?.attrs ?? {})) sf.attrs[k] ??= v;
+    return sf;
+  });
+
+  const rawText = rawOf("Text");
+  const sameText = rawText !== undefined && canon(parseRichText(rawText)) === canon(s.text);
+  keep("Text", sameText, () => {
+    const t = buildTextNode(s.text, rawText);
+    carryParagraphRecords(rawText, t);
+    return t;
+  });
+
+  const rawLevel = rawOf("LevelData");
+  const levelNode = (): XmlNode => {
+    const ld = el("LevelData");
+    if (s.parentId) ld.children.push(vNode("Super", s.parentId));
+    // 亿图在同一个 <LevelData> 里还挂着我们没建模的兄弟节点（ToSuper、TogglerID…）：
+    // 父子指针真的变了也得把它们带回来，不然删一次折叠标记就顺手抹掉一条指针缓存。
+    if (rawLevel) for (const c of rawLevel.children) if (c.tag !== "Super" && c.tag !== "SubLevel") ld.children.push(c);
+    if (s.childIds.length) ld.children.push(vNode("SubLevel", s.childIds.join(";")));
+    return ld;
+  };
+  // 复用原节点的条件是"父子指针逐字对得上"。coveredBy 只查模型这一边，孩子变少时它会说
+  // "原节点已经包住了"，于是把还指向已删主题的那份 SubLevel 带回盘上 —— 又留悬空引用又没删掉。
+  const sameLevel =
+    rawLevel !== undefined &&
+    vnode(rawLevel, "Super", "") === (s.parentId ?? "") &&
+    vnode(rawLevel, "SubLevel", "") === s.childIds.join(";");
+  keep("LevelData", sameLevel, levelNode);
+
+  // 路径缓存的有效期只看"盒子有没有变"：Geometry 里存的是形状轮廓与枝线端点，
+  // 由 Transform（位置尺寸）和 ShapeFormat（圆角、线宽）决定，和标题文字无关 —— 改一个字不该把缓存洗掉。
+  // 原文件里本来没有 <Geometries> 的 Shape 不要凭空加一颗（那是新建形状的写法）。
+  const rawGeometries = rawOf("Geometries");
+  keep("Geometries", Boolean(rawGeometries) && sameTransform && sameShapeFormat, () =>
+    rawGeometries || !from ? el("Geometries") : undefined
+  );
+
+  // <ShapeStyle V> 是"这一族里第几号外形/样式"，我们没建模（读侧只把它当 ShapeFormat 的替补容器）。
+  // 实测亿图写的是 5 而不是我们的常量 1，所以源里有就原样带回，只有新建的形状才落我们那一份。
+  const rawShapeStyle = rawOf("ShapeStyle");
+  keep("ShapeStyle", Boolean(rawShapeStyle), () => rawShapeStyle ?? el("ShapeStyle", { V: "1" }));
   // 独立配色必须能存住：丢了 StyleMask，重开后再换主题就会把用户挑的颜色盖掉。
-  if (s.style.mask !== undefined) n.children.push(el("StyleMask", { V: s.style.mask }));
-  if (s.extras.attachments?.length) {
-    const att = el("Attachments");
-    for (const a of s.extras.attachments) {
-      att.children.push(el("Attachment", { Res: a.relId, Name: a.name }));
+  keep("StyleMask", coveredBy(rawOf("StyleMask"), el("StyleMask", { V: s.style.mask })), () =>
+    s.style.mask === undefined ? undefined : el("StyleMask", { V: s.style.mask })
+  );
+
+  const rawAttachments = rawOf("Attachments");
+  const attachments = s.extras.attachments ?? [];
+  const sameAttachments =
+    rawAttachments !== undefined &&
+    findAll(rawAttachments, "Attachment").length === attachments.length &&
+    coveredBy(rawAttachments, attachmentNode(attachments));
+  keep("Attachments", sameAttachments, () => {
+    if (!attachments.length) return undefined;
+    const att = attachmentNode(attachments);
+    // 关系表这一笔只有真的把节点写出去才要补：复用 raw 时它本来就在 document.xml.rels 里。
+    for (const a of attachments) {
       if (!ctx.rels.some((r) => r.id === a.relId)) {
         ctx.rels.push({ id: a.relId, target: mediaTarget(a.name, ctx.media) });
       }
     }
-    n.children.push(att);
-  }
-  if (s.extras.covered?.length)
-    n.children.push(el("BoundaryData", {}, [vNode("Shapes", s.extras.covered.join(";"))]));
-  if (s.extras.calloutIds?.length)
-    n.children.push(el("Callout", { V: s.extras.calloutIds.join(";") }));
+    return att;
+  });
+
+  keep(
+    "BoundaryData",
+    coveredBy(
+      rawOf("BoundaryData"),
+      el("BoundaryData", {}, [vNode("Shapes", (s.extras.covered ?? []).join(";"))])
+    ),
+    () =>
+      s.extras.covered?.length
+        ? el("BoundaryData", {}, [vNode("Shapes", s.extras.covered.join(";"))])
+        : undefined
+  );
+  keep(
+    "Callout",
+    coveredBy(rawOf("Callout"), el("Callout", { V: (s.extras.calloutIds ?? []).join(";") })),
+    () =>
+      s.extras.calloutIds?.length ? el("Callout", { V: s.extras.calloutIds.join(";") }) : undefined
+  );
   // 分支自由布局（doc/复刻方案/00 §3.3）的位移。亿图没有这个字段，节点名是我们自造的，
   // 它读不懂只会忽略 —— 这条只保证"在我们这儿拖开的枝，存了再开还在"。
-  if (s.offset) n.children.push(el("BranchOffset", { V: `${s.offset.x};${s.offset.y}` }));
+  keep(
+    "BranchOffset",
+    coveredBy(
+      rawOf("BranchOffset"),
+      el("BranchOffset", { V: s.offset ? `${s.offset.x};${s.offset.y}` : "" })
+    ),
+    () => (s.offset ? el("BranchOffset", { V: `${s.offset.x};${s.offset.y}` }) : undefined)
+  );
   // 任务信息：同一条自造节点的路。进度/优先级/状态/起止/里程碑/成员/标签/前置全部收进属性，
   // 空字段不写，重开时 parse 侧还原成 undefined。
-  if (s.extras.task) {
-    const t = s.extras.task;
-    n.children.push(
-      el("TaskInfo", {
-        Progress: round(t.progress),
-        Priority: t.priority,
-        Status: t.status,
-        ...(t.start !== undefined ? { Start: String(Math.round(t.start)) } : {}),
-        ...(t.finish !== undefined ? { Finish: String(Math.round(t.finish)) } : {}),
-        ...(t.duration !== undefined ? { Duration: String(t.duration) } : {}),
-        ...(t.milestone ? { Milestone: "1" } : {}),
-        ...(t.assignees.length ? { Assignees: t.assignees.join(";") } : {}),
-        ...(t.tags.length ? { Tags: t.tags.join(";") } : {}),
-        ...(t.deps?.length ? { Deps: t.deps.join(";") } : {}),
-      })
-    );
-  }
+  keep("TaskInfo", coveredBy(rawOf("TaskInfo"), buildTaskInfo(s.extras.task)), () =>
+    buildTaskInfo(s.extras.task)
+  );
   carryUntouched(s, n, from);
   return n;
+}
+
+/** 只取读侧认得的 fill/line 两项，用来和模型比（raw 里多出来的兄弟节点不参与比较，但会跟着原节点带回）。 */
+function readStyle(sf: XmlNode | undefined): { fill?: FillFormat; line?: ShapeStyle["line"] } {
+  const fill = sf ? find(sf, "FillFormat") : undefined;
+  const line = sf ? find(sf, "LineFormat") : undefined;
+  return { fill: fill ? parseFill(fill) : undefined, line: line ? parseLine(line) : undefined };
+}
+
+/**
+ * 亿图的 `<Paragraph IX>` 是"第 IX 段的样式记录"，条数可以比正文段落多
+ * （实测 系统测试.emmx 里那颗只有一个 `<pp>` 的 MainTopic 带着 IX=0/1 两条：一条 SpLine、一条 IndFirst）。
+ * 我们的模型按 `<pp>` 建模，重建 `<Text>` 时多出来的那条会被顺手抹掉 —— 用户没改过的字节不该少，
+ * 按 IX 补回原位置（插在最后一条 Paragraph 之后，保持亿图"Character* Paragraph* Text"的排布）。
+ */
+function carryParagraphRecords(rawText: XmlNode | undefined, built: XmlNode): void {
+  const rawTb = rawText ? find(rawText, "TextBlock") : undefined;
+  const mine = find(built, "TextBlock");
+  if (!rawTb || !mine) return;
+  const have = new Set(findAll(mine, "Paragraph").map((p) => p.attrs.IX ?? ""));
+  const extra = findAll(rawTb, "Paragraph").filter((p) => !have.has(p.attrs.IX ?? ""));
+  if (!extra.length) return;
+  let at = mine.children.length;
+  mine.children.forEach((c, i) => {
+    if (c.tag === "Paragraph") at = i + 1;
+  });
+  mine.children.splice(at, 0, ...extra);
+}
+
+/** 附件那一份 <Attachments>：纯构造，比较与写盘共用一个口径。 */
+function attachmentNode(list: NonNullable<Shape["extras"]["attachments"]>): XmlNode {
+  return el(
+    "Attachments",
+    {},
+    list.map((a) => el("Attachment", { Res: a.relId, Name: a.name }))
+  );
+}
+
+/** 任务信息那一颗自造节点（属性全在 <TaskInfo> 自己身上）。 */
+function buildTaskInfo(t: Shape["extras"]["task"]): XmlNode | undefined {
+  if (!t) return undefined;
+  return el("TaskInfo", {
+    Progress: round(t.progress),
+    Priority: t.priority,
+    Status: t.status,
+    ...(t.start !== undefined ? { Start: String(Math.round(t.start)) } : {}),
+    ...(t.finish !== undefined ? { Finish: String(Math.round(t.finish)) } : {}),
+    ...(t.duration !== undefined ? { Duration: String(t.duration) } : {}),
+    ...(t.milestone ? { Milestone: "1" } : {}),
+    ...(t.assignees.length ? { Assignees: t.assignees.join(";") } : {}),
+    ...(t.tags.length ? { Tags: t.tags.join(";") } : {}),
+    ...(t.deps?.length ? { Deps: t.deps.join(";") } : {}),
+  });
+}
+
+/** 比较用的稳定 JSON：键序不同的等价对象要判等（模型对象可能来自编辑路径，键序与解析结果不同）。 */
+function canon(v: unknown): string {
+  return JSON.stringify(v, (_k, x) =>
+    x && typeof x === "object" && !Array.isArray(x)
+      ? Object.keys(x as object)
+          .sort()
+          .reduce<Record<string, unknown>>((acc, k) => {
+            acc[k] = (x as Record<string, unknown>)[k];
+            return acc;
+          }, {})
+      : x
+  );
+}
+
+/**
+ * built 想表达的那几项（属性 + 子元素按 tag 与出现次序配对），raw 是不是已经一个不差？
+ *
+ * 是 ⇒ raw 是 built 的超集，直接带回 raw（它揣着我们不写的邻居：ShapeStyle 上多出来的属性、
+ * LevelData 里没建模的兄弟节点）。**built 断言了而 raw 没有**算不等 —— 否则那一笔会被静默丢掉。
+ * 数值允许 round 级的差异：那是量具精度，不是用户改过。
+ */
+function coveredBy(raw: XmlNode | undefined, built: XmlNode | undefined): boolean {
+  if (!raw || !built) return false;
+  for (const [k, v] of Object.entries(built.attrs)) {
+    const mine = raw.attrs[k];
+    if (mine === undefined || (mine !== v && !numSame(v, mine))) return false;
+  }
+  if (built.text && raw.text !== built.text) return false;
+  const byTag = new Map<string, XmlNode[]>();
+  for (const c of raw.children) {
+    const list = byTag.get(c.tag);
+    if (list) list.push(c);
+    else byTag.set(c.tag, [c]);
+  }
+  for (const c of built.children) {
+    const list = byTag.get(c.tag);
+    if (!list?.length || !coveredBy(list.shift(), c)) return false;
+  }
+  return true;
+}
+
+/** 两个字符串数值上等不等（round 归一化后比）；有一边不是数字就不等。 */
+function numSame(a: string, b: string): boolean {
+  const x = Number(a);
+  const y = Number(b);
+  return Number.isFinite(x) && Number.isFinite(y) && round(x) === round(y);
 }
 
 /** buildShape 会自己重建的标签；Shape 上其余的子元素都要从原节点带回来。 */
@@ -1213,20 +1445,29 @@ function mediaTarget(name: string, media: Record<string, Uint8Array>): string {
   return hit ?? `media/${name}`;
 }
 
-function buildRelationship(r: RelationshipShape, ctx: WriteCtx): XmlNode {
+function buildRelationship(
+  r: RelationshipShape,
+  ctx: WriteCtx,
+  from?: XmlNode
+): XmlNode {
   void ctx;
   const n = el("Shape", { Type: "RelatConnector", ID: r.id });
   n.children.push(el("RelatConnector", { Thickness: "0" }));
   n.children.push(el("BeginPt", { ID: r.beginId }));
   n.children.push(el("EndPt", { ID: r.endId }));
-  n.children.push(buildTextNode(r.text));
+  const rawText = from ? find(from, "Text") : undefined;
+  n.children.push(buildTextNode(r.text, rawText));
+  if (rawText) carryParagraphRecords(rawText, n.children[n.children.length - 1]);
   // 线色、线宽、虚线都挂在 style 上：漏掉 ShapeFormat 的话，签名一变整份节点重生成，
   // 用户挑过的线色就静默回到默认（和标签那条是同一类"读得到写不回"的 bug）。
+  const rawSf = from ? find(from, "ShapeFormat") : undefined;
   const sf = el("ShapeFormat");
   if (r.style.fill) sf.children.push(buildFill(r.style.fill));
-  if (r.style.line) sf.children.push(buildLine(r.style.line));
-  if (sf.children.length) n.children.push(sf);
+  if (r.style.line) sf.children.push(buildLine(r.style.line, rawSf && find(rawSf, "LineFormat")));
+  for (const [k, v] of Object.entries(rawSf?.attrs ?? {})) sf.attrs[k] ??= v;
+  if (sf.children.length || Object.keys(sf.attrs).length) n.children.push(sf);
   if (r.style.mask !== undefined) n.children.push(el("StyleMask", { V: r.style.mask }));
+  // 连线的路径缓存挂在两个端点上，端点一动那份缓存就是假的：留空让亿图自己重算。
   n.children.push(el("Geometries"));
   return n;
 }
@@ -1257,13 +1498,22 @@ function buildFill(f: FillFormat, tag = "FillFormat"): XmlNode {
   return n;
 }
 
-function buildLine(l: NonNullable<ShapeStyle["line"]>): XmlNode {
+function buildLine(l: NonNullable<ShapeStyle["line"]>, src?: XmlNode): XmlNode {
   // 线型写在属性上（读侧 attr(n,"LineStyle")），线色写在 <LineFill> 里：
   // 写成 <FillFormat> 或漏掉 LineStyle，重开时解析不到，改一次线色就等于把颜色丢掉。
-  const n = el("LineFormat", { LineStyle: l.style ?? "Solid" });
-  if (l.weight !== undefined) n.children.push(vNode("LineWeight", l.weight));
-  if (l.rounding !== undefined) n.children.push(vNode("Rounding", l.rounding));
-  if (l.cap) n.children.push(vNode("LineCap", l.cap));
+  // src = 原文件里那一颗 LineFormat。亿图只写用户真动过的项，而我们读侧把缺省都填成了默认值，
+  // 所以"源里没有 + 值正好是那个默认值"就不写（01 A-12：发明默认值等于凭空加覆盖标记）。
+  const had = (tag: string) => src === undefined || find(src, tag) !== undefined;
+  const hadAttr = (key: string) => src === undefined || src.attrs[key] !== undefined;
+  const style = l.style ?? "Solid";
+  const n = el("LineFormat", {
+    LineStyle: hadAttr("LineStyle") || style !== "Solid" ? style : undefined,
+  });
+  if (l.weight !== undefined && (had("LineWeight") || l.weight !== DEFAULTS.lineWeight))
+    n.children.push(vNode("LineWeight", l.weight));
+  if (l.rounding !== undefined && (had("Rounding") || l.rounding !== DEFAULTS.rounding))
+    n.children.push(vNode("Rounding", l.rounding));
+  if (l.cap && (had("LineCap") || l.cap !== "Flat")) n.children.push(vNode("LineCap", l.cap));
   if (l.beginArrow) n.children.push(vNode("BeginArrow", l.beginArrow));
   if (l.endArrow) n.children.push(vNode("EndArrow", l.endArrow));
   if (l.fill) n.children.push(buildFill(l.fill, "LineFill"));
