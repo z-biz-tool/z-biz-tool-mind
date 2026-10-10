@@ -534,6 +534,56 @@ if (!existsSync(FIXTURE)) {
     eq("最大偏离（pt）", worst.toFixed(1), "9.7");
   }
 
+  // --- 亿图的形状盒永远包住文字盒，多出来那一圈按类型内缩（01 A-21 的底数）
+  //     这一刀钉的是"新建主题该写多大盒子"：模型里 transform.w/h 从导入后没人再写，
+  //     我们此前给新主题落 0×0、给改了名的那颗留着旧盒子，两头都不满足这条不变量。
+  {
+    let dual = 0;
+    let overflow = 0;
+    let zeroInset = 0;
+    let minW = Infinity;
+    let minH = Infinity;
+    const byType = new Map<string, Map<string, number>>();
+    for (const s of xmlShapes) {
+      const xf = findAll(s, "Transform")[0];
+      const textNode = findAll(s, "Text")[0];
+      const txf = textNode ? findAll(textNode, "Transform")[0] : undefined;
+      if (!xf || !txf) continue;
+      const sw = numVnode(xf, "Width", NaN);
+      const sh = numVnode(xf, "Height", NaN);
+      const tw = numVnode(txf, "Width", NaN);
+      const th = numVnode(txf, "Height", NaN);
+      if ([sw, sh, tw, th].some((n) => Number.isNaN(n))) continue;
+      dual += 1;
+      if (tw > sw || th > sh) overflow += 1;
+      const dw = sw - tw;
+      const dh = sh - th;
+      if (dw === 0 && dh === 0) zeroInset += 1;
+      if (dw < minW) minW = dw;
+      if (dh < minH) minH = dh;
+      const type = attr(s, "Type") ?? "?";
+      const m = byType.get(type) ?? new Map<string, number>();
+      const k = `${dw}/${dh}`;
+      m.set(k, (m.get(k) ?? 0) + 1);
+      byType.set(type, m);
+    }
+    const modalOf = (t: string): string => {
+      const m = byType.get(t);
+      if (!m) return "无样本";
+      return [...m.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    };
+    eq("这一份里形状盒与文字盒都有的形状", dual, 82);
+    ok("文字盒溢出形状盒的一次都没有（亿图自己不违反这条）", overflow === 0);
+    ok("也没有一颗盒子等于文字（内缩 0）", zeroInset === 0);
+    // 这三档就是 `SHAPE_INSET` 里给新建主题补的数；样张里没有的类型（Callout/Floating/SummaryTopic）
+    // 来自亿图自己新建的 config/{empty,ThemeBase}.emmx，见 codec.ts 那张表的注释。
+    eq("SubTopic 的众数内缩", modalOf("SubTopic"), "14/5.5");
+    eq("MainTopic 的众数内缩", modalOf("MainTopic"), "35/16");
+    eq("MainIdea 的众数内缩", modalOf("MainIdea"), "39/30");
+    eq("宽度内缩的最小值（pt）", minW.toFixed(2), "14.00");
+    eq("高度内缩的最小值（pt）", minH.toFixed(2), "4.00");
+  }
+
   // --- 保存：未编辑的文件必须原样回写
   const saved = await writeEmmx(doc);
   const reEntries = await readZip(saved);

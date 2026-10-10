@@ -53,7 +53,7 @@ import {
 // 而不是另配一组常数。style.ts / theme.ts 都不反向依赖 codec，没有循环。
 import { defaultPalette, styleFor, type ThemePalette } from "../style.ts";
 import { textWidth } from "../layout.ts";
-import { paletteForDoc } from "./theme.ts";
+import { cloneNode, paletteForDoc } from "./theme.ts";
 
 const PAGE_XML = "page/page.xml";
 const DOC_XML = "document.xml";
@@ -335,11 +335,17 @@ function parsePage(
         continue;
       }
       if (type === "RelatConnector") {
+        // 端点的真键是 `<ConnectMap From="起" To="止"/>`（01 A-24：54 份真文件里 20 颗关系线，20/20 都带它）。
+        // `<BeginPt>/<EndPt>` 上挂的只是 X/Y 坐标属性，既没有 ID 也没有子节点 —— 旧读法从那里取，
+        // 拿到的永远是空串：导入的连线在模型里两端全空，画布画不出、toggleRelationship 也认不出重复。
+        // To/From 各对应哪一头是量出来的：EndPt 恰好落在 To 那颗的泡边上（3 份文档 3/3 距离 0.0，
+        // ThemeBase 夹具里 BeginPt 落在 From 的泡边上同样是 0.0），箭头就是指着 To 的那一头。
+        // `ID=` 那种形式只有我们旧版写过，留着当回退，旧文件才还能连得上。
+        const ends = relEndpoints(child);
         const rel: RelationshipShape = {
           id: sid,
-          beginId:
-            vnode(find(child, "BeginPt"), "X") ?? attr(find(child, "BeginPt") ?? child, "ID"),
-          endId: vnode(find(child, "EndPt"), "X") ?? attr(find(child, "EndPt") ?? child, "ID"),
+          beginId: ends.beginId,
+          endId: ends.endId,
           text: parseRichText(find(child, "Text")),
           style: parseShapeStyle(child),
         };
@@ -739,7 +745,9 @@ function buildTextNode(
   rt: RichText,
   src?: XmlNode,
   hint?: FontSpec,
-  box?: { w: number; h: number }
+  box?: { w: number; h: number },
+  /** 文字盒落盘的宽高。样式位改动时沿用原盒，别让盒子跟着我们的尺重量一遍（01 A-21）。 */
+  dims?: { w: number; h: number }
 ): XmlNode {
   const rawTb = src ? find(src, "TextBlock") : undefined;
   const rawByIx = (tag: string): Map<string, XmlNode> => {
@@ -759,8 +767,8 @@ function buildTextNode(
   // 没声明的那几项按画布同一套推导补齐：写死成 Verdana/12/#333333 的话，盘上写 12、屏上画 10，
   // 亿图一打开就看到两套；那三个常数也只在 hint 缺席（写手没拿到这一页）时兜底。
   const font = referencedChar(rt) ?? {};
+  const size = fontSizeOf(rt, hint);
   const family = font.family ?? hint?.family ?? DEFAULTS.fontFamily;
-  const size = font.size ?? hint?.size ?? DEFAULTS.fontSize;
   const color = font.color ?? hint?.color ?? DEFAULTS.textColor;
   tb.children.push(el("Color", { V: withAlpha(color) }));
   rt.characters.forEach((c, ix) => {
@@ -791,8 +799,7 @@ function buildTextNode(
     inner.children.push(pp);
   });
   tb.children.push(inner);
-  const tw = Math.max(1, Math.round(measureTextWidth(rt, size)));
-  const th = Math.max(1, Math.round(rt.paragraphs.length * size * TEXT_LINE_H));
+  const { w: tw, h: th } = dims ?? textBoxSize(rt, hint);
   const rawXf = src ? find(src, "Transform") : undefined;
   const a = textAnchors(rawXf, tw, th, box);
   return el("Text", {}, [
@@ -839,6 +846,61 @@ function textAnchors(
 }
 
 /**
+ * 亿图给每一型新建形状写的 (形状盒 − 文字盒) 总内缩，01 A-21。
+ * 取值是众数：用户图 8 份 + 亿图自己写盘的 `config/{empty,ThemeBase}.emmx` 里 1343 颗双盒形状，
+ * 形状宽 − 文字宽 = SubTopic 14.00（1050 颗）/ MainTopic 35.00（34 颗）/ Callout 27.00（31 颗）/
+ * MainIdea 39.00（8 颗）/ Floating 35.00、SummaryTopic 11.00（各 1 颗，来自亿图新建的那份模板）；
+ * 高 = 5.50 / 16.00 / 16.00 / 30.00 / 16.00 / 10.00。
+ * Boundary 与 Summary 在语料里根本没有文字盒（1273 颗无 `<Text>`），所以不进这张表 —— 没有观察就不猜。
+ */
+const SHAPE_INSET: Partial<Record<ShapeType, { w: number; h: number }>> = {
+  MainIdea: { w: 39, h: 30 },
+  MainTopic: { w: 35, h: 16 },
+  SubTopic: { w: 14, h: 5.5 },
+  Floating: { w: 35, h: 16 },
+  Callout: { w: 27, h: 16 },
+  SummaryTopic: { w: 11, h: 10 },
+};
+
+/**
+ * 这一颗的形状盒该写多大（01 A-21）。
+ *
+ * 亿图的不变量是"形状盒 = 文字盒 + 一层按型内缩"：8 份 XML 容器样张的 1328 颗双盒形状里，
+ * 文字盒比形状盒还宽的出现 **0** 次。而模型里 `transform.w/h` 从导入后再没人写过（布局只写 x/y），
+ * 于是改名/改字号时文字盒在长、形状盒不动 —— 亿图一打开就是字压出框外；我们新建的主题更是直接落 0×0。
+ *
+ * 内缩跟着**这一颗自己**的走（原形状盒 − 原文字盒）：`dims` 沿用原盒时算回原值，未编辑的字节照旧复用；
+ * 拿不到这条内缩时才按类型的实测众数补（原盒 0×0 是我们旧版写下的，不满足上面那条不变量，
+ * 不能当"内缩 0"用；原文件没写文字盒、或这颗是新建的，同理）。表里也没有的类型退回模型值 —— 没有观察就不猜。
+ */
+function shapeBoxOf(
+  s: Shape,
+  dims: { w: number; h: number },
+  rawTransform: XmlNode | undefined,
+  rawTw: number,
+  rawTh: number
+): { w: number; h: number } {
+  const rawW = rawTransform ? numVnode(rawTransform, "Width", NaN) : NaN;
+  const rawH = rawTransform ? numVnode(rawTransform, "Height", NaN) : NaN;
+  const d = SHAPE_INSET[s.type];
+  const axis = (
+    rawBox: number,
+    rawT: number,
+    text: number,
+    doc: number | undefined,
+    model: number
+  ): number => {
+    const inset = rawBox >= rawT ? rawBox - rawT : doc;
+    if (inset === undefined) return Number.isFinite(rawBox) ? rawBox : model;
+    return text + inset;
+  };
+  return {
+    w: axis(rawW, rawTw, dims.w, d?.w, s.transform.w),
+    h: axis(rawH, rawTh, dims.h, d?.h, s.transform.h),
+  };
+}
+
+/**
  * 文字盒的宽高按亿图自己的盘上口径来（01 A-17 的影响面实测，三份样张 505 个带文字盒的顶层 Shape）。
  * 宽 = 4 + Σ 字符宽度，且字符宽度按 size+4 取（亿图给每个字多留 4pt 前进量）：这样对 ±2pt 命中 240/505、
  * 中位残差 3pt。旧的 `0.62×字数×字号` 系统性写窄（平均偏 +59.7pt、命中 0/505），亿图打开我们改名或改字号的
@@ -856,6 +918,26 @@ function measureTextWidth(rt: RichText, size: number): number {
   return Math.min(DEFAULTS.topicMaxTextW, Math.max(size, widest + TEXT_ADVANCE_PAD));
 }
 
+/** 这一颗的文字按哪一号写：被引用的那条声明优先，没声明才用画布那套推导（01 A-17）。 */
+function fontSizeOf(rt: RichText, hint?: FontSpec): number {
+  return referencedChar(rt)?.size ?? hint?.size ?? DEFAULTS.fontSize;
+}
+
+/** 文字盒的宽高（盘上 `<Text><Transform>` 那两把尺）。写形状盒时要同一个数，别再量第二遍。 */
+function textBoxSize(rt: RichText, hint?: FontSpec): { w: number; h: number } {
+  const size = fontSizeOf(rt, hint);
+  return {
+    w: Math.max(1, Math.round(measureTextWidth(rt, size))),
+    h: Math.max(1, Math.round(rt.paragraphs.length * size * TEXT_LINE_H)),
+  };
+}
+
+/**
+ * 亿图写这两个标记的**顺序**在它自己手里就不统一：11 份真语料 39178 个 `<CX>/<CY>/<X>/<Y>` 里
+ * V→P→B 最常见（X/Y 各 5698、CX/CY 各 1629），B→P→V（5012/1320）和 P→B→V（4494/1250）也各有几千，
+ * V→B→P 只占 140+46。既然它自己写四种、读我们那一份也照样认（真机反复验过值级生效），顺序不是复刻目标，
+ * 我们只保证全篇用同一种 —— 早先记的"亿图 660/660 都是 V→B→P"是数错了，这条按上面这遍普查改口。
+ */
 function attachP(n: XmlNode, b: string): XmlNode {
   n.attrs.P = "0";
   n.attrs.B = b;
@@ -971,6 +1053,8 @@ interface WriteCtx {
    */
   page?: Page;
   palette?: ThemePalette;
+  /** 这一页里每种形状型的第一份现成路径缓存，给新建的那颗借轮廓用（01 A-23，见 geoPool）。 */
+  geoPool?: Map<string, XmlNode>;
 }
 
 /**
@@ -1088,6 +1172,9 @@ function buildDocumentXml(doc: DocumentModel): XmlNode {
 
 function buildPageXml(page: Page, ctx: WriteCtx): XmlNode {
   const raw = page.rawUnknown ? rawOf(page) : undefined;
+  // 新建那颗主题要借的现成轮廓池（01 A-23），一页一份：亿图的形状是逐页存的，借隔壁页的同型轮廓
+  // 等于把另一套色板/主题的圆角写进这一页。
+  ctx.geoPool = raw ? geoPool(raw) : undefined;
   // 实测亿图的 <Page> 只有 Type/QuickMask/Zoom/ID，页面名不落在 page.xml 里。
   // 已有文件必须守住这个属性集（多写一个 Name 就是给亿图制造无法理解的字段）；
   // 只有我们新建的页面才需要把名字写进去，否则重开丢了标签名。
@@ -1182,6 +1269,87 @@ function defaultOrder(page: Page): string[] {
   return [...Array.from(PAGE_TAGS), ...ids.map((id) => shapeKey(id, page.shapes[id].type))];
 }
 
+/**
+ * 这一页里"每一型形状的第一份非空路径缓存"（01 A-23）。
+ *
+ * 亿图自己新建的主题没有原始缓存可带回，而空缓存它读不懂 —— 实测那颗在亿图里既不画泡也不画字。
+ * 同型形状的现成路径是最有出处的轮廓：边界点带 P="1"，会按借入的那颗新盒子自己缩放。
+ * 这一页里借不到同型的才退回按型补矩形（RECT_NO_LINE），两样都没有观察的型才留空写法。
+ * 连线（MMConnector / RelatConnector）的路径按两个端点算、且是 Closed="0" 的曲线，不是泡的轮廓，不进池。
+ */
+function geoPool(raw: RawContainer): Map<string, XmlNode> {
+  const pool = new Map<string, XmlNode>();
+  for (const key of raw.order) {
+    if (!key.startsWith("#")) continue;
+    const { type } = splitShapeKey(key);
+    if (type === "MMConnector" || type === "RelatConnector") continue;
+    if (pool.has(type)) continue;
+    const node = raw.nodes[key];
+    const geo = node ? find(node, "Geometries") : undefined;
+    if (geo && geo.children.length) pool.set(type, geo);
+  }
+  return pool;
+}
+
+/**
+ * 这一型主题的轮廓在亿图语料里就是盒子的四个角（01 A-23）。取值是"这一段带不带 NoLine"：
+ * 真语料 1374 颗 SubTopic/MainTopic/MainIdea 的第一段 <Geometry> 全是
+ * MoveTo(0,0) → (w,0) → (w,h) → (0,h) → 回起点，贴边的点写 P="1"、原点写 P="0"（B 恒为 X=1/Y=2）。
+ * 属性形式按每型众数：SubTopic 带 NoLine（1294/1317；亿图两种顺序都写，`Closed` 在前是 810/484 的那一头），
+ * MainTopic/MainIdea 只写 Closed。没有观察的型（Floating、Callout 的尾巴、Summary…）一律不发明。
+ */
+const RECT_NO_LINE: Partial<Record<ShapeType, boolean>> = {
+  SubTopic: true,
+  MainTopic: false,
+  MainIdea: false,
+};
+
+function rectGeometries(type: ShapeType, w: number, h: number): XmlNode | undefined {
+  const noLine = RECT_NO_LINE[type];
+  if (noLine === undefined || !(w > 0) || !(h > 0)) return undefined;
+  const pt = (tag: string, x: number, y: number): XmlNode =>
+    el(tag, {}, [
+      // 只取属性集合，不追属性顺序：亿图在同一批真文件里对 X/Y 混着写三种顺序
+      // （B→P→V 2506 / P→B→V 2247 / V→P→B 859），它是按名字读的。
+      // 值为 0 的那一根写 P="0"，贴盒子边的写 P="1"（随盒子缩放）。
+      el("X", { V: round(x), P: x === 0 ? "0" : "1", B: "1" }),
+      el("Y", { V: round(y), P: y === 0 ? "0" : "1", B: "2" }),
+    ]);
+  return el("Geometries", {}, [
+    el("Geometry", noLine ? { Closed: "1", NoLine: "1" } : { Closed: "1" }, [
+      pt("MoveTo", 0, 0),
+      pt("LineTo", w, 0),
+      pt("LineTo", w, h),
+      pt("LineTo", 0, h),
+      pt("LineTo", 0, 0),
+    ]),
+  ]);
+}
+
+/**
+ * 这一颗该落盘的 `<Geometries>`（01 A-23）。
+ *
+ * - 原文件里是非空路径 ⇒ 原样带回。盒子改了、样式改了都不作废：亿图就是照这份路径画泡、画字的，
+ *   而贴着边的点带 P="1"，会随新盒子缩放（真机对照实验：只把空缓存换回原路径、盒子仍是我们放大到 2.6 倍
+ *   的那一颗，泡和字一起回来了）。
+ * - 原文件里是空缓存（我们旧版写下的；亿图自己产出的文档里空缓存 0 颗 —— 3 份 MindMaster 自动备份
+ *   1010 颗形状、10 份真文档 2636 颗形状，都是 0）或是根本没有 ⇒
+ *   先借这一页同型形状的第一份现成轮廓，借不到就按亿图的矩形写法补一颗（见 RECT_NO_LINE），
+ *   两条都没有观察时才维持原样 —— 已有的节点一颗都不许删，也没有的节点也不乱加。
+ */
+function geometryNode(
+  type: ShapeType,
+  ctx: WriteCtx,
+  from: XmlNode | undefined,
+  rawGeometries: XmlNode | undefined,
+  box: { w: number; h: number }
+): XmlNode | undefined {
+  if (rawGeometries?.children.length) return rawGeometries;
+  const donor = ctx.geoPool?.get(type);
+  const healed = donor ? cloneNode(donor) : rectGeometries(type, box.w, box.h);
+  return healed ?? (from ? rawGeometries : el("Geometries"));
+}
+
 function rebuildShape(
   key: string,
   page: Page,
@@ -1219,21 +1387,41 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
   // 两边都过一遍 round 再比：亿图写 707.621、我们写 707.62，那是量具的精度差，
   // 不是用户挪了位置 —— 按原始字符串比会把每一颗 Shape 都判成改过。
   const rawTransform = rawOf("Transform");
+  const rawText = rawOf("Text");
+  const rawRt = rawText ? parseRichText(rawText) : undefined;
+  const sameText = rawRt !== undefined && canon(rawRt) === canon(s.text);
+  const hint = fontHint(ctx, s);
+  const rawTextXf = rawText ? find(rawText, "Transform") : undefined;
+  const rawTw = rawTextXf ? numVnode(rawTextXf, "Width", NaN) : NaN;
+  const rawTh = rawTextXf ? numVnode(rawTextXf, "Height", NaN) : NaN;
+  // 文字盒的尺寸：**字还是那些字、行还是那几行、号还是那一号**时沿用原盒。
+  // 加粗/字色/字族这些样式位改动会让 `<Text>` 整棵重建，但不该让盒子跟着我们的尺重量一遍 ——
+  // 量出来的差是尺的精度差（±2pt 只命中 240/505），一旦落到形状盒上就会连累 <Geometries> 路径缓存（01 A-21）。
+  const sameGlyphs =
+    rawRt !== undefined &&
+    Number.isFinite(rawTw) &&
+    Number.isFinite(rawTh) &&
+    plainText(rawRt) === plainText(s.text) &&
+    rawRt.paragraphs.length === s.text.paragraphs.length &&
+    fontSizeOf(rawRt, hint) === fontSizeOf(s.text, hint);
+  const dims = sameGlyphs ? { w: rawTw, h: rawTh } : textBoxSize(s.text, hint);
+  // 形状盒要在比 Transform 之前算出来（01 A-21）：比的是"这一颗该落盘的那一份"，
+  // 不是模型里那份从导入后就没被人写过的旧值。
+  const box = shapeBoxOf(s, dims, rawTransform, rawTw, rawTh);
   const sameTransform =
     Boolean(rawTransform) &&
-    (["CX", "CY", "Width", "Height"] as const).every(
-      (tag, i) =>
-        round(numVnode(rawTransform, tag, NaN)) ===
-        round(s.transform[(["x", "y", "w", "h"] as const)[i]])
-    );
+    (["CX", "CY", "Width", "Height"] as const).every((tag, i) => {
+      const want = [s.transform.x, s.transform.y, box.w, box.h][i];
+      return round(numVnode(rawTransform, tag, NaN)) === round(want);
+    });
   keep("Transform", sameTransform, () =>
     el("Transform", {}, [
       // 亿图给每个 CX/CY 都写了 B/P 锚点标记（实测 660/660），重建时照它的写法补齐，
       // 不然改一次标题就会让 CX@B、CX@P 各少一条。
       attachP(vNode("CX", round(s.transform.x)), "1"),
       attachP(vNode("CY", round(s.transform.y)), "2"),
-      vNode("Width", round(s.transform.w)),
-      vNode("Height", round(s.transform.h)),
+      vNode("Width", round(box.w)),
+      vNode("Height", round(box.h)),
     ])
   );
 
@@ -1256,14 +1444,10 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
     return sf;
   });
 
-  const rawText = rawOf("Text");
-  const sameText = rawText !== undefined && canon(parseRichText(rawText)) === canon(s.text);
   keep("Text", sameText, () => {
-    // 形状盒按我们这一批写到盘上的那个值传，锚点与盒子才是同一个尺。
-    const t = buildTextNode(s.text, rawText, fontHint(ctx, s), {
-      w: Number(round(s.transform.w)),
-      h: Number(round(s.transform.h)),
-    });
+    // 形状盒用上面刚算出的那一份：锚点、文字盒、形状盒必须是同一个尺。
+    const outer = { w: Number(round(box.w)), h: Number(round(box.h)) };
+    const t = buildTextNode(s.text, rawText, hint, outer, dims);
     carryParagraphRecords(rawText, t);
     return t;
   });
@@ -1286,13 +1470,13 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
     vnode(rawLevel, "SubLevel", "") === s.childIds.join(";");
   keep("LevelData", sameLevel, levelNode);
 
-  // 路径缓存的有效期只看"盒子有没有变"：Geometry 里存的是形状轮廓与枝线端点，
-  // 由 Transform（位置尺寸）和 ShapeFormat（圆角、线宽）决定，和标题文字无关 —— 改一个字不该把缓存洗掉。
-  // 原文件里本来没有 <Geometries> 的 Shape 不要凭空加一颗（那是新建形状的写法）。
-  const rawGeometries = rawOf("Geometries");
-  keep("Geometries", Boolean(rawGeometries) && sameTransform && sameShapeFormat, () =>
-    rawGeometries || !from ? el("Geometries") : undefined
-  );
+  // 路径缓存只要原文件里有，就永远原样带回：盒子尺寸变了、样式变了都不作为作废理由（01 A-23）。
+  // 这一条推翻了本批早先的判据"盒子一变就把缓存清空"—— 真机上亿图是**照这份路径画泡、也照它画字**的，
+  // 空缓存 = 泡和字一起消失；而贴着盒子边的那些点带 P="1"（按盒子比例），实测 95pt 宽的旧路径
+  // 落在 249pt 的新盒上照样把改名后的那行字完整包住。
+  // 判据只放在 geometryNode 一处：keep() 这边再判一次会造出一段永远走不到的代码。
+  const geo = geometryNode(s.type, ctx, from, rawOf("Geometries"), box);
+  if (geo) n.children.push(geo);
 
   // <ShapeStyle V> 是"这一族里第几号外形/样式"，我们没建模（读侧只把它当 ShapeFormat 的替补容器）。
   // 实测亿图写的是 5 而不是我们的常量 1，所以源里有就原样带回，只有新建的形状才落我们那一份。
@@ -1560,6 +1744,21 @@ function mediaTarget(name: string, media: Record<string, Uint8Array>): string {
   return hit ?? `media/${name}`;
 }
 
+/**
+ * 一颗原始关系线上记的两个端点号（01 A-24）。真键是 `<ConnectMap From="起" To="止"/>`；
+ * `ID=` 那种形式只有我们旧版写过，留着当回退，旧文件才还能连得上。
+ */
+function relEndpoints(from: XmlNode): { beginId: string; endId: string } {
+  const cm = find(from, "ConnectMap");
+  return {
+    beginId: attr(cm, "From") || attr(find(from, "BeginPt") ?? from, "ID"),
+    endId: attr(cm, "To") || attr(find(from, "EndPt") ?? from, "ID"),
+  };
+}
+
+/** 亿图自己写关系线时的先后次序（重建时没建模的那几段要跟着它，见 01 A-24 的两份观察）。 */
+const REL_ORDER = ["ConnectMap", "BeginPt", "EndPt", "Text", "ShapeFormat", "StyleMask", "Geometries"];
+
 function buildRelationship(
   r: RelationshipShape,
   ctx: WriteCtx,
@@ -1567,23 +1766,64 @@ function buildRelationship(
 ): XmlNode {
   void ctx;
   const n = el("Shape", { Type: "RelatConnector", ID: r.id });
-  n.children.push(el("RelatConnector", { Thickness: "0" }));
-  n.children.push(el("BeginPt", { ID: r.beginId }));
-  n.children.push(el("EndPt", { ID: r.endId }));
-  const rawText = from ? find(from, "Text") : undefined;
-  n.children.push(buildTextNode(r.text, rawText));
-  if (rawText) carryParagraphRecords(rawText, n.children[n.children.length - 1]);
+  const rawOf = (tag: string): XmlNode | undefined => (from ? find(from, tag) : undefined);
+  const rawEnds = from ? relEndpoints(from) : { beginId: "", endId: "" };
+  const sameEnds = Boolean(from) && rawEnds.beginId === r.beginId && rawEnds.endId === r.endId;
+
+  const rawText = rawOf("Text");
+  const rawRt = rawText ? parseRichText(rawText) : undefined;
+  const sameText = rawRt !== undefined && canon(rawRt) === canon(r.text);
+  const textNode = (): XmlNode => {
+    const t = buildTextNode(r.text, rawText);
+    if (rawText) carryParagraphRecords(rawText, t);
+    return t;
+  };
   // 线色、线宽、虚线都挂在 style 上：漏掉 ShapeFormat 的话，签名一变整份节点重生成，
   // 用户挑过的线色就静默回到默认（和标签那条是同一类"读得到写不回"的 bug）。
-  const rawSf = from ? find(from, "ShapeFormat") : undefined;
+  const rawSf = rawOf("ShapeFormat");
+  // 但只有 style 真的变了才值得重生成：只改标签字时重量一遍会把模型没建模的那几件抹掉 ——
+  // 装机前差分实测丢过 <EndArrow ID Size>（箭头款式）、<LinePattern ID>（虚线）与 Rounding（01 A-24）。
+  const sameStyle =
+    from !== undefined &&
+    rawSf !== undefined &&
+    JSON.stringify(r.style) === JSON.stringify(parseShapeStyle(from));
   const sf = el("ShapeFormat");
   if (r.style.fill) sf.children.push(buildFill(r.style.fill));
   if (r.style.line) sf.children.push(buildLine(r.style.line, rawSf && find(rawSf, "LineFormat")));
   for (const [k, v] of Object.entries(rawSf?.attrs ?? {})) sf.attrs[k] ??= v;
-  if (sf.children.length || Object.keys(sf.attrs).length) n.children.push(sf);
-  if (r.style.mask !== undefined) n.children.push(el("StyleMask", { V: r.style.mask }));
-  // 连线的路径缓存挂在两个端点上，端点一动那份缓存就是假的：留空让亿图自己重算。
-  n.children.push(el("Geometries"));
+  // 连线的路径缓存与两端坐标都按旧端点算：端点一动这两份就是假的（留空让亿图自己重算，
+  // 这一条待真机确认，见 01 A-24）。端点没动（只改标签字、线色、线宽）时必须原样带回 ——
+  // "留空亿图会自己补"在主题那颗上已被真机推翻（01 A-23：空缓存 = 泡和字一起消失）。
+  const parts: Record<string, XmlNode | undefined> = {
+    // 亿图 0/20 颗关系线里写过 <RelatConnector Thickness>：那是我们旧版发明的元素，不再写也不带回。
+    ConnectMap: el("ConnectMap", { From: r.beginId, To: r.endId }),
+    BeginPt: sameEnds ? rawOf("BeginPt") : undefined,
+    EndPt: sameEnds ? rawOf("EndPt") : undefined,
+    Text: sameText ? rawText : textNode(),
+    ShapeFormat: sameStyle ? rawSf : sf.children.length || Object.keys(sf.attrs).length ? sf : undefined,
+    StyleMask: r.style.mask !== undefined ? el("StyleMask", { V: r.style.mask }) : undefined,
+    Geometries: (sameEnds ? rawOf("Geometries") : undefined) ?? el("Geometries"),
+  };
+  // 按原文件的子节点顺序逐位放回：建模的那几段换成上面算出来的，没建模的
+  // （Transform/LevelData/ShapeStyle/PathText/TextChanged/TogglerID…）原样带走，一个都不发明。
+  const done = new Set<string>();
+  for (const c of from?.children ?? []) {
+    if (c.tag === "RelatConnector") continue;
+    if (c.tag in parts) {
+      const p = parts[c.tag];
+      if (p && !done.has(c.tag)) {
+        n.children.push(p);
+        done.add(c.tag);
+      }
+      continue;
+    }
+    n.children.push(c);
+  }
+  for (const tag of REL_ORDER) {
+    if (done.has(tag)) continue;
+    const p = parts[tag];
+    if (p) n.children.push(p);
+  }
   return n;
 }
 

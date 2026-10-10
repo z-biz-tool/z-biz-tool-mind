@@ -125,13 +125,15 @@ export function BackupRow({
   );
 }
 
-/** reason 是 Rust 写入的英文标记，界面上只保留用户看得懂的四种来源。 */
+/** reason 是 Rust 写入的英文标记，界面上只保留用户看得懂的那几种来源；认不出的原样显示。 */
 function reasonLabel(reason: string): string {
   switch (reason) {
     case "save":
       return "保存";
     case "before-overwrite":
       return "覆盖前";
+    case "before-restore":
+      return "还原前";
     case "autosave":
       return "自动保存";
     case "trash":
