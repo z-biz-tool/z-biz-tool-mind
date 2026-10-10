@@ -9,8 +9,8 @@ import { useMemo } from "react";
 import { Button, ColorPicker, Segmented, Select, Tooltip } from "antd";
 import { LAYOUT_LABELS } from "../model/constants.ts";
 import { toFreeLayout } from "../engine/layout.ts";
-import { countTopics, maxDepth, setTopicBold, updateStyle } from "../engine/tree.ts";
-import { applyPalette, styleFor } from "../engine/style.ts";
+import { countTopics, maxDepth, setTopicFont, updateStyle } from "../engine/tree.ts";
+import { applyPalette, styleFor, toggleBoldFrom } from "../engine/style.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { usePalette } from "../stores/usePalette.ts";
 import { useUi } from "../stores/uiStore.ts";
@@ -25,10 +25,27 @@ const LAYOUT_OPTIONS = (Object.keys(LAYOUT_LABELS) as LayoutCode[]).map((code) =
 
 const LEVEL_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({ value: n, label: `${n} 级` }));
 
-const SIZE_OPTIONS = [10, 12, 14, 16, 18, 20, 24, 28, 36, 48].map((n) => ({
+// 9 在列表里不是凑数：亿图自己写的文件里，二级以下最常用的字号就是它
+// （三份真用户地图上 SubTopic 写 9 的有 275 颗、写 12 的 199 颗），
+// 而现在画布按文件说的字号画 —— 缺这一档，选中那些主题时下拉框会显示一个选项里没有的值。
+const SIZE_OPTIONS = [9, 10, 12, 14, 16, 18, 20, 24, 28, 36, 48].map((n) => ({
   value: n,
   label: `${n}`,
 }));
+
+// 这份字族表也是量出来的：亿图自己写的文件里 1384 条样式记录分布为
+// Verdana 1154 / Arial 169 / 宋体 37 / Tahoma 15 / 微软雅黑 8 / Courier New 1（9 份文件实例）。
+// 前二是亿图的默认主题和英文主题用的，微软雅黑是我们跟随主题时推导的那个；中文另三档是常用补充。
+const FONT_OPTIONS = [
+  "微软雅黑",
+  "宋体",
+  "黑体",
+  "楷体",
+  "Verdana",
+  "Arial",
+  "Tahoma",
+  "Courier New",
+].map((f) => ({ value: f, label: f }));
 
 export function MindMapView({ page }: { page: Page }) {
   const mutate = useDoc((s) => s.mutate);
@@ -54,6 +71,19 @@ export function MindMapView({ page }: { page: Page }) {
       let out = p;
       for (const id of selection)
         if (out.shapes[id]) out = updateStyle(out, id, patch(out.shapes[id]));
+      return out;
+    });
+  };
+
+  /**
+   * 字号 / 字色 / 字族写在文字自己声明的那条样式上（`.emmx` 落盘成 `Character@Size/Color/Family`）。
+   * 节点级 `style.font` 不是它们的家：那里改的值画布看得见、存盘带不走，重开就回原值（01 A-17）。
+   */
+  const fontSelected = (label: string, own: { size?: number; color?: string; family?: string }) => {
+    if (!selection.length) return;
+    mutate(label, (p) => {
+      let out = p;
+      for (const id of selection) if (out.shapes[id]) out = setTopicFont(out, id, own);
       return out;
     });
   };
@@ -154,11 +184,15 @@ export function MindMapView({ page }: { page: Page }) {
           size="small"
           disabled={!picked}
           value={look?.font.color}
-          onChangeComplete={(c) =>
-            styleSelected("改文字色", (s) => ({
-              font: { ...s.style.font, color: c.toHexString() },
-            }))
-          }
+          onChangeComplete={(c) => fontSelected("改文字色", { color: c.toHexString() })}
+        />
+        <Select
+          size="small"
+          style={{ width: 104 }}
+          disabled={!picked}
+          value={look?.font.family}
+          options={FONT_OPTIONS}
+          onChange={(family: string) => fontSelected("改字体", { family })}
         />
         <Select
           size="small"
@@ -166,9 +200,7 @@ export function MindMapView({ page }: { page: Page }) {
           disabled={!picked}
           value={look?.font.size}
           options={SIZE_OPTIONS}
-          onChange={(size: number) =>
-            styleSelected("改字号", (s) => ({ font: { ...s.style.font, size } }))
-          }
+          onChange={(size: number) => fontSelected("改字号", { size })}
         />
         <Tooltip title="加粗只改选中的主题：写在文字样式上，存盘会带走。中心主题和一级分支本来默认就粗，那一下是取消。">
           <Button
@@ -178,11 +210,11 @@ export function MindMapView({ page }: { page: Page }) {
             onClick={() =>
               // 按"显示出来的那个字重"翻转，不是按 style 里存没存过：层级默认就是粗，
               // 对着 undefined 取反会得到 true，用户看下去就是"第一次点没反应"。
+              // 规则本身收在 toggleBoldFrom 里，这样它有单测可钉（03 §1.3-24 遗留③）。
               mutate("切换加粗", (p) => {
                 let out = p;
                 for (const id of selection)
-                  if (out.shapes[id])
-                    out = setTopicBold(out, id, !styleFor(out, out.shapes[id]).font.bold);
+                  if (out.shapes[id]) out = toggleBoldFrom(out, id, palette);
                 return out;
               })
             }

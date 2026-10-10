@@ -119,9 +119,34 @@ export function usedCharIx(rt: RichText): number[] {
   return out;
 }
 
+/**
+ * 这段文字自己声明出来的那一条样式（被引用的第一条 `Character`）。
+ * 只有文件里真写过、或用户在界面里真改过的项才有值；没写过就留 `undefined`，
+ * 由 `styleFor` 回落到主题推导 —— 新建主题的字号该跟着主题走，不该被我们种下的常数钉死。
+ */
+export function referencedChar(rt: RichText): FontSpec | undefined {
+  return rt.characters[usedCharIx(rt)[0] ?? 0];
+}
+
+/**
+ * 这段文字声明下来的样式，只带**真被写过**的键 —— 没写的项留给主题推导，不能把缺位读成"用户要默认值"。
+ * 显示（`styleFor`）、排版（`measureShape`）和写盘（`buildTextNode` 的 `Transform` 宽高）都从这一处取，
+ * 否则同一个主题会出现"框按一套字号算、字按另一套画"。
+ */
+export function assertedFont(rt: RichText): FontSpec {
+  const r = referencedChar(rt);
+  const f: FontSpec = {};
+  if (r?.family !== undefined) f.family = r.family;
+  if (r?.size !== undefined) f.size = r.size;
+  if (r?.color !== undefined) f.color = r.color;
+  return f;
+}
+
 export function makeText(text: string): RichText {
   return {
-    characters: [{ size: 12, family: "Verdana", color: "#333333" }],
+    // 空的样式：什么都不声明。写盘时由 `buildTextNode` 补亿图那一套默认属性，
+    // 显示时由主题推导 —— 两边都不把 Verdana/12/#333333 当成用户意图。
+    characters: [{}],
     paragraphs: [{ runs: [{ text, charIx: 0 }], align: 1 }],
   };
 }

@@ -24,6 +24,10 @@
  * 11) 分支自由布局（00 §3.3）是叠加在智慧版式结果上的一次整体平移，只对二级主题生效：
  *    断言要按"整枝位移相同、别的枝与中心主题不动"来写，只比枝根那一个盒子内不能发现
  *    "只挪了根、孙子留在原地"这种最像真确的错。
+ * 12) 量框用的字号有三个家：调用方递下来的 `opts.fontSize`、节点级 `style.font`、
+ *    文件声明的 `text.characters`（亿图写在这里，01 A-17）。第三个家不认，框就按 12 量、
+ *    字按 30 画，长标题整条溢到框外 —— 而且只有单独调 measureShape 才看得出来，
+ *    走 computeLayout 时 styleFor 已经把值递下来了。
  */
 import { done, eq, near, ok } from "./_harness.ts";
 import { createPage } from "../src/model/factory.ts";
@@ -44,6 +48,7 @@ import {
   resetBranch,
   setCollapsed,
   setFloating,
+  setTopicFont,
   shiftBranch,
   updateStyle,
   updateText,
@@ -129,6 +134,39 @@ function add(parentId: string, text: string): string {
     "measureShape 单独调用时按 opts 给的字号",
     measureShape(cur.shapes[root()], { fontSize: 20 }).w,
     4 * 20 + PAD
+  );
+}
+
+// ---------------------------------------------------------------- 文件声明的字号也参与量框（01 A-17）
+// 亿图把字号写在 Character@Size 上，读进来落点就是 text.characters。
+// measureShape 认不到它，就是"框按 12 量、字按 30 画"——长标题永远溢到框外，
+// 而且这条只有单独调 measureShape 时才露出来：走 computeLayout 时 styleFor 已经把值递下来了。
+{
+  cur = createPage("声明字号量框");
+  const kid = add(root(), "四千字");
+  cur = setTopicFont(cur, kid, { size: 30 });
+  const m = measureShape(cur.shapes[kid]);
+  eq("没给 opts 时也按 characters 上那一条量宽（3 字 ×30 + 左右内边距）", m.w, 3 * 30 + PAD);
+  eq("行高从同一个字号算起", m.h, Math.round(30 * 1.35 + DEFAULTS.topicPadY * 2));
+  const b = computeLayout(cur).boxes[kid];
+  eq("布局拿到的盒子与单独量出来的同一个", `${b.w}x${b.h}`, `${m.w}x${m.h}`);
+  eq("画布画的也是同一个字号", paintPage(cur).boxes.find((x) => x.id === kid)?.fontSize, 30);
+  // 折行同一条尺子：声明 30 号的那一份必须比 10 号那一份折得更早。
+  const longId = add(root(), "这是一段很长的中文主题文字用来验证声明字号参与量框时折行也按它折一直折下去");
+  const atBig = measureShape(setTopicFont(cur, longId, { size: 30 }).shapes[longId]);
+  const atSmall = measureShape(setTopicFont(cur, longId, { size: 10 }).shapes[longId]);
+  ok(
+    "长标题按声明字号折行（不认它就是框按 12 量、字按 30 画）",
+    atBig.lines.length > atSmall.lines.length,
+    `${atSmall.lines.length} 行 → ${atBig.lines.length} 行`
+  );
+  // 两个家都存过值时按节点级那个量：style.font 是用户最后点的那一下。
+  const both = updateStyle(cur, kid, { font: { size: 20 } });
+  eq("节点级 style.font 排在 characters 之前", measureShape(both.shapes[kid]).w, 3 * 20 + PAD);
+  eq(
+    "而 opts 给的字号仍然最前（调用方已经算过 styleFor）",
+    measureShape(both.shapes[kid], { fontSize: 8 }).w,
+    3 * 8 + PAD
   );
 }
 

@@ -29,11 +29,13 @@ import {
   setCollapsed,
   setFloating,
   setTopicBold,
+  setTopicFont,
   shiftBranch,
   siblingIndex,
   swapSibling,
   toggleCollapsed,
   updateExtras,
+  updateStyle,
   updateText,
   updateTransform,
   visibleChildren,
@@ -221,7 +223,8 @@ eq("文本读回", plainText(updateText(p, A, "改过").shapes[A].text), "改过
   eq("取消时节点级记 false", setTopicBold(on, A, false).shapes[A].style.font?.bold, false);
   eq("翻转不动字号", setTopicBold(on, A, false).shapes[A].text.characters[0].size, p.shapes[A].text.characters[0].size);
   eq("未知 id 是空操作（连页面对象都不换）", setTopicBold(p, "不存在的id", true), p);
-  // 只改被 run 引用的那几条：亿图文件里实测有 38 条没人引用的样式条目，跟着改就是无谓动别人的字节。
+  // 只改被 run 引用的那几条：亿图文件里实测有 25 条没人引用的样式条目（6 份唯一 XML 容器样张），
+  // 跟着改就是无谓动了别人的字节。
   const multi: Page = {
     ...p,
     shapes: {
@@ -240,6 +243,50 @@ eq("文本读回", plainText(updateText(p, A, "改过").shapes[A].text), "改过
   eq("IX=1 没人引用 → 原样不动", t[1].bold, undefined);
   eq("样式条目数量不许增减", t.length, 2);
   eq("段落结构不动", plainText(setTopicBold(multi, A, true).shapes[A].text), "甲");
+}
+
+// --- 字号/字色/字族的落点：同一个 text.characters（01 A-17 —— 那是它们在 .emmx 里唯一有家可回的地方）
+{
+  const up = setTopicFont(p, A, { size: 16 });
+  eq("写进 characters[0].size", up.shapes[A].text.characters[0].size, 16);
+  eq("不存进节点级那个家（那里改的值画布看得见、存盘带不走）", up.shapes[A].style.font?.size, undefined);
+  eq("三个键一起改也行", (() => {
+    const s = setTopicFont(p, A, { size: 20, color: "#e91e63", family: "宋体" }).shapes[A].text.characters[0];
+    return `${s.size}/${s.color}/${s.family}`;
+  })(), "20/#e91e63/宋体");
+  eq("改字号不许碰加粗那一条", setTopicFont(p, A, { size: 16 }).shapes[A].text.characters[0].bold, undefined);
+  eq("未知 id 是空操作（连页面对象都不换）", setTopicFont(p, "不存在的id", { size: 16 }), p);
+
+  // 旧写法（只改 style.font）留下的值必须被这一笔摘掉：它排在推导链更外层，会压住用户刚点的那个。
+  const stale = updateStyle(p, A, { font: { size: 20, color: "#000000" } });
+  const fixed = setTopicFont(stale, A, { size: 16 });
+  eq("这一笔把节点级的 size 摘了", fixed.shapes[A].style.font?.size, undefined);
+  eq("摘完 style.font 只剩没碰的那项", fixed.shapes[A].style.font?.color, "#000000");
+  eq(
+    "盘上有家的 bold 不许被顺手摘掉（03 §1.3-24 那一支全靠它）",
+    setTopicFont(updateStyle(p, A, { font: { bold: false } }), A, { size: 16 }).shapes[A].style.font?.bold,
+    false
+  );
+
+  // 只改被引用的那些 IX：没被任何 run 引用的样式条目一个字节都不许动。
+  const multi: Page = {
+    ...p,
+    shapes: {
+      ...p.shapes,
+      [A]: {
+        ...p.shapes[A],
+        text: {
+          paragraphs: [{ runs: [{ text: "甲", charIx: 1 }], align: 1 }],
+          characters: [{ size: 12 }, { size: 14 }],
+        },
+      },
+    },
+  };
+  const t = setTopicFont(multi, A, { size: 16 }).shapes[A].text.characters;
+  eq("IX=1 被引用 → 改它", t[1].size, 16);
+  eq("IX=0 没人引用 → 原样不动", t[0].size, 12);
+  eq("样式条目数量不许增减", t.length, 2);
+  eq("段落结构不动", plainText(setTopicFont(multi, A, { size: 16 }).shapes[A].text), "甲");
 }
 
 // --- 自由布局：新建主题的位置是用户数据，不给位置就叠在中心主题上

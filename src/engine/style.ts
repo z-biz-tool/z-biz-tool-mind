@@ -8,9 +8,9 @@
  * 否则换一个主题就全塌。
  */
 import type { ColorValue, FontSpec, Page, Shape, ShapeStyle } from "../types/model.ts";
-import { usedCharIx } from "../types/model.ts";
+import { assertedFont, usedCharIx } from "../types/model.ts";
 import { ANGEL_ACCENTS, DEFAULTS } from "../model/constants.ts";
-import { branchIndex, levelOf, updateStyle } from "./tree.ts";
+import { branchIndex, levelOf, setTopicBold, updateStyle } from "./tree.ts";
 
 export interface Rgb {
   r: number;
@@ -158,14 +158,33 @@ export function styleFor(page: Page, shape: Shape, palette = defaultPalette()): 
   const runBold = usedCharIx(shape.text).some((ix) => shape.text.characters[ix]?.bold === true);
   const bold =
     nodeBold === false ? false : runBold ? true : nodeBold === true ? true : font.bold;
+  // 字号/字族/字色与加粗是同一个家：`.emmx` 把它们写成 `Character@Size/Family/Color`。
+  // 6 份唯一 XML 容器样张实测：被 run 引用的 827 条 Character 上 Family/Size/Color 出现率都是 100%
+  // （另有 25 条写了却没被任何 run 引用，不参与呈现），所以"文件写了就照它画"是常态而不是例外
+  // （画布、`measureShape`、导出共用这一个结果）。
+  // 亿图在这些主题上写的反而是深灰字（#282828/#4b4b4b），比我们的推导更好读：
+  // 495 颗主题里按文件的颜色只有 1 颗压在我们的推导底色上不到 3:1，而按我们现在的推导有 2 颗一级分支是白字压浅底。
+  // 没写过的项（我们新建的主题、Markdown/XMind 那类没有线上样式的来源）留在推导上，换主题才跟得动。
   return {
     fill,
     line: ownLine ?? shade(base, 25),
     lineWidth: shape.style.line?.weight ?? DEFAULTS.lineWeight,
     rounding: shape.style.line?.rounding ?? DEFAULTS.rounding,
-    font: { ...font, ...shape.style.font, bold },
+    font: { ...font, ...assertedFont(shape.text), ...shape.style.font, bold },
     soft: tint(base, 78),
   };
+}
+
+/**
+ * 工具栏那颗 B 按下去要做的事：按**画出来的**那个字重翻转，不是按 `style.font` 里存没存过。
+ * 中心主题和一级分支的层级默认就是粗，对着 `undefined` 取反会得到 true ——
+ * 用户看下去就是"第一下没反应"，所以第一笔必须真的把它取消。
+ * 放在样式这一侧而不是 `tree.ts`：它判断的依据就是 `styleFor` 的结论。
+ */
+export function toggleBoldFrom(page: Page, id: string, palette = defaultPalette()): Page {
+  const shape = page.shapes[id];
+  if (!shape) return page;
+  return setTopicBold(page, id, !styleFor(page, shape, palette).font.bold);
 }
 
 /**

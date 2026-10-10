@@ -483,6 +483,34 @@ export function setTopicBold(page: Page, id: string, bold: boolean): Page {
   });
 }
 
+/**
+ * 字号 / 字色 / 字族写在 `text.characters` 上 —— `.emmx` 的线上落点是 `Character@Size/Color/Family`，
+ * 存盘时 `buildTextNode` 只从这里取值（01 A-17：写进节点级 `style.font` 的那三项是
+ * "本次会话看得见、存盘重开就没了"的那一半缺陷）。
+ *
+ * 和 `setTopicBold` 同一个口径：只改被 run 引用的那几条样式，没引用的那些不跟着动。
+ * 落笔时把节点级 `style.font` 上的同名键清掉 —— 它在推导链上排在更外层，留着的话用户刚点的值会被它压住，
+ * 又是两个家。`bold` 不清：那一位在亿图侧没有"显式不加粗"的写法，它是会话内取消推导粗的唯一凭据（03 §1.3-24）。
+ */
+export function setTopicFont(
+  page: Page,
+  id: string,
+  own: { size?: number; color?: string; family?: string }
+): Page {
+  const s = page.shapes[id];
+  if (!s) return page;
+  const used = new Set(usedCharIx(s.text));
+  const characters = s.text.characters.map((c, ix) => (used.has(ix) ? { ...c, ...own } : c));
+  const font = { ...s.style.font };
+  if (own.size !== undefined) delete font.size;
+  if (own.color !== undefined) delete font.color;
+  if (own.family !== undefined) delete font.family;
+  const style: Shape["style"] = { ...s.style };
+  if (Object.keys(font).length) style.font = font;
+  else delete style.font;
+  return patch(page, id, { ...s, text: { ...s.text, characters }, style });
+}
+
 export function updateExtras(page: Page, id: string, extras: Partial<Shape["extras"]>): Page {
   const s = page.shapes[id];
   if (!s) return page;

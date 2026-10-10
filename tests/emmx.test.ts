@@ -20,6 +20,10 @@
  *    反过来，层级推导出来的粗（中心主题/一级分支）一个字都不许落到盘上。
  *    导入方向同样要成立：亿图标在 Character@Style 上的粗（真样张 24 颗，18 颗在二级以下）
  *    按层级推不出来，只能读回来 —— 读丢的那些开一次就是"字体变细了"。
+ * 11) 字号/字族/字色与加粗同一个家（`Character@Size/Family/Color`，01 A-17）。两头都要成立：
+ *    文件没写那一位时读回来必须还是"没写过"（补成常数 12 就是替文件撒谎，存盘照着谎言写回去），
+ *    而我们新建的主题（模型里什么都不声明）在盘上必须落画布推导的那一份，
+ *    不是写死 Verdana/12/#333333 —— 中心主题推出来是 14 号白字，常数那三个都不是。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,9 +42,10 @@ import {
   updateText,
 } from "../src/engine/tree.ts";
 import { createDocument } from "../src/model/factory.ts";
+import { DEFAULTS } from "../src/model/constants.ts";
 import { applyPalette, styleFor } from "../src/engine/style.ts";
 import { plainText, usedCharIx } from "../src/types/model.ts";
-import type { Page } from "../src/types/model.ts";
+import type { FontSpec, Page } from "../src/types/model.ts";
 
 const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
 
@@ -186,7 +191,21 @@ const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
   const bPage = bParsed.doc.pages[0];
   eq("重开读回 run 级样式", bPage.shapes[g.id].text.characters[0]?.bold, true);
   eq("重开仍显示粗（显示与盘上同源）", styleFor(bPage, bPage.shapes[g.id]).font.bold, true);
-  eq("没点加粗的那颗读回不加粗", bPage.shapes[kids[2]].text.characters[0]?.bold, false);
+  eq(
+    "没点加粗的那颗读回的是「文件没写过 Style」，不是 false 这个值（01 A-17：缺位不等于默认值）",
+    bPage.shapes[kids[2]].text.characters[0]?.bold,
+    undefined
+  );
+  eq(
+    "那颗显示出来是粗，但这个粗是层级推导给的（一级），盘上没有任何记号（03 §1.3-24）",
+    styleFor(bPage, bPage.shapes[kids[2]]).font.bold,
+    true
+  );
+  // 二级以下才是"缺位 → 不粗"的地方：一级本来就推导成粗，比不出差异。
+  const deep = insertChild(bolded, kids[2], "孙二");
+  const dPage = (await parseEmmx(await writeEmmx(withPage(deep.page)))).doc.pages[0];
+  eq("新建的二级主题不声明字重", dPage.shapes[deep.id].text.characters[0]?.bold, undefined);
+  eq("所以它按层级推导显示成常规", styleFor(dPage, dPage.shapes[deep.id]).font.bold, false);
   eq(
     "取消加粗再存，Style 整条消失（亿图没有 Style=\"0\" 这种写法）",
     /Style="1"/.test(await pageXml(await writeEmmx(withPage(setTopicBold(bolded, g.id, false))))),
@@ -205,6 +224,78 @@ const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
     "取消推导粗的这一笔不落盘",
     /Style="1"/.test(await pageXml(await writeEmmx(withPage(rootFlip)))),
     false
+  );
+
+  // --- 缺位不等于默认值（01 A-17）：亿图没写 Size/Family/Color 的那条，读进来必须还是"文件没说过"。
+  // 真样张里被 run 引用的 827 条 Character 这三位的出现率都是 100%，所以这一支只能自己造：
+  // 把写出去的那一位剥掉再读。补成常数就是替文件撒一个谎 —— 显示层分不清"文件说的"和"我们自己种的"，
+  // 换主题和新主题的推导余地就这么没了。
+  const stripCharAttr = (xml: string, id: string, key: string): string =>
+    xml.replace(
+      new RegExp(`<Shape[^>]*\\bID="${id}"[\\s\\S]*?(?=<Shape\\b|$)`),
+      (block) => block.replace(new RegExp(`(<Character\\b[^>]*?)\\b${key}="[^"]*"`), "$1")
+    );
+  const plainXml = await pageXml(await writeEmmx(withPage(colored)));
+  const rootId = colored.rootId;
+  ok(
+    "夹具确实给中心主题写了 Size（剥不动就是下面几条在空转）",
+    /<Character[^>]*\bSize="/.test(shapeBlock(plainXml, rootId)),
+    shapeBlock(plainXml, rootId)
+  );
+  const baseBytes = await writeEmmx(withPage(colored));
+  const zip = await readZip(baseBytes);
+  const centerWant = styleFor(colored, colored.shapes[rootId]);
+  /** 三位都要有区分度：推导出来的值和那三个常数不是一个，否则下面的断言在空转。 */
+  ok("推导 ≠ 常数（字号）", centerWant.font.size !== DEFAULTS.fontSize, String(centerWant.font.size));
+  ok("推导 ≠ 常数（字族）", centerWant.font.family !== DEFAULTS.fontFamily, centerWant.font.family);
+  ok("推导 ≠ 常数（字色：中心主题是白字，常数是深灰）", centerWant.font.color !== DEFAULTS.textColor, centerWant.font.color);
+  for (const spec of [
+    { key: "Size", get: (f: FontSpec) => f.size, want: centerWant.font.size, constant: DEFAULTS.fontSize },
+    { key: "Family", get: (f: FontSpec) => f.family, want: centerWant.font.family, constant: DEFAULTS.fontFamily },
+    { key: "Color", get: (f: FontSpec) => f.color, want: centerWant.font.color, constant: DEFAULTS.textColor },
+  ]) {
+    ok(
+      `夹具原本写了 ${spec.key}（剥不动就是这一条在空转）`,
+      new RegExp(`<Character[^>]*\\b${spec.key}="`).test(shapeBlock(plainXml, rootId))
+    );
+    const stripped = await writeZip(
+      zip.map((e) =>
+        /page\/page\.xml$/.test(e.name)
+          ? { ...e, data: encodeText(stripCharAttr(decodeBytes(e.data), rootId, spec.key)) }
+          : e
+      )
+    );
+    const p = (await parseEmmx(stripped)).doc.pages[0];
+    const shown = styleFor(p, p.shapes[rootId]).font;
+    eq(
+      `文件没写 ${spec.key} → 模型里就是没写过，不是被补成 ${spec.constant}`,
+      spec.get(p.shapes[rootId].text.characters[0] ?? {}),
+      undefined
+    );
+    eq(`显示按层级/主题推导走（${String(spec.want)}）`, spec.get(shown), spec.want);
+    ok(
+      `剥的时候只碰中心主题那一条，${kids[0]} 的 ${spec.key} 还在`,
+      spec.get(p.shapes[kids[0]].text.characters[0] ?? {}) !== undefined
+    );
+  }
+
+  // --- 模型里什么都不声明的主题（factory 造的、新建的主题）在盘上不许写死那三个常数：
+  //     必须落画布算出来的那一份，否则亿图打开就是"深灰字压深色底 + 12 号 Verdana"。
+  const centerBlock = shapeBlock(plainXml, rootId);
+  eq(
+    "Character@Color 落的是画布那个字色",
+    /<Character[^>]*\bColor="([^"]+)"/.exec(centerBlock)?.[1],
+    centerWant.font.color
+  );
+  eq(
+    "Family 跟主题走，不跟 Verdana 常数走",
+    /<Character[^>]*\bFamily="([^"]+)"/.exec(centerBlock)?.[1],
+    centerWant.font.family
+  );
+  eq(
+    "Size 同理（中心主题那一档是 14，不是常数 12）",
+    /<Character[^>]*\bSize="([^"]+)"/.exec(centerBlock)?.[1],
+    String(centerWant.font.size)
   );
 
   // --- 批注 / 超链接 / 标签

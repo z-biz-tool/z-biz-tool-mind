@@ -30,6 +30,7 @@ import {
   removeShape,
   setCollapsed,
   setTopicBold,
+  setTopicFont,
   updateExtras,
   updateStyle,
   updateText,
@@ -37,7 +38,7 @@ import {
 } from "../src/engine/tree.ts";
 import { styleFor } from "../src/engine/style.ts";
 import type { DocumentModel, Page, Shape } from "../src/types/model.ts";
-import { plainText, usedCharIx } from "../src/types/model.ts";
+import { plainText, referencedChar, usedCharIx } from "../src/types/model.ts";
 
 const FOLD_DIR = join(process.cwd(), "_research", "extract", "fold");
 
@@ -523,6 +524,103 @@ const ORIG = shapeBlocks(PAGE_XML);
     );
   }
 
+  // -------------------------------------------------- 字号/字色/字体族：这一笔在盘上的全部足迹（01 A-17）
+  {
+    // 键级差分对纯值变更是盲的（Size 从 12 变成 16 它读作"什么都没发生"），所以这一批全按值断言。
+    const attrOf = (block: string, tag: string, attr: string): string | undefined =>
+      new RegExp(`<${tag}\\b[^>]*\\b${attr}="([^"]*)"`).exec(block)?.[1];
+    /** 一颗 Shape 里有两层 Transform：先来的那是盒子（布局给的），后来的才是文字盒。 */
+    const textBoxWH = (block: string): string => {
+      const m = /<Text><Transform><Width V="([^"]+)"\/><Height V="([^"]+)"\/>/.exec(block);
+      return m ? `${m[1]}x${m[2]}` : "";
+    };
+    const bare = await savedXml(parsed.doc);
+    eq("基线：夹具 5 颗主题各带一条 Character", all(bare, /<Character\b/g).length, 5);
+
+    // ① 字号：落在被引用的那一条上，文字盒宽高跟着重算，其余一颗都不许动。
+    const up = setTopicFont(base, "104", { size: 16 });
+    const upXml = await savedXml(withPage(parsed.doc, up));
+    const upBlocks = shapeBlocks(upXml);
+    const u104 = blockOf(upBlocks, "104");
+    eq("字号写在 Character@Size 上", attrOf(u104, "Character", "Size"), "16");
+    eq("改字号不新增也不减少任何一条码（值变了，计数没变）", keyDelta(bare, upXml), "");
+    eq("文字盒宽高跟着重算：宽 4 + 4 字 ×(16+4)，高 1 段 ×16×1.75", textBoxWH(u104), "84x28");
+    eq("这颗正文以外一字节都不动", withoutText(u104), withoutText(blockOf(ORIG, "104")));
+    ok("文字背景色这类没建模的键活下来了", /BkColor="#ffff00"/.test(blockOf(upBlocks, "102")));
+    for (const id of ["101", "102", "103", "105", "900"])
+      eq(`改 104 的字号不许连累 ${id}`, blockOf(upBlocks, id), blockOf(ORIG, id));
+    const upBack = (await parseEmmx(await writeEmmx(withPage(parsed.doc, up)))).doc.pages[0];
+    eq("重开读回 16：文件写了就照它（01 A-17）", referencedChar(upBack.shapes["104"].text)?.size, 16);
+    eq("画布也算出同一个 16", styleFor(upBack, upBack.shapes["104"]).font.size, 16);
+
+    // ② 字色：`Character@Color` 和文字盒底色 `<Color V>` 是同一个来源，改色两处一起走。
+    const dyed = setTopicFont(base, "104", { color: "#e91e63" });
+    const d104 = blockOf(shapeBlocks(await savedXml(withPage(parsed.doc, dyed))), "104");
+    eq("字色写在 Character@Color 上（6 位 RGB）", attrOf(d104, "Character", "Color"), "#e91e63");
+    eq("盒底色同一个值，补齐成亿图的 8 位写法", attrOf(d104, "Color", "V"), "#ffe91e63");
+    const dyedBack = (await parseEmmx(await writeEmmx(withPage(parsed.doc, dyed)))).doc.pages[0];
+    eq(
+      "重开读回同一个字色",
+      referencedChar(dyedBack.shapes["104"].text)?.color,
+      "#e91e63"
+    );
+    eq(
+      "画布也按它画，不再用底色推出来的那个",
+      styleFor(dyedBack, dyedBack.shapes["104"]).font.color,
+      "#e91e63"
+    );
+
+    // ③ 字体族
+    const faced = setTopicFont(base, "104", { family: "宋体" });
+    const f104 = blockOf(shapeBlocks(await savedXml(withPage(parsed.doc, faced))), "104");
+    eq("字体族写在 Character@Family 上", attrOf(f104, "Character", "Family"), "宋体");
+    const facedBack = (await parseEmmx(await writeEmmx(withPage(parsed.doc, faced)))).doc.pages[0];
+    eq(
+      "重开读回同一个字族",
+      referencedChar(facedBack.shapes["104"].text)?.family,
+      "宋体"
+    );
+
+    // ④ 两个家存不同值时的裁决：节点级 `style.font` 在推导链上排得更外层，
+    //    旧写法（只改它）画布看得见、存盘带不走；这一笔必须把它清掉，否则用户刚点的值被旧值压住。
+    const stale = updateStyle(base, "104", { font: { size: 20 } });
+    eq("旧写法的节点级值确实会盖住文件里那条", styleFor(stale, stale.shapes["104"]).font.size, 20);
+    eq(
+      "而它没有线上落点：盘上还是文件写的那条",
+      attrOf(blockOf(shapeBlocks(await savedXml(withPage(parsed.doc, stale))), "104"), "Character", "Size"),
+      "12"
+    );
+    const fixed = setTopicFont(stale, "104", { size: 16 });
+    eq("这一笔把节点级那个旧值清了", fixed.shapes["104"].style.font?.size, undefined);
+    const fixedXml = await savedXml(withPage(parsed.doc, fixed));
+    const fixed104 = blockOf(shapeBlocks(fixedXml), "104");
+    eq("盘上写的是刚点的那个", attrOf(fixed104, "Character", "Size"), "16");
+    const fixedBack = (await parseEmmx(await writeEmmx(withPage(parsed.doc, fixed)))).doc.pages[0];
+    eq("重开也还是它（存盘带得走了）", styleFor(fixedBack, fixedBack.shapes["104"]).font.size, 16);
+
+    // ⑤ 新建的主题：模型里什么都不声明（`makeText` 的种子是空样式），盘上必须按画布那套推导补齐，
+    //    而不是写死 Verdana/12/#333333 —— 那三个常数和屏上画的层级字号不是一套，亿图打开就是两套。
+    const kid = insertChild(base, "102", "新枝");
+    const kidPage = normalize(kid.page);
+    const kBlock = blockOf(shapeBlocks(await savedXml(withPage(parsed.doc, kidPage))), kid.id);
+    const want = styleFor(kidPage, getShape(kidPage, kid.id)!);
+    eq("新主题的 Size 落的是画布推导的那个", attrOf(kBlock, "Character", "Size"), String(want.font.size));
+    eq("Family 同样跟主题走，不跟常数走", attrOf(kBlock, "Character", "Family"), want.font.family);
+    eq("Color 也一样", attrOf(kBlock, "Character", "Color"), want.font.color);
+    ok("新主题不落 Style：没点加粗就不发明记号", !/Character[^>]*Style=/.test(kBlock));
+    const kidBack = (await parseEmmx(await writeEmmx(withPage(parsed.doc, kidPage)))).doc.pages[0];
+    eq(
+      "重开后盘上那个值就是画布那个值（不再有「写 12 画 10」这一说）",
+      styleFor(kidBack, kidBack.shapes[kid.id]).font.size,
+      want.font.size
+    );
+    eq(
+      "文字盒宽高也从同一个字号量起：4 + 2 字 ×(10+4)、1 段 ×10×1.75",
+      textBoxWH(kBlock),
+      "32x18"
+    );
+  }
+
   // -------------------------------------------------- 删叶子：那颗没了，指向它的地方也不许留
   const pruned = shapeBlocks(await savedXml(withPage(parsed.doc, removeShape(base, "104"))));
   eq("删掉的叶子不再回写", blockOf(pruned, "104"), "");
@@ -846,6 +944,51 @@ for (const f of REAL_FILES) {
     withoutText(blockOf(blocksAfter, editedId)),
     withoutText(blockOf(blocksBefore, editedId))
   );
+
+  // 值级第二刀（01 A-17）：改字号。census 只数出现次数，Size 从原值变到 16 它是盲的，
+  // 所以这里必须逐颗比字节，再按亿图自己的落点（Character@Size）断言值本身。
+  {
+    const target = anyTopic(original.pages[0], (x) => usedCharIx(x.text).length === 1);
+    if (!target) {
+      skip(`${f}｜改一个主题的字号`, "这份样张里没有只引用一条文字样式的主题");
+    } else {
+      const sized = setTopicFont(original.pages[0], target.id, { size: 16 });
+      const xml = await savedXml(withPage(original, sized));
+      // 基线取"同一套写手、这一笔什么都没改"的输出，而不是样张原文：比的是这一笔动了什么。
+      const bareXml = await savedXml(original);
+      const after = shapeBlocks(xml);
+      eq(
+        `${f}｜改字号不许打乱 Shape 的排列`,
+        [...after.keys()].join(","),
+        [...blocksBefore.keys()].join(",")
+      );
+      const bad: string[] = [];
+      for (const [k, v] of blocksBefore) {
+        if (k.endsWith(`:${target.id}`)) continue;
+        if (after.get(k) !== v) bad.push(k);
+      }
+      eq(`${f}｜改字号：没编辑的那些 Shape 逐颗字节一致`, bad.join(","), "");
+      const blk = blockOf(after, target.id);
+      ok(
+        `${f}｜改字号落在被引用的那条 Character 上`,
+        /<Character[^>]*Size="16"/.test(blk),
+        blk.slice(0, 240)
+      );
+      eq(
+        `${f}｜改字号不许连累这颗正文以外的东西`,
+        withoutText(blk),
+        withoutText(blockOf(blocksBefore, target.id))
+      );
+      eq(`${f}｜改字号的盘上足迹是零条码（只改了值）`, keyDelta(bareXml, xml), "");
+      const back = (await parseEmmx(await writeEmmx(withPage(original, sized)))).doc.pages[0];
+      eq(
+        `${f}｜重开读回 16`,
+        referencedChar(back.shapes[target.id].text)?.size,
+        16
+      );
+      eq(`${f}｜画布也算出 16`, styleFor(back, back.shapes[target.id]).font.size, 16);
+    }
+  }
 
   for (const sc of SCENARIOS) {
     const target = sc.find ? sc.find(original) : undefined;

@@ -11,6 +11,8 @@
  * 7) contrastText 的深底白字阈值；
  * 8) 加粗的家（01 A-16）：`text.characters` 是 run 级唯一真相，节点级 `style.font.bold` 能否决它，
  *    两者都没落笔时才回到层级推导。
+ * 9) 字号/字色/字族同一个口径（01 A-17）：文件声明过的那几项才顶掉推导，没声明的留在推导上；
+ *    工具栏按"显示出来的值"取反（toggleBoldFrom），不按"存没存过"。
  */
 import { done, eq } from "./_harness.ts";
 import { existsSync, readFileSync } from "node:fs";
@@ -32,6 +34,7 @@ import {
   styleFor,
   tint,
   toHex,
+  toggleBoldFrom,
 } from "../src/engine/style.ts";
 import { skip } from "./_harness.ts";
 
@@ -158,7 +161,7 @@ const W = "#ffffff";
   const b = ins2.id;
   const pal = defaultPalette();
   /** 直接改模型里的样式条目，模拟"从 .emmx 读回来的那一份"（parseCharacter 的产物）。 */
-  const chars = (id: string, list: FontSpec[], runs?: { text: string; charIx: number }[][]): Page => ({
+  const chars = (id: string, list: FontSpec[], runs?: string[][]): Page => ({
     ...pg,
     shapes: {
       ...pg.shapes,
@@ -183,7 +186,7 @@ const W = "#ffffff";
   // 读侧对"缺 Style"给的是 bold:false，所以 false 绝不能当"用户显式取消"，
   // 否则中心主题/一级分支的层级默认粗会被一路降级。
   eq("run 级 false 是缺省不是否决：中心主题仍按层级推导为粗", bold(pg.rootId, chars(pg.rootId, [{ bold: false }])), true);
-  // 真亿图文件里有 38 条没人引用的 Character（实测），它们不参与这颗形状的呈现。
+  // 真亿图文件里确有"写了 Character 但没有任何 run 引用"的条目（6 份唯一 XML 容器样张实测 25 条），它们不参与这颗形状的呈现。
   eq("没被任何 run 引用的样式条目不算数", bold(b, chars(b, [{ bold: false }, { bold: true }])), false);
   eq("run 引用到哪条就看哪条：IX=1 粗", bold(b, chars(b, [{ bold: false }, { bold: true }], [["a", "b"]])), true);
   // 盒级近似：画布一颗主题只有一种字重，"半个标题粗"取"任一被引用的 run 粗"。
@@ -196,6 +199,98 @@ const W = "#ffffff";
     bold(pg.rootId, updateStyle(chars(pg.rootId, [{ bold: false }]), pg.rootId, { font: { bold: false } })),
     false
   );
+}
+
+// ---------------------------------------------------------------- 字号/字色/字族的家（01 A-17）
+{
+  let pg = createPage("字体口径");
+  const ins1 = insertChild(pg, pg.rootId, "一级");
+  pg = ins1.page;
+  const a = ins1.id;
+  const ins2 = insertChild(pg, a, "二级");
+  pg = ins2.page;
+  const b = ins2.id;
+  const pal = defaultPalette();
+  const font = (id: string, p: Page) => styleFor(p, p.shapes[id], pal).font;
+  /** 把某颗的样式条目换成"从 .emmx 读回来的那一份"（parseCharacter 只记真写过的键）。 */
+  const declared = (
+    id: string,
+    list: FontSpec[],
+    runs?: string[][]
+  ): Page => ({
+    ...pg,
+    shapes: {
+      ...pg.shapes,
+      [id]: {
+        ...pg.shapes[id],
+        text: {
+          characters: list,
+          paragraphs: (runs ?? [["x"]]).map((rs, i) => ({
+            runs: rs.map((t, j) => ({ text: t, charIx: j })),
+            align: pg.shapes[id].text.paragraphs[i]?.align ?? 1,
+          })),
+        },
+      },
+    },
+  });
+
+  // 新建的主题什么都不声明（makeText 的种子是空样式），三项全按层级推导走。
+  eq("没声明就回到层级推导：二级字号取主题档位", font(b, pg).size, EDRAW_FONT_SIZES[2]);
+  eq("字族跟主题，不跟写死的常数", font(b, pg).family, EDRAW_FONT_FAMILY);
+  eq("字色跟实际底色推", font(b, pg).color, contrastText(styleFor(pg, pg.shapes[b], pal).fill));
+
+  // 文件声明了哪几项就只顶掉那几项，其余继续跟着推导走 —— 换主题还跟得动。
+  eq("声明了 Size 就照它画", font(b, declared(b, [{ size: 16 }])).size, 16);
+  eq("但没声明的字族不许被一起冻结", font(b, declared(b, [{ size: 16 }])).family, EDRAW_FONT_FAMILY);
+  eq("声明了 Color 就照它画", font(b, declared(b, [{ color: "#e91e63" }])).color, "#e91e63");
+  eq("声明了 Family 就照它画", font(b, declared(b, [{ family: "宋体" }])).family, "宋体");
+  eq(
+    "显式 undefined 等于没说过：那一项回到推导",
+    font(b, declared(b, [{ size: undefined, color: "#123456" }])).size,
+    EDRAW_FONT_SIZES[2]
+  );
+  eq(
+    "同一句里真写过的那项仍然照文件",
+    font(b, declared(b, [{ size: undefined, color: "#123456" }])).color,
+    "#123456"
+  );
+
+  // 只数被引用的那条（真文件实测 25 条写了却没人引用）。
+  eq("引用到 IX=0 时 IX=1 那条大的不算数", font(b, declared(b, [{ size: 10 }, { size: 40 }])).size, 10);
+  // 画布一颗主题只有一套字号，所以两条都被引用时取第一条被引用的那个。
+  // 实测口径：9 份文件实例里同一颗内样式不一致的是 字号 0 例 / 字族 2 例 / 字色 3 例，这一步几乎不丢东西。
+  eq(
+    "两条都被引用时按第一条",
+    font(b, declared(b, [{ size: 10 }, { size: 40 }], [["a", "b"]])).size,
+    10
+  );
+
+  // 节点级 `style.font` 在推导链上排得更外层：它压得住文件的值。这一支留给显式覆盖，
+  // 界面那一下现在不写它了 —— 写在那里就没有线上落点（03 §1.3-25）。
+  eq(
+    "节点级显式值仍然压过文件声明的那条",
+    font(b, updateStyle(declared(b, [{ size: 16 }]), b, { font: { size: 20 } })).size,
+    20
+  );
+
+  // 工具栏那一下按"显示出来的值"取反，不按"存没存过"（批 3I 遗留③并进来）。
+  eq(
+    "中心主题显示本来就粗：第一下落在取消",
+    font(pg.rootId, toggleBoldFrom(pg, pg.rootId, pal)).bold,
+    false
+  );
+  eq("二级本来不粗：第一下落在加粗", font(b, toggleBoldFrom(pg, b, pal)).bold, true);
+  eq(
+    "再点一下回到原样",
+    font(b, toggleBoldFrom(toggleBoldFrom(pg, b, pal), b, pal)).bold,
+    false
+  );
+  eq(
+    "亿图原生那条粗也点得灭：节点级否决压过 run 级",
+    font(b, toggleBoldFrom(declared(b, [{ bold: true }]), b, pal)).bold,
+    false
+  );
+  eq("挑到不存在的颗：原页原样返回", toggleBoldFrom(pg, "查无此颗", pal) === pg, true);
 }
 
 // ---------------------------------------------------------------- applyPalette：换主题

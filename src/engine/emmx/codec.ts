@@ -30,7 +30,7 @@ import type {
   TaskData,
   TextParagraph,
 } from "../../types/model.ts";
-import { makeText, plainText } from "../../types/model.ts";
+import { makeText, plainText, referencedChar } from "../../types/model.ts";
 import { DEFAULTS } from "../../model/constants.ts";
 import { LAYOUT_CODE_TO_NAME } from "../../types/model.ts";
 import { createPage, newGanttOption } from "../../model/factory.ts";
@@ -49,6 +49,11 @@ import {
   vNode,
   type XmlNode,
 } from "./xparse.ts";
+// 回写要按"画布怎么推导这一颗"补齐未声明的样式（01 A-17），所以这里必须用同一套推导，
+// 而不是另配一组常数。style.ts / theme.ts 都不反向依赖 codec，没有循环。
+import { defaultPalette, styleFor, type ThemePalette } from "../style.ts";
+import { textWidth } from "../layout.ts";
+import { paletteForDoc } from "./theme.ts";
 
 const PAGE_XML = "page/page.xml";
 const DOC_XML = "document.xml";
@@ -676,23 +681,32 @@ function parseRichText(textNode: XmlNode | undefined): RichText {
   });
   return {
     paragraphs: paragraphs.length ? paragraphs : [{ runs: [{ text: "", charIx: 0 }], align: 1 }],
-    characters: characters.length
-      ? characters
-      : [{ family: DEFAULTS.fontFamily, size: DEFAULTS.fontSize }],
+    // 一条 Character 都没有时留一个空样式：什么都不声明。
+    // 补成 DEFAULTS 的那套会让显示层以为"文件说了 12/微软雅黑"，把主题推导顶掉。
+    characters: characters.length ? characters : [{}],
   };
 }
 
-/** Character@Style 是按位标志：实测 1 = 加粗（中心主题），2 = 斜体，4 = 下划线。 */
+/**
+ * `Character@Style` 是按位标志：实测 1 = 加粗（中心主题），2 = 斜体，4 = 下划线。
+ *
+ * 亿图写了哪个属性，模型里才有那一项 —— 缺位不能读成"用户要默认值"。
+ * 这一条是 01 A-17 的根：把没写的 `Size` 补成 12、`Color` 补成 #333333，显示层就分不清
+ * "文件说的 12"和"我们自己种的 12"，换主题/新主题的字号也就没了推导的余地。
+ * （实测被 run 引用的 827 条 Character 里 Family/Size/Color 出现率都是 100%，所以原样带回不变：
+ * 缺位的只有我们新建的主题那一种。）
+ */
 function parseCharacter(n: XmlNode): FontSpec {
+  const f: FontSpec = {};
+  if (n.attrs.Family !== undefined) f.family = n.attrs.Family;
+  if (n.attrs.Size !== undefined) f.size = numAttr(n, "Size", DEFAULTS.fontSize);
+  if (n.attrs.Color !== undefined) f.color = attr(n, "Color", DEFAULTS.textColor);
   const style = numAttr(n, "Style", 0);
-  const f: FontSpec = {
-    family: attr(n, "Family", DEFAULTS.fontFamily),
-    size: numAttr(n, "Size", DEFAULTS.fontSize),
-    color: attr(n, "Color", DEFAULTS.textColor),
-    bold: (style & 1) !== 0,
-  };
-  if (style & 2) f.italic = true;
-  if (style & 4) f.underline = true;
+  if (n.attrs.Style !== undefined) {
+    f.bold = (style & 1) !== 0;
+    if (style & 2) f.italic = true;
+    if (style & 4) f.underline = true;
+  }
   return f;
 }
 
@@ -711,7 +725,17 @@ function adoptAttrs(built: XmlNode, raw: XmlNode | undefined, modeled: string[])
   for (const [k, v] of Object.entries(raw.attrs)) if (!skip.has(k)) built.attrs[k] = v;
 }
 
-function buildTextNode(rt: RichText, src?: XmlNode): XmlNode {
+/**
+ * 这一颗在画布上按哪一档字族/字号/字色画：`styleFor` 的推导结果（主题 + 层级 + 独立配色）。
+ * 只拿来补"文件里没声明"的那几项 —— 声明过的照原值写回，否则用户在亿图里调好的字号会被我们换掉。
+ */
+function fontHint(ctx: WriteCtx, s: Shape): FontSpec | undefined {
+  if (!ctx.page) return undefined;
+  const f = styleFor(ctx.page, s, ctx.palette ?? defaultPalette()).font;
+  return { family: f.family, size: f.size, color: f.color };
+}
+
+function buildTextNode(rt: RichText, src?: XmlNode, hint?: FontSpec): XmlNode {
   const rawTb = src ? find(src, "TextBlock") : undefined;
   const rawByIx = (tag: string): Map<string, XmlNode> => {
     const m = new Map<string, XmlNode>();
@@ -725,17 +749,24 @@ function buildTextNode(rt: RichText, src?: XmlNode): XmlNode {
     // 只有新建的主题才用亿图主题节点上实测到的那个常数。
     TextFormatMask: rawTb?.attrs.TextFormatMask ?? "10224",
   });
-  const font = rt.characters[0] ?? { size: DEFAULTS.fontSize };
-  tb.children.push(el("Color", { V: withAlpha(font.color ?? DEFAULTS.textColor) }));
+  // 文字盒的底色和高度按**被引用的那一条**算（`characters[0]` 可能压根没被引用）。
+  // 用户在界面上改字号写的也是这一条 —— 盘上的宽高和画布上的盒子从同一个字号出发（01 A-17）。
+  // 没声明的那几项按画布同一套推导补齐：写死成 Verdana/12/#333333 的话，盘上写 12、屏上画 10，
+  // 亿图一打开就看到两套；那三个常数也只在 hint 缺席（写手没拿到这一页）时兜底。
+  const font = referencedChar(rt) ?? {};
+  const family = font.family ?? hint?.family ?? DEFAULTS.fontFamily;
+  const size = font.size ?? hint?.size ?? DEFAULTS.fontSize;
+  const color = font.color ?? hint?.color ?? DEFAULTS.textColor;
+  tb.children.push(el("Color", { V: withAlpha(color) }));
   rt.characters.forEach((c, ix) => {
     const style = characterStyle(c);
     const ch = el("Character", {
       // Style 是按位标志，没加粗/斜体/下划线时亿图根本不写这个属性（实测），我们也就不写。
       Style: style || undefined,
-      Family: c.family ?? DEFAULTS.fontFamily,
+      Family: c.family ?? family,
       IX: ix,
-      Size: c.size ?? DEFAULTS.fontSize,
-      Color: (c.color ?? DEFAULTS.textColor).replace(/^#ff(?=[0-9a-f]{6}$)/i, "#"),
+      Size: c.size ?? size,
+      Color: (c.color ?? color).replace(/^#ff(?=[0-9a-f]{6}$)/i, "#"),
     });
     // 文字背景色之类我们读不到也写不出的键，改字号/改名时不该跟着蒸发。
     adoptAttrs(ch, rawChars.get(String(ix)), ["Style", "Family", "IX", "Size", "Color"]);
@@ -755,8 +786,8 @@ function buildTextNode(rt: RichText, src?: XmlNode): XmlNode {
     inner.children.push(pp);
   });
   tb.children.push(inner);
-  const tw = Math.max(1, Math.round(measureTextWidth(rt)));
-  const th = Math.max(1, Math.round(rt.paragraphs.length * (font.size ?? DEFAULTS.fontSize) * 1.4));
+  const tw = Math.max(1, Math.round(measureTextWidth(rt, size)));
+  const th = Math.max(1, Math.round(rt.paragraphs.length * size * TEXT_LINE_H));
   return el("Text", {}, [
     el("Transform", {}, [
       vNode("Width", tw),
@@ -768,13 +799,22 @@ function buildTextNode(rt: RichText, src?: XmlNode): XmlNode {
   ]);
 }
 
-/** 文本盒宽度粗估：只用于重新生成节点时的几何，画布上真正的尺寸由布局引擎说了算。 */
-function measureTextWidth(rt: RichText): number {
-  const lines = plainText(rt).split("\n");
-  const size = rt.characters[0]?.size ?? DEFAULTS.fontSize;
-  let max = 0;
-  for (const l of lines) max = Math.max(max, l.length * size * 0.62);
-  return Math.min(DEFAULTS.topicMaxTextW, Math.max(size, max));
+/**
+ * 文字盒的宽高按亿图自己的盘上口径来（01 A-17 的影响面实测，三份样张 505 个带文字盒的顶层 Shape）。
+ * 宽 = 4 + Σ 字符宽度，且字符宽度按 size+4 取（亿图给每个字多留 4pt 前进量）：这样对 ±2pt 命中 240/505、
+ * 中位残差 3pt。旧的 `0.62×字数×字号` 系统性写窄（平均偏 +59.7pt、命中 0/505），亿图打开我们改名或改字号的
+ * 那一颗就看到盒子比字短。行高 = size×1.75：实测每行高 9→16、10→18、12→20、13→22，比值 1.67–1.80 不是一条
+ * 直线（它来自主题档位而不是纯比例），取 505 个盒子的均值 1.736 再朝上，宁可略高也不叫亿图裁行。
+ * 字符宽度用的是画布那套 `textWidth`，两处同一个尺。
+ */
+const TEXT_ADVANCE_PAD = 4;
+const TEXT_LINE_H = 1.75;
+
+function measureTextWidth(rt: RichText, size: number): number {
+  let widest = 0;
+  for (const line of plainText(rt).split("\n"))
+    widest = Math.max(widest, textWidth(line, size + TEXT_ADVANCE_PAD));
+  return Math.min(DEFAULTS.topicMaxTextW, Math.max(size, widest + TEXT_ADVANCE_PAD));
 }
 
 function attachP(n: XmlNode, b: string): XmlNode {
@@ -860,6 +900,8 @@ export async function writeEmmx(doc: DocumentModel): Promise<Uint8Array> {
   entries.push({ name: DOC_XML, data: encodeText(serializeXml(docRoot)) });
 
   doc.pages.forEach((page, ix) => {
+    ctx.page = page;
+    ctx.palette = paletteForDoc(doc, page);
     entries.push({
       name: pageEntryName(ix),
       data: encodeText(serializeXml(buildPageXml(page, ctx))),
@@ -883,6 +925,13 @@ export async function writeEmmx(doc: DocumentModel): Promise<Uint8Array> {
 interface WriteCtx {
   rels: { id: string; target: string }[];
   media: Record<string, Uint8Array>;
+  /**
+   * 正在写的这一页 + 这一页的色板（`writeEmmx` 逐页换着填）。
+   * 回写一颗 Shape 时，文件里没声明的那几项样式要按画布同一套推导补齐 ——
+   * 否则盘上写的是 12、屏上画的是 10，亿图一打开就看出两套（01 A-17）。
+   */
+  page?: Page;
+  palette?: ThemePalette;
 }
 
 /**
@@ -1171,7 +1220,7 @@ function buildShape(s: Shape, ctx: WriteCtx, from?: XmlNode): XmlNode | undefine
   const rawText = rawOf("Text");
   const sameText = rawText !== undefined && canon(parseRichText(rawText)) === canon(s.text);
   keep("Text", sameText, () => {
-    const t = buildTextNode(s.text, rawText);
+    const t = buildTextNode(s.text, rawText, fontHint(ctx, s));
     carryParagraphRecords(rawText, t);
     return t;
   });

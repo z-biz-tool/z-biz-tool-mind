@@ -12,7 +12,7 @@
  */
 
 import type { LayoutCode, Page, Shape } from "../types/model.ts";
-import { isTopic, plainText } from "../types/model.ts";
+import { assertedFont, isTopic, plainText } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
 import { descendants } from "./tree.ts";
 import {
@@ -127,13 +127,12 @@ export function measureShape(
   s: Shape,
   opts: MeasureOptions = {}
 ): { w: number; h: number; lines: string[]; stripH: number } {
-  const fontSize = s.style.font?.size ?? opts.fontSize ?? DEFAULTS.fontSize;
+  // `opts.fontSize` 是 `styleFor` 已经算好的那一个（主题推导 + 文件写的 + 节点级覆盖都在里面），
+  // 所以它必须排在最前：让节点级 `style.font?.size` 抢先，就等于框按一套字号量、字按另一套画（01 A-17）。
+  const ownSize = s.style.font?.size ?? assertedFont(s.text).size;
+  const fontSize = opts.fontSize ?? ownSize ?? DEFAULTS.fontSize;
   const fixed = opts.fixedWidth;
-  const maxWidth = fixed
-    ? fixed
-    : s.style.font?.size
-      ? DEFAULTS.topicMaxTextW
-      : (opts.maxWidth ?? DEFAULTS.topicMaxTextW);
+  const maxWidth = fixed ? fixed : ownSize ? DEFAULTS.topicMaxTextW : (opts.maxWidth ?? DEFAULTS.topicMaxTextW);
   const text = shapeText(s) || " ";
   const lines = wrapText(text, fontSize, maxWidth - DEFAULTS.topicPadX * 2);
   const widest = Math.max(...lines.map((l) => textWidth(l, fontSize)));
@@ -418,7 +417,7 @@ export function overlayShapes(
       for (const childId of s.childIds) {
         const label = page.shapes[childId];
         if (!label || label.type !== "SummaryTopic") continue;
-        const m = measureShape(label);
+        const m = measureOf(page, label, pal);
         const x = side > 0 ? tip + SUMMARY_GAP : tip - SUMMARY_GAP - m.w;
         out.push({
           id: label.id,
@@ -460,8 +459,10 @@ export function overlayShapes(
       const c = page.shapes[cid];
       if (!c) return;
       const text = plainText(c.text);
-      const m = measureShape(c);
-      const w = text ? m.w : Math.round((c.style.font?.size ?? DEFAULTS.fontSize) * 1.5);
+      const m = measureOf(page, c, pal);
+      const w = text
+        ? m.w
+        : Math.round((styleFor(page, c, pal).font.size ?? DEFAULTS.fontSize) * 1.5);
       const h = text ? m.h : w;
       const x =
         side > 0
@@ -547,7 +548,8 @@ export function relationshipPaths(page: Page, boxes: Record<string, NodeBox>): R
       text: plainText(r.text),
       line: resolveColor(r.style.line?.fill?.color) ?? DEFAULTS.lineColor,
       lineWidth: r.style.line?.weight && r.style.line.weight > 0 ? r.style.line.weight : 1.6,
-      fontSize: r.style.font?.size ?? DEFAULTS.fontSize,
+      fontSize:
+        r.style.font?.size ?? assertedFont(r.text).size ?? DEFAULTS.fontSize,
     });
   }
   return out;
