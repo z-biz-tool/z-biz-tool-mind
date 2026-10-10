@@ -100,7 +100,7 @@ mod tests {
     }
 
     /// 读的时候会过滤磁盘上已不存在的路径，所以测试里的"已保存文件"必须真的落盘。
-    fn real(dir: &PathBuf, name: &str) -> String {
+    fn real(dir: &std::path::Path, name: &str) -> String {
         let p = dir.join(name);
         std::fs::write(&p, b"x").unwrap();
         p.to_string_lossy().to_string()

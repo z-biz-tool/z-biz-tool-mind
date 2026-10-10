@@ -1,7 +1,7 @@
 # z-biz-tool-mind
 
 思维导图桌面工具，对标亿图脑图 MindMaster：大纲 ⇄ 树同构编辑、多页画布、
-.xmind 导入导出、原生菜单栏、权益/配额门控、AI 生成主题入口。
+.emmx/.xmind 读写与 13 项导出格式、原生菜单栏、权益/配额门控、AI 生成主题入口。
 
 技术栈：Tauri 2 + React 19 + AntD 6 + Zustand 5 + Vite。
 
@@ -17,7 +17,8 @@ npm run tauri dev     # 桌面壳开发（Rust 侧一并编译）
 
 ```bash
 npm test                       # 自研零依赖 runner（tests/run.mjs，esbuild 逐文件打包）
-npm run typecheck              # tsc --noEmit
+npm run typecheck              # tsc --noEmit（src）
+npm run typecheck:test         # tsc -p tsconfig.test.json --noEmit（tests/ 也是编译期门）
 cd src-tauri && cargo test     # Rust 侧（含 3 条 #[cfg(windows)] 用例，非 Windows 跳过）
 ```
 
