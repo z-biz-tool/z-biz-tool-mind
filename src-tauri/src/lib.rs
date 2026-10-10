@@ -6,6 +6,7 @@ mod log;
 mod net;
 mod openfile;
 mod paths;
+mod quota;
 mod recent;
 mod secret;
 
@@ -64,6 +65,8 @@ pub fn run() {
             commands::config_reset_page,
             commands::recent_list,
             commands::recent_touch,
+            commands::quota_mark_saved,
+            commands::quota_saved_list,
             commands::recent_remove,
             commands::recent_clear,
             commands::recent_set_capacity,

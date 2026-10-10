@@ -20,6 +20,7 @@ import { applyTheme, findTheme } from "../engine/themelib.ts";
 import { native } from "../services/native.ts";
 import { useSettings } from "./settingsStore.ts";
 import { useUi } from "./uiStore.ts";
+import { useQuota } from "./quotaStore.ts";
 
 /**
  * 选项页的"默认布局"：新建文档和新建画布都必须真的读它，否则那个下拉框就是个摆设。
@@ -256,6 +257,9 @@ export const useDoc = create<DocStore>((set, get) => ({
         error: null,
       });
       void native.recentTouch(r.path, deriveTitle(path, stamp.pages[0], s.title), "local").catch(() => undefined);
+      // 配额记的是"这份确实落过盘"，不是"这份打开过"（01 A-13）：
+      // 只读不存也占名额的话，读满十份文件就再也存不了东西。
+      void useQuota.getState().markSaved(r.path);
       return true;
     } catch (e) {
       set({ busy: false, error: e instanceof Error ? e.message : String(e) });

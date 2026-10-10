@@ -38,6 +38,7 @@ import {
   menuProfileXml,
 } from "../services/profileIO.ts";
 import type { AppInfo, CrashInfo, LogInfo, ProxyStatus } from "../services/native.ts";
+import { useQuota } from "../stores/quotaStore.ts";
 import { useRecent } from "../stores/recentStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import type { Settings } from "../stores/settingsStore.ts";
@@ -123,18 +124,25 @@ function Field({
   );
 }
 
-/** 配额表：文案直接引实测提示原文的语气，用户在哪里被挡住，就该在哪里看到同一条规则。 */
-const QUOTA_ROWS: { label: string; value: string }[] = [
-  { label: "免费版可保存的文件数", value: `${QUOTA.freeMaxFiles} 个` },
-  { label: "AI 每点可生成的字数", value: `约 ${QUOTA.aiCharsPerPoint} 个汉字` },
-  { label: "智能解析字数区间", value: `${QUOTA.parseWordMin} – ${QUOTA.parseWordMax} 字` },
-  { label: "社区发布标题上限", value: `${QUOTA.publishTitleMax} 字` },
-  { label: "社区发布描述上限", value: `${QUOTA.publishDescMax} 字` },
-  { label: "撤销栈深度", value: `${QUOTA.undoMax} 步` },
-  { label: "历史版本份数", value: `${QUOTA.historyMax} 份` },
-  { label: "最近文件条数", value: `${QUOTA.recentMax} 条` },
-  { label: "回收站保留", value: `${QUOTA.trashKeepDays} 天` },
-];
+/** 配额表：文案直接引实测提示原文的语气，用户在哪里被挡住，就该在哪里看到同一条规则。
+ * savedFiles 是账本里"真的存过盘而且还在"的份数（01 A-13），免费档那一行要把它显示出来，
+ * 否则用户只看到"10 个"却不知道已经花了几个，被拦下时只能猜。 */
+function quotaRows(savedFiles: number): { label: string; value: string }[] {
+  return [
+    {
+      label: "免费版可保存的文件数",
+      value: `${QUOTA.freeMaxFiles} 个（已用 ${savedFiles}）`,
+    },
+    { label: "AI 每点可生成的字数", value: `约 ${QUOTA.aiCharsPerPoint} 个汉字` },
+    { label: "智能解析字数区间", value: `${QUOTA.parseWordMin} – ${QUOTA.parseWordMax} 字` },
+    { label: "社区发布标题上限", value: `${QUOTA.publishTitleMax} 字` },
+    { label: "社区发布描述上限", value: `${QUOTA.publishDescMax} 字` },
+    { label: "撤销栈深度", value: `${QUOTA.undoMax} 步` },
+    { label: "历史版本份数", value: `${QUOTA.historyMax} 份` },
+    { label: "最近文件条数", value: `${QUOTA.recentMax} 条` },
+    { label: "回收站保留", value: `${QUOTA.trashKeepDays} 天` },
+  ];
+}
 
 /** 日志目录里留几天的文件。数值与 Rust log.rs 的 KEEP_FILES 同源，改一处要改两处。 */
 const LOG_KEEP = 14;
@@ -152,6 +160,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
   const load = useSettings((s) => s.load);
   const patch = useSettings((s) => s.patch);
   const resetSection = useSettings((s) => s.resetSection);
+  const savedFiles = useQuota((s) => s.saved.length);
   const clearRecent = useRecent((s) => s.clearRecent);
 
   // API Key 是唯一不能进 settings 的输入：它只活在下面这份临时态里，按"保存密钥"才进本机加密库。
@@ -205,6 +214,12 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
     // 对话框可能被任何视图打开（工具栏、错误面板、F1），不保证有人替我们 load() 过。
     if (!useSettings.getState().loaded) void load();
   }, [load]);
+
+  useEffect(() => {
+    // "已用 N" 得跟着盘上的真实情况走：打开面板时重读一次账本，
+    // 而不是只信 App 启动那回缓存 —— 在资源管理器里删掉的文件要当场从计数里退掉。
+    if (open) void useQuota.getState().refresh();
+  }, [open]);
 
   async function saveKey() {
     const v = apiKey.trim();
@@ -1215,7 +1230,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                     </span>
                   </b>
                 </span>
-                {QUOTA_ROWS.map((r) => (
+                {quotaRows(savedFiles).map((r) => (
                   <div key={r.label} style={{ display: "contents" }}>
                     <span style={{ color: "var(--zm-text-2)" }}>{r.label}</span>
                     <span>{r.value}</span>

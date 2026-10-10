@@ -20,7 +20,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { done, eq, ok, rejects, skip } from "./_harness.ts";
-import { readZip, writeZip, decodeBytes } from "../src/engine/emmx/zip.ts";
+import { readZip, writeZip, decodeBytes, encodeText } from "../src/engine/emmx/zip.ts";
 import { nodeEquals, parseXml, findAll, attr, numVnode, vnode } from "../src/engine/emmx/xparse.ts";
 import type { XmlNode } from "../src/engine/emmx/xparse.ts";
 import { modelEquals, parseEmmx, writeEmmx } from "../src/engine/emmx/codec.ts";
@@ -241,6 +241,33 @@ const FIXTURE = join(process.cwd(), "_research", "extract", "doc1", "doc.zip");
     writeZip([{ name: "document.xml", data: new Uint8Array([60, 63, 120]) }]).then(parseEmmx),
     "page/"
   );
+
+  // --- 亿图 V12 的模板/云端容器（01 A-14）：92 份官方样张里 87 份走 mmpage/page.bin，
+  // 包里一张 page/*.xml 都没有。我们不逆向那串 varint/TLV 流（猜出来的 reader 会产出
+  // "能打开但内容是编的"那种更坏的失败），但报错必须是"能行动的"：
+  // 说清这是格式代际差异，并给出下一步 —— 而不是把内部目录结构念给用户听。
+  const docXml = encodeText('<?xml version="1.0" encoding="UTF-8"?><Document><Category /></Document>');
+  const v12 = await writeZip([
+    { name: "document.xml", data: docXml },
+    { name: "mmpage/page.bin", data: new Uint8Array([1, 2, 3, 4]) },
+    { name: "mm.bkiwi", data: new Uint8Array([9]) },
+    { name: "rels/page_formats.xml", data: new Uint8Array([8]) },
+  ]);
+  const v12Msg = await parseEmmx(v12).then(
+    () => "",
+    (e: unknown) => (e instanceof Error ? e.message : String(e))
+  );
+  ok("V12 容器点名 page.bin，而不是只说没有页面", v12Msg.includes("page.bin"), v12Msg);
+  ok("V12 文案说是二进制容器与 XML 容器的代际差", v12Msg.includes("二进制页面容器") && v12Msg.includes("XML"), v12Msg);
+  ok("V12 文案给了可行动作（在亿图里另存为 .emmx）", v12Msg.includes("另存为"), v12Msg);
+  ok("V12 文案给了替代入口（导入别的格式）", v12Msg.includes("导入"), v12Msg);
+  // 两种失败不能混在一起说：包里没有 page.bin 时冒认 V12，等于把猜的话当成结论讲。
+  const plainMsg = await parseEmmx(await writeZip([{ name: "document.xml", data: docXml }])).then(
+    () => "",
+    (e: unknown) => (e instanceof Error ? e.message : String(e))
+  );
+  ok("没有 page.bin 时不许提 V12", !plainMsg.includes("page.bin"), plainMsg);
+  ok("空页面那句也说清了什么坏了、下一步做什么", plainMsg.includes("没有可读的页面") && plainMsg.includes("另存"), plainMsg);
 }
 
 if (!existsSync(FIXTURE)) {

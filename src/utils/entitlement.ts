@@ -8,11 +8,12 @@
 import type { DocumentModel } from "../types/model.ts";
 import { ILLEGAL_TITLE_CHARS, QUOTA } from "../model/constants.ts";
 import { activeDoc, useDoc } from "../stores/docStore.ts";
-import { useRecent } from "../stores/recentStore.ts";
+import { useQuota } from "../stores/quotaStore.ts";
 
 export function canSave(doc: DocumentModel): { ok: boolean; reason: string } {
-  // 本地没有账号体系，"已经存过几个文件"只能拿最近列表去重后近似。
-  const used = new Set(useRecent.getState().recent.map((r) => r.path));
+  // 名额数的是 saved.json 里"真的落过盘"的那些。这里曾经是拿最近列表去重近似的，
+  // 而 recentTouch 在打开文档时就调了 —— 于是"打开过 10 份"变成"一个都存不了"（01 A-13）。
+  const used = new Set(useQuota.getState().saved);
   // 已在盘上的那份不重复占名额。比 docGuid 而不是比对象引用：
   // 快照式撤销每提交一次就换一个新 doc 对象，引用比对必然失配。
   const open = useDoc.getState();

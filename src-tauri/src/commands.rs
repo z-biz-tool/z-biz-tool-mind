@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
-use crate::{backup, config, crash, log, net, paths, recent, secret};
+use crate::{backup, config, crash, log, net, paths, quota, recent, secret};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -186,6 +186,20 @@ pub fn recent_set_pinned(path: String, pinned: bool) -> Result<Vec<recent::Recen
     recent::set_pinned(&path, pinned)
 }
 
+// ---------- 免费档保存配额 ----------
+
+/// 只有真的写盘成功才调这个；打开走 recent_touch，那条不占名额（01 A-13）。
+#[tauri::command]
+pub fn quota_mark_saved(path: String) -> Result<usize, String> {
+    quota::mark_saved(&path)
+}
+
+/// 已占用的名额清单，前端拿它做"已保存 N/10"的判定与文案。
+#[tauri::command]
+pub fn quota_saved_list() -> Result<Vec<String>, String> {
+    Ok(quota::list())
+}
+
 // ---------- 文件字节 ----------
 
 #[tauri::command]
@@ -265,6 +279,11 @@ pub fn file_size(path: String) -> Result<u64, String> {
 pub fn file_remove(path: String) -> Result<String, String> {
     let p = paths::validate(&path, false)?;
     let moved = backup::to_trash(p.to_str().ok_or_else(|| "路径不是合法 UTF-8".to_string())?)?;
+    // 文档没了就还它一格：闸门文案让用户"删除不需要的文件"，删了却不还名额那句话就是假的。
+    // 账本写失败不该把这次删除报成失败 —— 文件已经进回收站了。
+    if let Err(e) = quota::release(p.to_str().unwrap_or_default()) {
+        log::log("warn", "quota", &format!("释放保存配额失败: {}", e));
+    }
     log::log("info", "file", &format!("删除 {path}，已送入回收站"));
     Ok(moved)
 }
@@ -378,7 +397,13 @@ pub fn trash_list() -> Result<Vec<Value>, String> {
 
 #[tauri::command]
 pub fn trash_restore(id: String) -> Result<String, String> {
-    backup::trash_restore(&id)
+    let back = backup::trash_restore(&id)?;
+    // 放回盘上的这份重新占一格：删除时已经还过名额，不补记就会少算，
+    // 而回收站里的条目本来就是"我们存过盘的文件"的备份。
+    if let Err(e) = quota::mark_saved(&back) {
+        log::log("warn", "quota", &format!("回写保存配额失败: {}", e));
+    }
+    Ok(back)
 }
 
 #[tauri::command]

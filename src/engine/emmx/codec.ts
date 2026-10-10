@@ -101,7 +101,20 @@ export async function parseEmmx(bytes: Uint8Array): Promise<ParseResult> {
   const pageEntries = entries
     .filter((e) => /^page\/[^/]+\.xml$/i.test(e.name))
     .sort((a, b) => a.name.localeCompare(b.name));
-  if (!pageEntries.length) throw new EmmxError("page/ 下没有任何页面");
+  if (!pageEntries.length) {
+    // 92 份官方样张里 87 份是亿图 V12 的云端/模板容器：页面内容在 mmpage/page.bin 那串自研
+    // varint/TLV 流里，包里根本没有 page/*.xml（01 A-14）。不猜着解 —— 猜出来的 reader
+    // 只会把"打不开"换成更坏的"打开了但内容是编的"。但这句话得让用户知道下一步做什么：
+    // 实测用户自己在亿图里另存的文件走的是 XML 容器，所以"打开后另存一份"是真能走通的路。
+    const v12 = entries.some(
+      (e) => /(^|\/)page\.bin$/i.test(e.name) || /\.bkiwi$/i.test(e.name)
+    );
+    throw new EmmxError(
+      v12
+        ? "这份 .emmx 用的是亿图 V12 的二进制页面容器（page.bin），本程序只能打开 XML 容器的文件。请在亿图里打开它再「另存为」成 .emmx，或改用 XMind / Markdown 等格式走「导入」。"
+        : "这份 .emmx 里没有可读的页面（page/ 是空的），文件可能是空包或被截断了。请换一份，或在亿图里重新另存一份 .emmx。"
+    );
+  }
 
   const docRoot = parseXml(decodeBytes(docEntry.data));
   const media: Record<string, Uint8Array> = {};

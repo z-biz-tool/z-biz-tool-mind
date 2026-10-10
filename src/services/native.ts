@@ -113,10 +113,23 @@ function fromBase64(text: string): Uint8Array {
 
 const LS_CONFIG = "z-mind:config";
 const LS_RECENT = "z-mind:recent";
+/** 已保存配额账本（与 Rust 侧 saved.json 同语义）：不随最近列表清空而重置。 */
+const LS_SAVED = "z-mind:saved";
 
 // 与 Rust 侧 recent.rs 的默认 max_count 对齐；QUOTA.recentMax 是"用户能调到多少"，
 // 这里是"没调过时的容量"，两者不是一回事，别拿 UI 那个数当后备。
 const RECENT_MAX = 20;
+/**
+ * 浏览器后备里的当前容量。以前 recentTouch 一律按 RECENT_MAX 裁，
+ * 于是选项页那句"会同时把服务侧的裁表阈值一起改掉"在浏览器模式里是假的 ——
+ * 调到 1 条之后列表还是攒到 20。跟 recentSetCapacity 存成一个持久化的数才对得上。
+ */
+const LS_RECENT_MAX = "z-mind:recentMax";
+
+function recentCapacity(): number {
+  const n = lsGet<number>(LS_RECENT_MAX, RECENT_MAX);
+  return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), RECENT_MAX) : RECENT_MAX;
+}
 
 /** 浏览器后备要与 Rust 同规格：固定项排最前、其余按打开时间倒序。 */
 function sortRecent(list: RecentItem[]): RecentItem[] {
@@ -237,11 +250,33 @@ export const native = {
         { path, title, kind, openedAt: Date.now(), pinned },
         ...prev.filter((r) => r.path !== path),
       ];
-      const capped = trimRecent(list, RECENT_MAX);
+      const capped = trimRecent(list, recentCapacity());
       lsSet(LS_RECENT, capped);
       return sortRecent(capped);
     }
     return call<RecentItem[]>("recent_touch", { path, title, kind });
+  },
+
+  /**
+   * 免费档"已保存文件数"的账本（01 A-13）。只在真的写盘成功后记一笔。
+   * 它故意不长在最近列表上：那张表能在选项里调到 1 条，还能一键清空，
+   * 拿它当名额等于让用户自己把付费闸门关掉。
+   */
+  async quotaMarkSaved(path: string): Promise<number> {
+    if (!isTauri) {
+      const list = lsGet<string[]>(LS_SAVED, []);
+      if (!list.includes(path)) {
+        list.push(path);
+        lsSet(LS_SAVED, list);
+      }
+      return list.length;
+    }
+    return call<number>("quota_mark_saved", { path });
+  },
+
+  async quotaSavedList(): Promise<string[]> {
+    if (!isTauri) return lsGet<string[]>(LS_SAVED, []);
+    return call<string[]>("quota_saved_list");
   },
 
   async recentRemove(path: string): Promise<RecentItem[]> {
@@ -263,7 +298,8 @@ export const native = {
 
   async recentSetCapacity(maxCount: number): Promise<RecentItem[]> {
     if (!isTauri) {
-      const list = trimRecent(lsGet<RecentItem[]>(LS_RECENT, []), maxCount);
+      lsSet(LS_RECENT_MAX, Math.max(1, Math.floor(maxCount) || 1));
+      const list = trimRecent(lsGet<RecentItem[]>(LS_RECENT, []), recentCapacity());
       lsSet(LS_RECENT, list);
       return list;
     }
@@ -334,6 +370,11 @@ export const native = {
       });
       memAutosave.delete(path);
       handles.delete(path);
+      // 与 Rust 的 file_remove 同规格：文档没了就还一格保存名额。
+      lsSet(
+        LS_SAVED,
+        lsGet<string[]>(LS_SAVED, []).filter((p) => p !== path)
+      );
       return path;
     }
     return call<string>("file_remove", { path });
@@ -453,6 +494,9 @@ export const native = {
     if (!isTauri) {
       const b = memBackups.find((x) => x.id === id);
       if (!b) throw new Error(`回收站里没有这一项: ${id}`);
+      // 放回盘上就重新占回那一格（删除时已经还掉了）。
+      const saved = lsGet<string[]>(LS_SAVED, []);
+      if (!saved.includes(b.docPath)) lsSet(LS_SAVED, [...saved, b.docPath]);
       return b.docPath;
     }
     return call<string>("trash_restore", { id });

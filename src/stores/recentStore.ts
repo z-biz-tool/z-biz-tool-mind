@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { native, listen, type AutosaveItem, type BackupEntry, type RecentItem } from "../services/native.ts";
 import { useDoc } from "./docStore.ts";
+import { useQuota } from "./quotaStore.ts";
 
 interface RecentStore {
   recent: RecentItem[];
@@ -45,6 +46,9 @@ export const useRecent = create<RecentStore>((set, get) => ({
 
   async refreshAll() {
     set({ loading: true, error: null });
+    // 配额账本跟着列表一起刷：它不在 recent 里（那张表能调容量、能一键清空），
+    // 但它的失效时机和这几张表是同一批。
+    void useQuota.getState().refresh();
     try {
       const [recent, trash, autosave] = await Promise.all([
         native.recentList(),
@@ -105,6 +109,8 @@ export const useRecent = create<RecentStore>((set, get) => ({
       await native.fileRemove(path);
       set({ recent: await native.recentRemove(path) });
       await get().refreshTrash();
+      // Rust 的 file_remove 顺手还了一格保存名额，这里回读，别让闸门继续按旧的记账拦人。
+      void useQuota.getState().refresh();
       return true;
     } catch (e) {
       fail(set, e);
@@ -156,6 +162,8 @@ export const useRecent = create<RecentStore>((set, get) => ({
       const p = await native.trashRestore(id);
       await get().refreshTrash();
       void get().refreshRecent();
+      // 回收站放回 = 这份文档又回到盘上，Rust 侧重新占了一格名额。
+      if (p) void useQuota.getState().refresh();
       return p;
     } catch (e) {
       fail(set, e);
