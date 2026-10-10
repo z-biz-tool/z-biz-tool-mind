@@ -53,16 +53,20 @@ jobs:
       - run: npm run build
 
   rust:
-    name: Rust 闸门（cargo fmt --check）
+    name: Rust 闸门（cargo fmt --check + clippy）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
       # Runner 会往 ~/.cargo/config.toml 里塞凭证配置，cargo 认不得这个格式就直接报错退出。
       - run: rm -f "$HOME/.cargo/config.toml"
       - run: cargo fmt --check
+        working-directory: src-tauri
+      # 与本机同一把尺（quota.rs 的 ptr_arg 那类只有 clippy 报）。linux 侧编不到 #[cfg(windows)] 代码，
+      # windows 专属路径仍靠本地门，这是已知盲区不是巧合。
+      - run: cargo clippy --all-targets --all-features -- -D warnings
         working-directory: src-tauri
 
   windows:
