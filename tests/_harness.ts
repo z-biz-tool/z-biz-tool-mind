@@ -8,6 +8,7 @@
  */
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 const failures: string[] = [];
 
 function show(v: unknown): string {
@@ -62,10 +63,26 @@ export async function rejects(label: string, p: Promise<unknown>, match?: string
 /** 打印汇总并设置退出码；run.mjs 靠这行正则统计。 */
 export function done(): void {
   for (const f of failures) console.log(f);
-  console.log(`PASS ${passed} / FAIL ${failed}`);
+  // 跳过数**必须出现在汇总行里**。
+  //
+  // 之前 skip() 只打印一行说明、不计数，于是：
+  //   - 汇总行只报 PASS/FAIL ⇒ "跑满了" 与 "少跑了几百例" 在输出上长得一样；
+  //   - run.mjs 在没有失败时把那几行说明当噪声丢掉 ⇒ 连"有东西被跳过"都看不见。
+  // 本仓有一批断言依赖 `_research/`（亿图装机的解包样本，**故意不入库**），
+  // 于是任何新克隆与 CI 都跑不到它们，而日志是全绿的 —— 台账里那句
+  // "2,678 例"也就只有持有素材的那台机器复现得了。
+  // 跳过不是失败（素材按设计不可再分发），但它必须**可见**。
+  console.log(`PASS ${passed} / FAIL ${failed} / SKIP ${skipped}`);
   if (failed > 0) process.exitCode = 1;
 }
 
+/**
+ * 跳过一条断言分支。
+ *
+ * 跳过的**原因**必须写清楚 —— 因为"跳过"往往是"这台机器/这个环境没有那批数据"，
+ * 而读日志的人需要一眼看出「少跑的到底是什么」。
+ */
 export function skip(label: string, reason: string): void {
+  skipped += 1;
   console.log(`  – 跳过 ${label}：${reason}`);
 }

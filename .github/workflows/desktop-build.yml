@@ -25,6 +25,18 @@ on:
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/desktop-build.yml"
+      # 下面这几个以前没列 ⇒ 改了它们 CI 根本不触发，
+      # 门禁就守了个它自己看不见的改动面：
+      #   vite.config.ts —— manualChunks 在这里（T-1-1 的分包就写在这儿），
+      #                     改它等于改构建产物，却不跑任何闸门；
+      #   tsconfig*.json —— typecheck 与 typecheck:test 两条门的输入；
+      #   index.html    —— vite 的入口模板；
+      #   scripts/**    —— windows/macos 两个 job 用 scripts/build-desktop.mjs 出包。
+      - "vite.config.ts"
+      - "tsconfig.json"
+      - "tsconfig.test.json"
+      - "index.html"
+      - "scripts/**"
   workflow_dispatch:
 
 permissions:
