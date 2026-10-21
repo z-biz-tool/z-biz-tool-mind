@@ -19,11 +19,82 @@ mod secret;
 #[cfg(test)]
 static CONFIG_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// 本线程当前是否正持有配置目录锁。
+//
+// **写日志的路径也读同一个环境变量**（日志目录 = 配置目录下的 logs/），
+// 所以「谁没拿锁就写日志，日志就落进当时正指向别人沙盒的目录」——
+// 别人的测试于是读到多出来的行、字节数对不上，
+// 而报出来的错跟真正的原因隔着十万八千里。
+//
+// 2026-10-21 实测：`net::sanitize()` 会写一条 debug 日志，
+// 而调用它的 net.rs 测试没拿锁 ⇒ 它把日志写进了 log.rs 测试的隔离目录。
+// 后果不是那条 net 用例挂，是 **log 与 paths 两类用例各以约 12% 的概率随机挂**
+// （200 轮实测：log 25 次、paths 21 次），报的还是「字节数对不上」「找不到路径」这种
+// 毫不相干的错。这个仓的 CI 又不在主干 push 上跑，于是它躲了 13 天没人看见。
+//
+// 有了这个标记，`log::log()` 就能在**写之前**断言「你拿锁了吗」，
+// 把随机 flaky 变成当场、当地、可指认的失败。
+//（这里用 // 而不是 ///：doc 注释挂在 thread_local! 宏调用上是「unused doc comment」。）
 #[cfg(test)]
-fn lock_config_env() -> std::sync::MutexGuard<'static, ()> {
+thread_local! {
+    static CONFIG_ENV_LOCK_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 持有配置目录锁的守卫。Drop 时清掉「本线程持锁」标记。
+#[cfg(test)]
+pub(crate) struct ConfigEnvGuard {
+    // 字段只为了持有 MutexGuard 的生命周期（Drop 时解锁 + 清标记），本身不需要读。
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for ConfigEnvGuard {
+    fn drop(&mut self) {
+        CONFIG_ENV_LOCK_HELD.with(|c| c.set(false));
+    }
+}
+
+/// 本线程是否正持有配置目录锁（写日志前要问一句）。
+#[cfg(test)]
+pub(crate) fn config_env_lock_held() -> bool {
+    CONFIG_ENV_LOCK_HELD.with(|c| c.get())
+}
+
+/// 测试用的隔离配置目录：把 `Z_MIND_CONFIG_DIR` 指到一个唯一临时目录并返回它。
+///
+/// **必须**在已经持有 `lock_config_env()` 的前提下调用 —— 环境变量是**进程级**的，
+/// 不拿锁就改它，等于把别人正在用的沙盒换掉。
+#[cfg(test)]
+fn isolated_config_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "z-mind-{}-{}-{}",
+        tag,
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::env::set_var("Z_MIND_CONFIG_DIR", &dir);
+    dir
+}
+
+/// 拿锁 + 指向一个唯一临时配置目录，返回（守卫，目录）。
+///
+/// 顺序是**先拿锁、再改环境变量** —— 反过来的话，可能在别的测试正用着这个环境变量时
+/// 把它的沙盒换掉，于是那个测试的写盘落进我们的目录、或我们的落进它的。
+/// 2026-10-21 实测这类交错会让用例以约 12% 的概率随机失败。
+#[cfg(test)]
+pub(crate) fn isolated_sandbox(tag: &str) -> (ConfigEnvGuard, std::path::PathBuf) {
+    let g = lock_config_env();
+    let dir = isolated_config_dir(tag);
+    (g, dir)
+}
+
+#[cfg(test)]
+fn lock_config_env() -> ConfigEnvGuard {
     // 某个测试 panic 会把锁毒化，后面每个测试都只能拿到 PoisonError ——
     // 那是第二条与真实缺陷无关的失败。锁里只有 ()，不携带需要保持一致的状态，恢复即可。
-    CONFIG_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    let g = CONFIG_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    CONFIG_ENV_LOCK_HELD.with(|c| c.set(true));
+    ConfigEnvGuard { _guard: g }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

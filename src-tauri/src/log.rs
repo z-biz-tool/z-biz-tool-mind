@@ -32,8 +32,18 @@ const RANKS: [(&str, u8); 5] = [
 const KEEP_FILES: usize = 14;
 const MAX_LINE_CHARS: usize = 2000;
 
+/// 默认档位在 RANKS 里的下标。
+///
+/// 原来这里写的是 `RANKS[2].1` —— 但 RANKS 的下标是 0=off / 1=error / **2=warn** /
+/// 3=info / 4=debug，**RANKS[2] 是 warn 不是 info**。
+/// 于是「静态默认档位(warn)」和「注释说的 info」「config.rs 里 defaults() 的 info」
+/// 三处对不上：应用启动前（configure_from 还没跑）写日志的门槛比配置说的严一档，
+/// info 级的记录会被丢掉。
+/// 2026-10-21 订正：静态默认档位必须与配置默认档位是同一个。
+const DEFAULT_LEVEL_IDX: usize = 3;
+
 /// 当前阈值。默认 info，与 config.rs 的 defaults() 同源。
-static THRESHOLD: AtomicU8 = AtomicU8::new(RANKS[2].1);
+static THRESHOLD: AtomicU8 = AtomicU8::new(RANKS[DEFAULT_LEVEL_IDX].1);
 
 /// 一天一个文件，同一天的多行 append 要互相排队，否则半行会混进日志。
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -127,6 +137,20 @@ fn clean(message: &str) -> String {
 }
 
 pub fn log(level: &str, target: &str, message: &str) {
+    // 写日志要读**进程级**的环境变量 Z_MIND_CONFIG_DIR 才知道日志落在哪 ——
+    // 不持有配置目录锁就写，等于把日志写进当时正指向**别人沙盒**的目录。
+    // 2026-10-21 实测：net::sanitize() 会写一条 debug 日志，而调用它的 net.rs 测试
+    // 没拿锁 ⇒ 它把日志写进了 log.rs 测试的隔离目录 ⇒
+    // log 与 paths 两类用例各以约 12% 的概率随机失败，报的还是「字节数对不上」
+    // 「找不到路径」这种毫不相干的错。
+    // 所以在**写之前**就断言：你拿锁了吗 —— 把随机 flaky 变成当场可指认的失败。
+    #[cfg(test)]
+    assert!(
+        crate::config_env_lock_held(),
+        "写日志前必须持有配置目录锁（crate::lock_config_env()）：\
+         日志目录由进程级环境变量 Z_MIND_CONFIG_DIR 决定，\
+         不拿锁就写会把日志写进别的测试的沙盒"
+    );
     let r = rank(level);
     if r == 0 || r > THRESHOLD.load(Ordering::Relaxed) {
         return;
@@ -364,13 +388,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         set_level("debug").ok();
         log("debug", "t", &"字".repeat(MAX_LINE_CHARS + 500));
-        let line = body().lines().next().unwrap_or_default().to_string();
+        let text = body();
+        // 找**自己写的那一条**，不要拿文件的第一行 ——
+        // 日志目录由进程级环境变量决定，别的记录可能也在这个文件里，
+        // 拿第一行会拿到不相干的行，报出来的错跟「截断」毫无关系。
+        let line = text
+            .lines()
+            .find(|l| l.contains(&"字".repeat(50)))
+            .unwrap_or_else(|| panic!("日志里找不到自己写的那条记录，文件内容：{text:?}"));
         assert!(
             line.chars().count() < MAX_LINE_CHARS + 80,
             "超长消息应截断，实际 {} 字",
             line.chars().count()
         );
-        assert!(line.ends_with('…'), "截断要留记号");
+        assert!(
+            line.ends_with('…'),
+            "截断要留记号，实际末字符：{:?}",
+            line.chars().last()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 静态默认档位必须与 config.rs 里 defaults() 的默认档位是同一个。
+    ///
+    /// 2026-10-21 实测出过一次对不上：静态阈值取的是 `RANKS[2].1`，
+    /// 而 RANKS[2] 是 **warn**（0=off / 1=error / 2=warn / 3=info / 4=debug）——
+    /// 注释说 info、config.rs 的默认也是 info，只有代码是 warn。
+    /// 后果：应用启动前（configure_from 还没跑）门槛比配置说的严一档，info 记录会被丢。
+    #[test]
+    fn default_level_is_the_same_as_the_configured_default() {
+        let _g = crate::lock_config_env();
+        // 隔离到空目录：读的是「没有配置文件时」的默认档位，
+        // 而不是用户机器上 ~/.z-mind/config.json 里他自己改过的值。
+        let root = isolated("default-level");
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            RANKS[DEFAULT_LEVEL_IDX].0, "info",
+            "静态默认档位的下标指向了别的档位"
+        );
+        let cfg = crate::config::read_config();
+        let from_cfg = cfg
+            .get("advanced")
+            .and_then(|a| a.get("logLevel"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert_eq!(
+            from_cfg, RANKS[DEFAULT_LEVEL_IDX].0,
+            "config.rs 的默认档位与 log.rs 的静态默认档位必须一致"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

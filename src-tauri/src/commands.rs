@@ -522,7 +522,7 @@ mod tests {
     /// 把配置目录挪到临时位置：失败保存要写一条 error 日志、历史版本要写索引，
     /// 那些都必须落在沙盒里，不能污染真实的 ~/.z-mind。持着返回的守卫跑完整个测试，
     /// 免得和别的改环境变量的测试互相串。
-    fn sandbox() -> (std::sync::MutexGuard<'static, ()>, PathBuf) {
+    fn sandbox() -> (crate::ConfigEnvGuard, PathBuf) {
         let g = crate::lock_config_env();
         let dir = std::env::temp_dir().join(format!("z-mind-cmd-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

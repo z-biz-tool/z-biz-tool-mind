@@ -253,6 +253,12 @@ mod tests {
     #[test]
     fn allows_two_dots_inside_a_filename() {
         // 老判据是整串 find("..")，把 a..b.emmx 这种合法文件名一起拒了。
+        //
+        // 隔离说明：这条测试以前**直接用真实的配置目录**（~/.z-mind）——
+        // 既往开发者机器上写测试文件，又和别的改环境变量的测试抢同一个目录。
+        // 2026-10-21 实测：它与 log.rs 的用例并发时，21 次/200 轮随机失败，
+        // 报的是「找不到路径」「AlreadyExists」这种和「两个点」毫无关系的错。
+        let (_g, root) = crate::isolated_sandbox("two-dots");
         let dir = get_config_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let inside = dir.join("a..b.emmx");
@@ -260,6 +266,7 @@ mod tests {
         let r = validate(inside.to_str().unwrap(), false);
         assert!(r.is_ok(), "文件名里两个点不是遍历，实际 {:?}", r.err());
         std::fs::remove_file(&inside).ok();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

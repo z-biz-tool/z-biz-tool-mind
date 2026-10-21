@@ -193,6 +193,15 @@ mod tests {
         serde_json::json!({ "network": { "proxyMode": mode, "proxyHost": host, "proxyPort": port } })
     }
 
+    /// 自己的沙盒：`sanitize()` 会写一条 debug 日志，而日志目录由**进程级**环境变量
+    /// Z_MIND_CONFIG_DIR 决定 —— 不隔离的话，这条日志会落进当时正指向别人沙盒的目录，
+    /// 把别人的用例搅成随机失败（2026-10-21 实测：log 与 paths 两类用例各约 12% 概率挂，
+    /// 报的还是「字节数对不上」「找不到路径」这种和本用例毫无关系的错）。
+    /// 不隔离的第二重后果：日志会写进用户真实的 ~/.z-mind/logs。
+    fn sandbox(tag: &str) -> (crate::ConfigEnvGuard, std::path::PathBuf) {
+        crate::isolated_sandbox(tag)
+    }
+
     #[test]
     fn three_modes_map_to_three_different_outcomes() {
         assert_eq!(proxy_arg("system", "", 0).unwrap(), None);
@@ -261,6 +270,7 @@ mod tests {
     #[test]
     fn leaving_manual_clears_the_stored_address() {
         // 这是实测出来的回归：坏地址在手动档被 validate 拦住，切回跟随系统时却整个存进了文件。
+        let (_g, _root) = sandbox("sanitize-manual");
         let mut v = cfg("manual", "127.0.0.1 --disable-web-security", 7890);
         v["network"]["proxyMode"] = Value::String("system".into());
         assert!(
@@ -278,6 +288,7 @@ mod tests {
 
     #[test]
     fn sanitize_is_idempotent_and_ignores_other_pages() {
+        let (_g, _root) = sandbox("sanitize-idem");
         let mut v: Value = serde_json::from_str(r#"{"general":{"theme":"dark"},"network":{"proxyMode":"none","proxyHost":"","proxyPort":0}}"#).unwrap();
         assert!(!sanitize(&mut v), "本来就干净，不该报成改动过");
         assert_eq!(v["general"]["theme"], Value::String("dark".into()));

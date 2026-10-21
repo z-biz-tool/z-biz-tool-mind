@@ -8,13 +8,35 @@ name: desktop-build
 # 两个闸门先跑完：前端（类型检查 + tests/run.mjs 的全部用例 + vite 构建）和 Rust 格式。
 # Rust 编译一趟三分钟，没必要为已经红了的前端或一个换行缩进再等一遍。
 #
-# cargo test 不在 ubuntu 那个闸门里跑，而是在 windows / macOS 两个 job 里各跑一遍：
+# cargo test 不在 ubuntu 那个闸门里跑，而是在 windows 上跑：
 # Linux 上要 cargo test 就得先 apt 装一整套 GTK/WebKit，装失败的信息看起来还像代码问题；
 # 更要紧的是路径判据本身分平台 —— 本机第一轮真跑就撞出 "validate('/proc/self/environ')
 # 在 Windows 上被放行" 这种只在某一边才成立的断言，只在 Linux 跑等于没测。
+# 同一个理由，clippy 也要在 ubuntu 上跑（它只在 linux 侧编得到 #[cfg(windows)] 的反面），
+# 所以那个 job 必须先 apt 装 GTK/WebKit —— 否则 clippy 会以"缺系统库"的样子红掉，
+# 而报错看着像代码问题。
+#
+# ── 2026-10-21：门禁与发版拆开，主干 push 也跑门禁 ──
+#
+# 原来 `on.push` 只有 tags ⇒ **推送 main 从不触发任何 CI**。
+# 后果不是"少跑一次测试"，是**这个仓 13 天里 12 个 commit（含把 clippy 引进 CI 那个）
+# 全都没跑过门禁**：52 条 Rust 测试、31 条 TS 测试一次都没在 CI 上执行过；
+# 唯一一次 run（2026-10-08 的 v0.1.0 tag）还是红的，挂在 macOS arm64 的 cargo test 上，
+# 之后再没人看过 —— 因为没人触发。
+#
+# 现在拆成两半：
+#   · 门禁（web / rust / test-windows）：**push 到 main、PR、tag、手动都跑**；
+#   · 安装包（windows / macos）：**只在 tag 与手动触发时跑** —— 造包是发版的事，
+#     而且 macos-latest 的 runner 排队能被 GitHub 自动 cancel（实测排队 21 分钟），
+#     把它当每次 push 的硬门禁 = 让门禁因 runner 资源紧张而红 ⇒ 那是训练团队忽略红灯。
+#
+# PR 的 paths 过滤补了 Cargo.lock：它决定依赖解析，改它等于改构建产物，
+# 却原来不触发任何闸门 —— 门禁守了个它自己看不见的改动面。
 
 on:
   push:
+    branches:
+      - "main"
     tags:
       - "v*"
   pull_request:
@@ -31,12 +53,14 @@ on:
       #                     改它等于改构建产物，却不跑任何闸门；
       #   tsconfig*.json —— typecheck 与 typecheck:test 两条门的输入；
       #   index.html    —— vite 的入口模板；
-      #   scripts/**    —— windows/macos 两个 job 用 scripts/build-desktop.mjs 出包。
+      #   scripts/**    —— windows/macos 两个 job 用 scripts/build-desktop.mjs 出包；
+      #   Cargo.lock    —— 依赖解析的依据：改它等于改构建产物。
       - "vite.config.ts"
       - "tsconfig.json"
       - "tsconfig.test.json"
       - "index.html"
       - "scripts/**"
+      - "src-tauri/Cargo.lock"
   workflow_dispatch:
 
 permissions:
@@ -74,6 +98,12 @@ jobs:
           components: rustfmt, clippy
       # Runner 会往 ~/.cargo/config.toml 里塞凭证配置，cargo 认不得这个格式就直接报错退出。
       - run: rm -f "$HOME/.cargo/config.toml"
+      # clippy 要把 crate 整个编一遍（build.rs 也要跑），Linux 上就得有 GTK/WebKit。
+      # 少了这一步，缺系统库会以"编译失败"的样子红掉，看着像代码问题。
+      - name: Install Linux build deps (for clippy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libgtk-3-dev
       - run: cargo fmt --check
         working-directory: src-tauri
       # 与本机同一把尺（quota.rs 的 ptr_arg 那类只有 clippy 报）。linux 侧编不到 #[cfg(windows)] 代码，
@@ -81,9 +111,39 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
         working-directory: src-tauri
 
+  test-windows:
+    name: Rust 测试（windows）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      # tauri::generate_context! 读 build.frontendDist=../dist/renderer，
+      # 编译期就要那个目录在 —— 所以前端产物在这条门禁里也得先建出来。
+      - name: Build frontend (generate_context! 要读 dist/)
+        run: npm run build
+      - run: cargo test
+        working-directory: src-tauri
+      # 再跑一遍：这个仓的历史毛病是**并发 flaky**（2026-10-21 实测 200 轮里挂 46 次，
+      # 根因是测试之间共用进程级环境变量 Z_MIND_CONFIG_DIR）。根因已修（写日志前
+      # 断言持锁 + 每个测试有自己的沙盒），但**残留的不确定性**要靠重复跑来暴露 ——
+      # 一次绿说明不了并发下也绿。
+      - name: Rust 测试（第二遍，验并发下也稳定）
+        run: cargo test
+        working-directory: src-tauri
+
   windows:
     name: Windows 安装包（.exe + .msi）
-    needs: [web, rust]
+    needs: [web, rust, test-windows]
+    # 打包只在打 tag 或手动触发时做 —— 造安装包是发版的事，不是每次 push 的门禁。
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -111,7 +171,10 @@ jobs:
 
   macos:
     name: macOS 安装包（${{ matrix.triple }}）
-    needs: [web, rust]
+    needs: [web, rust, test-windows]
+    # 同上：macos-latest 的 runner 排队能被 GitHub 自动 cancel（实测 21 分钟），
+    # 把它当每次 push 的硬门禁 = 让门禁因 runner 资源紧张而红。
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     strategy:
       fail-fast: false
