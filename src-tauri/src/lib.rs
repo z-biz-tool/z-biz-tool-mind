@@ -97,6 +97,8 @@ fn lock_config_env() -> ConfigEnvGuard {
     ConfigEnvGuard { _guard: g }
 }
 
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 这几件事必须在 Builder 之前：日志级别决定第一行记录写不写得出，
@@ -126,8 +128,21 @@ pub fn run() {
     log::prune();
 
     let app = tauri::Builder::default()
+        // 单实例（2026-10-26 分发底座）：第二次启动聚焦已有窗口，不再开新进程。
+        // 必须作为第一个注册的插件（tauri-plugin-single-instance 官方要求）。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // 自动更新：前端 UpdaterGate 延时 check()，endpoint/pubkey 见 tauri.conf.json
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 更新安装完成后的「立即重启」
+        .plugin(tauri_plugin_process::init())
         .manage(openfile::Pending::default())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,

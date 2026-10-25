@@ -10,6 +10,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
+import UpdaterGate from "./components/UpdaterDialog";
 import "./index.css";
 
 const host = document.getElementById("root");
@@ -18,5 +19,6 @@ if (!host) throw new Error("index.html 里没有 #root，页面无法挂载");
 createRoot(host).render(
   <StrictMode>
     <App />
+    <UpdaterGate />
   </StrictMode>,
 );
