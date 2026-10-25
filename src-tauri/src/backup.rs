@@ -244,6 +244,23 @@ pub fn autosave(doc_path: &str, bytes: &[u8]) -> Result<String, String> {
     Ok(file.to_string_lossy().to_string())
 }
 
+/// 什么算「一份快照」：**扩展名必须是 .emmx**。
+///
+/// 这条判据以前只长在删除那一侧，列表那一侧没有 —— 于是两端各说各话：
+/// 文档目录里躺着任何非 .emmx 的文件（macOS 的 .DS_Store、别处拷进来的临时文件、
+/// 一次崩掉写了一半的产物），它就会进列表，而它是删不掉的：
+///   ① 面板上的「自动保存 N 份」虚高；
+///   ② 启动弹窗把它当快照追问「可以恢复」；
+///   ③ 用户点「忽略」，删除那一侧按同一条判据拒收 ⇒ 报「没能从磁盘上带走」，
+///      而它永远还在 ⇒ 每次开机再问一遍（那个提示自己都写着"下次启动可能还会问一次"）。
+/// 现在两侧共用这一个函数：**列表 = 可删 = 计数**，不许各写各的。
+fn is_snapshot_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("emmx"))
+        .unwrap_or(false)
+}
+
 pub fn autosave_list() -> Vec<(String, u64, i64)> {
     let mut out = Vec::new();
     let base = autosave_root();
@@ -251,6 +268,9 @@ pub fn autosave_list() -> Vec<(String, u64, i64)> {
         for sub in entries.flatten() {
             if let Ok(files) = std::fs::read_dir(sub.path()) {
                 for f in files.flatten() {
+                    if !is_snapshot_file(&f.path()) {
+                        continue;
+                    }
                     let meta = match f.metadata() {
                         Ok(m) => m,
                         Err(_) => continue,
@@ -272,7 +292,9 @@ pub fn autosave_list() -> Vec<(String, u64, i64)> {
 
 /// 清空自动保存目录。返回的**文件数**要和 `autosave_list` 报出来的口径一致，
 /// 否则启动弹窗里"这会删掉 N 份"与实际删掉的数量会打脸。
-/// 所以这里直接数列表的长度：散着躺在根下的那一种（只有手工往里写文件才会出现）会被删掉但不计数。
+/// 所以这里直接数列表的长度：数法与 `autosave_list` 同一条判据（`.emmx` 才算一份快照）。
+/// 已知偏差：目录里非 `.emmx` 的文件会被 `remove_dir_all` 带走，但**不算数** ——
+/// 那不是快照（「N 份快照」这句话说的就是快照数），而这条偏差是两边共用的同一条判据带来的。
 pub fn autosave_clear() -> Result<usize, String> {
     let base = autosave_root();
     if !base.exists() {
@@ -292,12 +314,7 @@ pub fn autosave_clear() -> Result<usize, String> {
 /// 所以"传一个 autosave/../secret.emmx 进来"会被拒。
 /// 删完那一层文档目录空了就顺手收掉，否则 autosave 根下会攒一堆空壳。
 pub fn autosave_drop(path: &str) -> Result<bool, String> {
-    let ext_ok = Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("emmx"))
-        .unwrap_or(false);
-    if !ext_ok {
+    if !is_snapshot_file(Path::new(path)) {
         return Err(format!("只能删除自动保存的 .emmx 快照: {}", path));
     }
     let canon = match Path::new(path).canonicalize() {
@@ -633,6 +650,73 @@ mod tests {
         assert!(autosave_list().is_empty());
 
         std::fs::remove_file(&outside).ok();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("Z_MIND_CONFIG_DIR");
+    }
+
+    /// 列表里出现的每一份都必须删得掉 —— 这两条判据以前是分开的：
+    /// 列表那一侧**不挑扩展名**，删除那一侧只准删 `.emmx`。
+    /// 于是文档目录里任何一个非 `.emmx` 的文件（macOS 的 `.DS_Store`、
+    /// 从别处拷进来的临时文件、写了一半就崩掉的产物）都会被当成快照列出来，
+    /// 却永远删不掉：用户点「忽略」只会看到「没能从磁盘上带走」，
+    /// 而它还在那儿 ⇒ 每次开机再问一遍（那个提示自己就写着"下次启动可能还会问一次"）。
+    ///
+    /// 现在列表与删除共用 `is_snapshot_file` 一条判据，这条测试把两侧钉在一起。
+    #[test]
+    fn autosave_list_only_lists_files_that_can_actually_be_dropped() {
+        let _g = crate::lock_config_env();
+        let dir = isolated("list-drop");
+        let p = autosave("/tmp/口径.emmx", b"abc").unwrap();
+        let doc_dir = Path::new(&p).parent().unwrap().to_path_buf();
+        // 两个不是快照的东西躺在同一个文档目录里。
+        // `.DS_Store` 是 macOS 的真实产物：Finder 在任何被打开过的目录里放一个。
+        let ds_store = doc_dir.join(".DS_Store");
+        std::fs::write(&ds_store, b"junk").unwrap();
+        let half = doc_dir.join("写了一半.emmx.tmp");
+        std::fs::write(&half, b"junk").unwrap();
+
+        let listed = autosave_list();
+        assert_eq!(
+            listed.len(),
+            1,
+            "只有那一份 .emmx 算快照，实际列出了 {:?}",
+            listed
+        );
+        assert!(listed[0].0.ends_with(".emmx"), "列出来的必须是 .emmx");
+        // 列表里的每一份都必须删得掉 —— 以前这里是能炸的（列出的是删不掉的杂文件）。
+        for (path, _, _) in &listed {
+            assert!(
+                autosave_drop(path).is_ok(),
+                "列出来的这一份却删不掉: {}",
+                path
+            );
+        }
+        assert!(autosave_list().is_empty(), "删完之后列表就该空了");
+        // 不认它 ≠ 把它删了：杂文件原地不动。
+        assert!(ds_store.exists(), ".DS_Store 不该被顺手删掉");
+        assert!(half.exists(), "写了一半的临时文件不该被顺手删掉");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("Z_MIND_CONFIG_DIR");
+    }
+
+    /// 「全部清掉」那颗确认框上写的是「N 份快照」，报出来的数就得是**快照数**。
+    /// 目录里的杂文件会被 `remove_dir_all` 连带带走，但它们不是快照，不该占份数 ——
+    /// 这条偏差是「列表 = 可删 = 计数」这条同一条判据带来的，两边不许各数各的。
+    #[test]
+    fn autosave_clear_counts_snapshots_not_stray_files() {
+        let _g = crate::lock_config_env();
+        let dir = isolated("clear-count");
+        let p = autosave("/tmp/份数.emmx", b"abc").unwrap();
+        let doc_dir = Path::new(&p).parent().unwrap().to_path_buf();
+        std::fs::write(doc_dir.join(".DS_Store"), b"junk").unwrap();
+        std::fs::write(doc_dir.join("残留.tmp"), b"junk").unwrap();
+
+        let n = autosave_clear().unwrap();
+        assert_eq!(n, 1, "只有那一份 .emmx 是快照，杂文件不算份数");
+        assert!(autosave_list().is_empty());
+        assert!(!autosave_root().exists(), "清空之后根目录自己也被收走了");
+
         let _ = std::fs::remove_dir_all(&dir);
         std::env::remove_var("Z_MIND_CONFIG_DIR");
     }
