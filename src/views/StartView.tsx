@@ -9,7 +9,7 @@
  * 所以这里不判 dirtyOf，选了路径就交出去。
  */
 import { useEffect, useState } from "react";
-import { Alert, Button } from "antd";
+import { Alert, App as AntdApp, Button } from "antd";
 import { EmptyState, ListSkeleton, RecentRow, SectionTitle } from "../_shared/index.ts";
 import { IMPORT_EXTENSIONS } from "../engine/import/index.ts";
 import { QUOTA } from "../model/constants.ts";
@@ -27,6 +27,7 @@ interface StartViewProps {
 const EMMX_FILTER = [{ name: "亿图脑图文件", extensions: ["emmx"] }];
 
 export function StartView({ onNew, onOpen, onImport }: StartViewProps) {
+  const { modal } = AntdApp.useApp();
   const recent = useRecent((s) => s.recent);
   const storeError = useRecent((s) => s.error);
   const refreshRecent = useRecent((s) => s.refreshRecent);
@@ -67,8 +68,8 @@ export function StartView({ onNew, onOpen, onImport }: StartViewProps) {
   const missingCount = recent.filter((it) => missing[it.path]).length;
 
   async function removeItem(path: string) {
-    await removeRecent(path);
-    setNotice(`已从最近列表移除：${path}`);
+    // 失败时 store 已经把原因写进 storeError，这里不能再补一句"已移除"。
+    if (await removeRecent(path)) setNotice(`已从最近列表移除：${path}`);
   }
 
   // 删除失败时 store 已经把原生错误写进 storeError，这里不再叠一句"删除失败"。
@@ -79,10 +80,20 @@ export function StartView({ onNew, onOpen, onImport }: StartViewProps) {
       );
   }
 
-  async function clearAll() {
+  function clearAll() {
     if (recent.length === 0) return;
-    await clearRecent();
-    setNotice(`最近文件列表已清空（上限本来就是 ${QUOTA.recentMax} 条）`);
+    modal.confirm({
+      title: "清空最近文件列表？",
+      content: `会移除 ${recent.length} 条记录，固定项也在内；只清列表，磁盘上的文件不动。`,
+      okText: "清空",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      focusable: { autoFocusButton: "cancel" },
+      onOk: async () => {
+        if (await clearRecent())
+          setNotice(`最近文件列表已清空（上限本来就是 ${QUOTA.recentMax} 条）`);
+      },
+    });
   }
 
   async function pickAndOpen() {

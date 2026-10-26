@@ -65,6 +65,11 @@ export interface DocStoreState {
   error: string | null;
   /** 打开真实文件时收集到的解析告警，界面上要看得见，不能默默吞掉。 */
   warnings: string[];
+  /**
+   * 保存成功、但附带动作没做成（目前只有"历史版本没留成"）。
+   * 文件已经落盘，所以不能算 error；但也不能静默 —— 调用方要把这条补在成功提示后面。
+   */
+  saveNotice: string | null;
 }
 
 export interface DocStoreActions {
@@ -137,6 +142,7 @@ export const useDoc = create<DocStore>((set, get) => ({
   busy: false,
   error: null,
   warnings: [],
+  saveNotice: null,
 
   async newDoc(title) {
     const doc = withDefaultTheme(createDocument(title ?? "中心主题", defaultLayout()));
@@ -197,7 +203,10 @@ export const useDoc = create<DocStore>((set, get) => ({
       busy: false,
       error: null,
     }));
-    if (path) void native.recentTouch(path, deriveTitle(path, first, "未命名脑图"), "local").catch(() => undefined);
+    if (path)
+      void native
+        .recentTouch(path, deriveTitle(path, first, "未命名脑图"), "local")
+        .catch((e) => console.warn("最近文件列表没更新：", e));
     // 关系线"打开时自动展开"（用户裁定）：端点被折叠或层级挡住时线一条都看不见。
     // 揭示只动视图 —— <Toggler> 是亿图的折叠真相，在模型上展开会把文件洗掉（批 3F 的回归）；
     // 显示层级只抬不降，用户手动收回去是自己的选择。
@@ -260,8 +269,13 @@ export const useDoc = create<DocStore>((set, get) => ({
       const r = await native.fileWriteBytes(path, bytes, true);
       // 覆盖前 Rust 侧已自动留一份兜底；这一步是"每次保存都进历史版本"，归选项里的开关管。
       // 关掉它只是不再累积历史版本，兜底备份仍在，误操作不至于直接丢文件。
+      let saveNotice: string | null = null;
       if (useSettings.getState().settings.save.backupOnSave) {
-        await native.backupNow(path, stamp.pages[0].name, "save", bytes).catch(() => undefined);
+        try {
+          await native.backupNow(path, stamp.pages[0].name, "save", bytes);
+        } catch (e) {
+          saveNotice = `文件已保存，但历史版本没有留成（${e instanceof Error ? e.message : String(e)}）。`;
+        }
       }
       const at = Date.now();
       set({
@@ -272,8 +286,11 @@ export const useDoc = create<DocStore>((set, get) => ({
         savedDoc: stamp,
         busy: false,
         error: null,
+        saveNotice,
       });
-      void native.recentTouch(r.path, deriveTitle(path, stamp.pages[0], s.title), "local").catch(() => undefined);
+      void native
+        .recentTouch(r.path, deriveTitle(path, stamp.pages[0], s.title), "local")
+        .catch((e) => console.warn("最近文件列表没更新：", e));
       // 配额记的是"这份确实落过盘"，不是"这份打开过"（01 A-13）：
       // 只读不存也占名额的话，读满十份文件就再也存不了东西。
       void useQuota.getState().markSaved(r.path);

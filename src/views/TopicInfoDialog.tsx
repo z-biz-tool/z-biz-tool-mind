@@ -80,11 +80,11 @@ export function TopicInfoDialog({ page, onClose }: { page?: Page | null; onClose
       width={460}
     >
       {!shape ? (
-        <div style={{ color: "#888" }}>先在画布上选中一个主题（只能单选）。</div>
+        <div style={{ color: "var(--zm-text-2)" }}>先在画布上选中一个主题（只能单选）。</div>
       ) : (
         <div style={{ display: "grid", gap: 10 }}>
           <div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>备注</div>
+            <div style={{ fontSize: 12, color: "var(--zm-text-2)", marginBottom: 4 }}>备注</div>
             <Input.TextArea
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -108,14 +108,14 @@ export function TopicInfoDialog({ page, onClose }: { page?: Page | null; onClose
             />
           </div>
           <div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>标签</div>
+            <div style={{ fontSize: 12, color: "var(--zm-text-2)", marginBottom: 4 }}>标签</div>
             <Input
               value={labels}
               onChange={(e) => setLabels(e.target.value)}
               placeholder="多个标签用逗号隔开，如：原型，待评审"
             />
           </div>
-          <div style={{ fontSize: 12, color: "#888" }}>
+          <div style={{ fontSize: 12, color: "var(--zm-text-2)" }}>
             链接留空即清除；带备注或链接的主题左下角会出角标，有标签的在框底画出标签条。
           </div>
         </div>

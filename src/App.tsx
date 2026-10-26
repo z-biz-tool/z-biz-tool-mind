@@ -99,7 +99,7 @@ interface PendingSwitch {
 }
 
 function Shell() {
-  const { message } = AntdApp.useApp();
+  const { message, modal } = AntdApp.useApp();
   const doc = useDoc((s) => activeDoc(s));
   const page = useDoc((s) => activePage(s));
   const title = useDoc((s) => s.title);
@@ -173,8 +173,11 @@ function Shell() {
       if (!/\.[^.]+$/.test(target)) target += ".emmx";
     }
     const ok = await s.saveAs(target);
-    if (ok) message.success(`已保存：${useDoc.getState().path}`);
-    else message.error(useDoc.getState().error ?? "保存失败");
+    if (ok) {
+      message.success(`已保存：${useDoc.getState().path}`);
+      const notice = useDoc.getState().saveNotice;
+      if (notice) message.warning(notice);
+    } else message.error(useDoc.getState().error ?? "保存失败");
     return ok;
   }, [message]);
 
@@ -189,8 +192,11 @@ function Shell() {
         return;
       }
       const ok = await s.saveAs(/\.[^.]+$/.test(target) ? target : `${target}.emmx`);
-      if (ok) message.success(`已另存为：${useDoc.getState().path}`);
-      else message.error(useDoc.getState().error ?? "另存为失败");
+      if (ok) {
+        message.success(`已另存为：${useDoc.getState().path}`);
+        const notice = useDoc.getState().saveNotice;
+        if (notice) message.warning(notice);
+      } else message.error(useDoc.getState().error ?? "另存为失败");
     },
     [message]
   );
@@ -653,6 +659,40 @@ function Shell() {
     [pages]
   );
 
+  /** 页签上的 × 是破坏性动作：说清楚删的是哪张画布、带走多少主题，并留一条撤销的路。 */
+  const closePage = (id: string) => {
+    const target = pages.find((p) => p.id === id);
+    if (!target) return;
+    if (pages.length <= 1) {
+      message.warning("至少需要保留一张画布。");
+      return;
+    }
+    const n = countTopics(target);
+    modal.confirm({
+      title: `删除画布「${target.name}」？`,
+      content: `这张画布上的 ${n} 个主题会一起删掉；删除后按 ${shortcutLabel("undo")} 可撤销。`,
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => {
+        if (!useDoc.getState().removePage(id)) message.warning("至少需要保留一张画布。");
+      },
+    });
+  };
+
+  /** 重命名：空名字不落库也不关框，否则用户敲了一空格回车，框没了、名字也没变。 */
+  const submitRename = () => {
+    if (!renaming) return;
+    const name = renaming.name.trim();
+    if (!name) {
+      message.warning("画布名称不能为空。");
+      return;
+    }
+    useDoc.getState().renamePage(renaming.id, name);
+    setRenaming(null);
+  };
+
   const aside =
     !sidebar || !page ? null : dialog === "search" ? (
       <SearchPanel page={page} />
@@ -783,13 +823,18 @@ function Shell() {
           options={PROJECTIONS.map((p) => ({ label: p.label, value: p.id }))}
           onChange={(v) => setProjection(v as Projection)}
         />
-        <Button size="small" onClick={() => stepZoom(-1)} title="缩小">
+        <Button size="small" onClick={() => stepZoom(-1)} title="缩小" aria-label="缩小">
           －
         </Button>
-        <Button size="small" onClick={() => fitZoom()} title="适应画布">
+        <Button
+          size="small"
+          onClick={() => fitZoom()}
+          title="适应画布"
+          aria-label={`适应画布（当前 ${Math.round(zoom * 100)}%）`}
+        >
           {Math.round(zoom * 100)}%
         </Button>
-        <Button size="small" onClick={() => stepZoom(1)} title="放大">
+        <Button size="small" onClick={() => stepZoom(1)} title="放大" aria-label="放大">
           ＋
         </Button>
       </ToolGroup>
@@ -853,8 +898,7 @@ function Shell() {
                   return;
                 }
                 if (typeof target !== "string") return;
-                if (!useDoc.getState().removePage(target))
-                  message.warning("至少需要保留一张画布。");
+                closePage(target);
               }}
               tabBarExtraContent={
                 <Button size="small" type="text" onClick={() => setStartPage(true)}>
@@ -911,21 +955,16 @@ function Shell() {
         open={Boolean(renaming)}
         title="重命名画布"
         okText="重命名"
+        okButtonProps={{ disabled: !renaming?.name.trim() }}
         onCancel={() => setRenaming(null)}
-        onOk={() => {
-          if (renaming?.name.trim())
-            useDoc.getState().renamePage(renaming.id, renaming.name.trim());
-          setRenaming(null);
-        }}
+        onOk={submitRename}
       >
         <Input
           value={renaming?.name ?? ""}
+          autoFocus
+          maxLength={60}
           onChange={(e) => setRenaming((r) => (r ? { ...r, name: e.target.value } : r))}
-          onPressEnter={() => {
-            if (renaming?.name.trim())
-              useDoc.getState().renamePage(renaming.id, renaming.name.trim());
-            setRenaming(null);
-          }}
+          onPressEnter={submitRename}
           placeholder="画布名称"
         />
       </Modal>

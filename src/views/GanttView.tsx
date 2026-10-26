@@ -243,10 +243,11 @@ export function GanttView({ page }: GanttViewProps) {
           width: unit,
           flexShrink: 0,
           // 主刻度（majorTick 天一格）描重边，周初与月初再重一档
-          borderRight: `1px solid ${abs % major === 0 ? "#c8c8c8" : d.getDate() === 1 ? "#9ecbff" : "#efefef"}`,
-          background: abs === todayOffset ? "#fff1f0" : work ? "#ffffff" : "#f5f5f5",
+          borderRight: `1px solid ${abs % major === 0 ? "var(--zm-border)" : d.getDate() === 1 ? "rgba(22,119,255,.35)" : "var(--zm-border)"}`,
+          background: abs === todayOffset ? "rgba(245,34,45,.10)" : work ? "var(--zm-panel)" : "var(--zm-hover)",
           fontSize: 11,
-          color: work ? "#595959" : "#bfbfbf",
+          color: "var(--zm-text-2)",
+          opacity: work ? 1 : 0.6,
           textAlign: "center",
           lineHeight: `${HEAD_H}px`,
           overflow: "hidden",
@@ -260,14 +261,14 @@ export function GanttView({ page }: GanttViewProps) {
   });
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "#ffffff" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "var(--zm-panel)" }}>
       <div
         style={{
           display: "flex",
           alignItems: "center",
           gap: 8,
           padding: "8px 12px",
-          borderBottom: "1px solid #eeeeee",
+          borderBottom: "1px solid var(--zm-border)",
           flexWrap: "wrap",
         }}
       >
@@ -314,7 +315,7 @@ export function GanttView({ page }: GanttViewProps) {
             }
           }}
         />
-        <span style={{ fontSize: 12, color: "#8c8c8c" }}>天</span>
+        <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>天</span>
         <InputNumber
           size="small"
           min={0}
@@ -336,7 +337,7 @@ export function GanttView({ page }: GanttViewProps) {
         >
           里程碑
         </Checkbox>
-        <span style={{ width: 1, height: 18, background: "#eeeeee" }} />
+        <span style={{ width: 1, height: 18, background: "var(--zm-border)" }} />
         <Popover content={workDayEditor} title="哪些天算工作日" trigger="click">
           <Button size="small">工作日</Button>
         </Popover>
@@ -361,7 +362,7 @@ export function GanttView({ page }: GanttViewProps) {
         />
       </div>
 
-      <div style={{ padding: "4px 12px", fontSize: 12, color: "#8c8c8c", borderBottom: "1px solid #f5f5f5" }}>
+      <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--zm-text-2)", borderBottom: "1px solid var(--zm-border)" }}>
         拖动时间条改开始时间，拖右端改工期；右键时间条建立前置（完工→开工），连线画在条底下。概要条是子任务的包络，不可拖。
         开始时间与工期写回主题的 <code> extras.task</code>，看板与甘特看到的是同一份数据。
       </div>
@@ -380,18 +381,18 @@ export function GanttView({ page }: GanttViewProps) {
                   position: "sticky",
                   left: 0,
                   zIndex: 6,
-                  background: "#fafafa",
-                  borderRight: "1px solid #eeeeee",
-                  borderBottom: "1px solid #e5e5e5",
+                  background: "var(--zm-hover)",
+                  borderRight: "1px solid var(--zm-border)",
+                  borderBottom: "1px solid var(--zm-border)",
                   fontSize: 12,
-                  color: "#595959",
+                  color: "var(--zm-text-2)",
                   lineHeight: `${HEAD_H}px`,
                   paddingLeft: 10,
                 }}
               >
                 任务 / 负责人
               </div>
-              <div style={{ display: "flex", borderBottom: "1px solid #e5e5e5" }}>{dayCells}</div>
+              <div style={{ display: "flex", borderBottom: "1px solid var(--zm-border)" }}>{dayCells}</div>
             </div>
 
             {/* 非工作日底纹 + 今天线：一条覆盖层，不参与布局，避免每行都画一遍 */}
@@ -407,8 +408,8 @@ export function GanttView({ page }: GanttViewProps) {
                       top: 0,
                       bottom: 0,
                       width: unit,
-                      background: isWorkDay(opt.startDate, abs, opt.workDay) ? undefined : "rgba(0,0,0,.035)",
-                      borderRight: "1px solid rgba(0,0,0,.04)",
+                      background: isWorkDay(opt.startDate, abs, opt.workDay) ? undefined : "rgba(128,128,128,.10)",
+                      borderRight: "1px solid rgba(128,128,128,.10)",
                     }}
                   />
                 );
@@ -433,8 +434,8 @@ export function GanttView({ page }: GanttViewProps) {
             >
               {connectors.map((c, i) => (
                 <g key={i}>
-                  <path d={c.d} fill="none" stroke="#8c8c8c" strokeWidth="1.2" />
-                  <path d={c.arrow} fill="#8c8c8c" />
+                  <path d={c.d} fill="none" stroke="var(--zm-text-2)" strokeWidth="1.2" />
+                  <path d={c.arrow} fill="var(--zm-text-2)" />
                 </g>
               ))}
             </svg>
@@ -451,7 +452,7 @@ export function GanttView({ page }: GanttViewProps) {
                 <div
                   key={bar.id}
                   onClick={() => select([bar.id], bar.id)}
-                  style={{ display: "flex", height: ROW_H, position: "relative", zIndex: 2, background: active ? "#f2f6ff" : undefined }}
+                  style={{ display: "flex", height: ROW_H, position: "relative", zIndex: 2, background: active ? "var(--zm-hover)" : undefined }}
                 >
                   <div
                     style={{
@@ -460,9 +461,9 @@ export function GanttView({ page }: GanttViewProps) {
                       position: "sticky",
                       left: 0,
                       zIndex: 4,
-                      background: active ? "#f2f6ff" : "#ffffff",
-                      borderRight: "1px solid #eeeeee",
-                      borderBottom: "1px solid #f5f5f5",
+                      background: active ? "var(--zm-hover)" : "var(--zm-panel)",
+                      borderRight: "1px solid var(--zm-border)",
+                      borderBottom: "1px solid var(--zm-border)",
                       display: "flex",
                       alignItems: "center",
                       gap: 4,
@@ -472,8 +473,22 @@ export function GanttView({ page }: GanttViewProps) {
                       whiteSpace: "nowrap",
                     }}
                   >
-                    <span
-                      style={{ width: 14, textAlign: "center", cursor: bar.isSummary ? "pointer" : "default", color: "#8c8c8c" }}
+                    <button
+                      type="button"
+                      disabled={!bar.isSummary}
+                      aria-label={bar.isSummary ? (folded ? "展开分支" : "折叠分支") : undefined}
+                      aria-expanded={bar.isSummary ? !folded : undefined}
+                      style={{
+                        width: 14,
+                        padding: 0,
+                        border: "none",
+                        background: "transparent",
+                        textAlign: "center",
+                        cursor: bar.isSummary ? "pointer" : "default",
+                        color: "var(--zm-text-2)",
+                        fontSize: 12,
+                        lineHeight: "inherit",
+                      }}
                       onClick={(e) => {
                         if (!bar.isSummary) return;
                         e.stopPropagation();
@@ -481,9 +496,9 @@ export function GanttView({ page }: GanttViewProps) {
                       }}
                     >
                       {bar.isSummary ? (folded ? "▸" : "▾") : "·"}
-                    </span>
+                    </button>
                     <span style={{ fontWeight: bar.isSummary ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis" }}>{bar.name}</span>
-                    <span style={{ color: "#bfbfbf", flexShrink: 0 }}>{bar.assignees.join("、")}</span>
+                    <span style={{ color: "var(--zm-text-2)", flexShrink: 0 }}>{bar.assignees.join("、")}</span>
                   </div>
                   <div style={{ position: "relative", width: ticks.total, flexShrink: 0 }}>
                     {bar.milestone ? (

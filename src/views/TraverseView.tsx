@@ -84,15 +84,15 @@ export function TraverseView({ page }: TraverseViewProps) {
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "#f5f6f8" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#ffffff", borderBottom: "1px solid #eeeeee" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "var(--zm-bg)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "var(--zm-panel)", borderBottom: "1px solid var(--zm-border)" }}>
         <Button size="small" disabled={ix <= 0} onClick={() => go(-1)}>
           上一个
         </Button>
         <Button size="small" disabled={ix >= seq.length - 1} onClick={() => go(1)}>
           下一个
         </Button>
-        <span style={{ fontSize: 12, color: "#8c8c8c" }}>
+        <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>
           {ix + 1} / {seq.length}
         </span>
         <Tooltip title="折叠起来的分支不在这个序列里（§3.10「隐藏未遍历内容」）">
@@ -138,38 +138,61 @@ export function TraverseView({ page }: TraverseViewProps) {
           style={{
             maxWidth: 760,
             width: "100%",
-            background: "#ffffff",
+            background: "var(--zm-panel)",
             borderRadius: 10,
             padding: "32px 36px",
             borderTop: `4px solid ${color}`,
-            boxShadow: "0 2px 12px rgba(0,0,0,.06)",
+            boxShadow: "var(--zm-shadow)",
           }}
         >
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", fontSize: 12, color: "#8c8c8c", marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", fontSize: 12, color: "var(--zm-text-2)", marginBottom: 14 }}>
             {path.map((p) => (
-              <Tag key={p} style={{ cursor: "pointer" }} onClick={() => jumpTo(p)}>
+              <Tag
+                key={p}
+                role="button"
+                tabIndex={0}
+                style={{ cursor: "pointer" }}
+                onClick={() => jumpTo(p)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  jumpTo(p);
+                }}
+              >
                 {plainText(page.shapes[p]?.text ?? { paragraphs: [], characters: [] }) || "（空）"}
               </Tag>
             ))}
             {path.length === 0 ? <Tag>中心主题</Tag> : null}
           </div>
-          <div style={{ fontSize: id === page.rootId ? 32 : 26, fontWeight: 600, color: "#262626", lineHeight: 1.5, wordBreak: "break-word" }}>
+          <div style={{ fontSize: id === page.rootId ? 32 : 26, fontWeight: 600, color: "var(--zm-text)", lineHeight: 1.5, wordBreak: "break-word" }}>
             {plainText(shape.text) || "（空主题）"}
           </div>
           {shape.extras.note ? (
-            <div style={{ marginTop: 18, whiteSpace: "pre-wrap", fontSize: 13, color: "#595959", background: "#fafafa", borderRadius: 6, padding: "10px 12px" }}>
+            <div style={{ marginTop: 18, whiteSpace: "pre-wrap", fontSize: 13, color: "var(--zm-text)", background: "var(--zm-hover)", borderRadius: 6, padding: "10px 12px" }}>
               {shape.extras.note}
             </div>
           ) : null}
 
           <div style={{ marginTop: 22 }}>
-            <div style={{ fontSize: 12, color: "#8c8c8c", marginBottom: 8 }}>下一层（{kids.length}）</div>
+            <div style={{ fontSize: 12, color: "var(--zm-text-2)", marginBottom: 8 }}>下一层（{kids.length}）</div>
             {kids.length === 0 ? (
-              <span style={{ fontSize: 13, color: "#bfbfbf" }}>这一支讲完了</span>
+              <span style={{ fontSize: 13, color: "var(--zm-text-2)" }}>这一支讲完了</span>
             ) : (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {kids.map((k) => (
-                  <Tag key={k.id} color="blue" style={{ cursor: "pointer" }} onClick={() => jumpTo(k.id)}>
+                  <Tag
+                    key={k.id}
+                    color="blue"
+                    role="button"
+                    tabIndex={0}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => jumpTo(k.id)}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.preventDefault();
+                      jumpTo(k.id);
+                    }}
+                  >
                     {plainText(k.text) || "（空）"}
                   </Tag>
                 ))}
@@ -178,7 +201,7 @@ export function TraverseView({ page }: TraverseViewProps) {
           </div>
           <div style={{ marginTop: 26 }}>
             <Progress percent={seq.length ? Math.round(((ix + 1) / seq.length) * 100) : 0} size="small" strokeColor={color} />
-            <div style={{ fontSize: 12, color: "#bfbfbf" }}>
+            <div style={{ fontSize: 12, color: "var(--zm-text-2)" }}>
               当前分支：{plainText(page.shapes[branchId]?.text ?? { paragraphs: [], characters: [] }) || "中心主题"} · 空格 / → 下一个，← 上一个，回车回到导图
             </div>
           </div>

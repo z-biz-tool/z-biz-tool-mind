@@ -74,7 +74,7 @@ export function AiTopicDialog({ open, onClose }: AiTopicDialogProps) {
             对「{plainText(anchor.text) || "（无标题）"}」
             {anchor.childIds.length ? `（已有 ${anchor.childIds.length} 个子主题）` : ""}
           </p>
-          <p style={{ margin: "0 0 12px", color: "#888888", fontSize: 12 }}>
+          <p style={{ margin: "0 0 12px", color: "var(--zm-text-2)", fontSize: 12 }}>
             可用 AI 点数：{left} / {quota.aiPoints}
           </p>
           <div style={{ display: "grid", gap: 8 }}>
@@ -88,16 +88,16 @@ export function AiTopicDialog({ open, onClose }: AiTopicDialogProps) {
                 style={{ textAlign: "left", height: "auto", padding: "8px 12px" }}
               >
                 <div style={{ fontWeight: 600 }}>{AI_VERB_LABEL[verb]}</div>
-                <div style={{ fontWeight: 400, fontSize: 12, color: "#888888" }}>{tip}</div>
+                <div style={{ fontWeight: 400, fontSize: 12, color: "var(--zm-text-2)" }}>{tip}</div>
               </Button>
             ))}
           </div>
-          <p style={{ margin: "12px 0 0", color: "#888888", fontSize: 12 }}>
+          <p style={{ margin: "12px 0 0", color: "var(--zm-text-2)", fontSize: 12 }}>
             生成期间画布会暂时锁定，完成后自动恢复；结果不满意可直接撤销。
           </p>
         </>
       ) : (
-        <Alert type="info" showIcon title="先在画布里选中一个主题，再用 AI 助手。" />
+        <Alert type="info" showIcon message="先在画布里选中一个主题，再用 AI 助手。" />
       )}
     </Modal>
   );

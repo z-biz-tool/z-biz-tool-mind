@@ -115,9 +115,18 @@ export function BackupRow({
             </button>
           )}
           {onDelete && (
-            <button type="button" className="zm-btn zm-btn-ghost" onClick={() => onDelete(entry)}>
-              删除
-            </button>
+            <Popconfirm
+              title={`删除「${entry.title}」的这一份历史版本？`}
+              description="只删这一份快照，盘上的文档不受影响；删掉之后找不回来。"
+              okText="删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => onDelete(entry)}
+            >
+              <button type="button" className="zm-btn zm-btn-ghost">
+                删除
+              </button>
+            </Popconfirm>
           )}
         </>
       }

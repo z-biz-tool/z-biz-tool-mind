@@ -22,15 +22,17 @@ export const useQuota = create<QuotaStore>((set, get) => ({
   async refresh() {
     try {
       set({ saved: await native.quotaSavedList() });
-    } catch {
+    } catch (e) {
       // 读不到账本就按"没占名额"处理：把它当成满额会让人一个文件都存不了。
+      console.warn("配额账本读取失败，本次按未占名额处理：", e);
     }
   },
 
   async markSaved(path) {
     try {
       await native.quotaMarkSaved(path);
-    } catch {
+    } catch (e) {
+      console.warn("保存名额没记上，闸门会暂时偏松：", e);
       return;
     }
     await get().refresh();

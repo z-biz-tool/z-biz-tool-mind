@@ -191,7 +191,12 @@ export function SearchPanel({ page }: SearchPanelProps) {
     if (!ok) return;
     // 命中表整个变了，游标归零让用户重新 Enter 定位；猜一个可能已错位的下标不如不猜。
     setActiveMatch(-1);
-    msgApi.success(count ? `已替换 ${count} 处` : "没有匹配到的内容");
+    // 0 处命中不是"成功"：什么都没改，别用 success 的绿勾让用户以为替换发生过。
+    if (!count) {
+      msgApi.warning("没有匹配到的内容，什么也没改。");
+      return;
+    }
+    msgApi.success(`已替换 ${count} 处`);
   }
 
   return (

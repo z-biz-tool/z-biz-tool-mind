@@ -92,15 +92,15 @@ export function SlidesView({ page }: SlidesViewProps) {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "#f5f6f8" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "var(--zm-bg)" }}>
       <div
         style={{
           display: "flex",
           alignItems: "center",
           gap: 8,
           padding: "8px 12px",
-          background: "#ffffff",
-          borderBottom: "1px solid #eeeeee",
+          background: "var(--zm-panel)",
+          borderBottom: "1px solid var(--zm-border)",
         }}
       >
         <Button size="small" disabled={safeIx <= 0} onClick={() => step(-1)}>
@@ -109,7 +109,7 @@ export function SlidesView({ page }: SlidesViewProps) {
         <Button size="small" disabled={safeIx >= total - 1} onClick={() => step(1)}>
           下一页
         </Button>
-        <span style={{ fontSize: 12, color: "#8c8c8c" }}>
+        <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>
           {safeIx + 1} / {total}
         </span>
         <span style={{ flex: 1 }} />
@@ -134,38 +134,43 @@ export function SlidesView({ page }: SlidesViewProps) {
               style={{
                 maxWidth: 860,
                 margin: "0 auto",
-                background: "#ffffff",
+                background: "var(--zm-panel)",
                 borderRadius: 8,
                 padding: "28px 32px",
                 minHeight: 380,
                 borderTop: `4px solid ${accentAt(PALETTE, branchIndex(page, current.id))}`,
-                boxShadow: "0 2px 10px rgba(0,0,0,.06)",
+                boxShadow: "var(--zm-shadow)",
               }}
             >
-              <div style={{ fontSize: 24, fontWeight: 600, color: "#262626" }}>{current.title || "（未命名页）"}</div>
+              <div style={{ fontSize: 24, fontWeight: 600, color: "var(--zm-text)" }}>{current.title || "（未命名页）"}</div>
               <div style={{ marginTop: 18 }}>
                 {current.bullets.length === 0 ? (
-                  <span style={{ color: "#bfbfbf" }}>本页没有要点</span>
+                  <span style={{ color: "var(--zm-text-2)" }}>本页没有要点</span>
                 ) : (
                   current.bullets.map((b) => (
-                    <div
+                    <button
+                      type="button"
                       key={b.id}
                       onClick={() => select([b.id], b.id)}
                       style={{
                         display: "flex",
                         gap: 8,
                         alignItems: "baseline",
+                        width: "100%",
+                        border: "none",
+                        background: "transparent",
+                        textAlign: "left",
                         cursor: "pointer",
                         paddingLeft: b.level === 0 ? 0 : 24,
                         fontSize: b.level === 0 ? 16 : 14,
                         fontWeight: b.level === 0 ? 500 : 400,
-                        color: b.level === 0 ? "#434343" : "#8c8c8c",
+                        color: b.level === 0 ? "var(--zm-text)" : "var(--zm-text-2)",
                         lineHeight: "30px",
                       }}
                     >
                       <span>{b.level === 0 ? "•" : "–"}</span>
                       <span>{b.text}</span>
-                    </div>
+                    </button>
                   ))
                 )}
               </div>
@@ -173,10 +178,10 @@ export function SlidesView({ page }: SlidesViewProps) {
           ) : null}
 
           {current ? (
-            <div style={{ maxWidth: 860, margin: "12px auto 0", background: "#fffbe6", borderRadius: 6, padding: "8px 14px" }}>
+            <div style={{ maxWidth: 860, margin: "12px auto 0", background: "rgba(250,173,20,.12)", borderRadius: 6, padding: "8px 14px" }}>
               <div style={{ marginBottom: 2 }}>
                 <Tag color="gold">备注</Tag>
-                <span style={{ fontSize: 12, color: "#8c8c8c" }}>
+                <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>
                   直接编辑，失焦保存 —— 与画布的「附注」是同一份数据
                 </span>
               </div>
@@ -195,10 +200,12 @@ export function SlidesView({ page }: SlidesViewProps) {
 
           <div style={{ maxWidth: 860, margin: "16px auto 0", display: "flex", gap: 8, flexWrap: "wrap" }}>
             {deck.map((s, i) => (
-              <div
+              <button
+                type="button"
                 key={s.id}
                 onClick={() => setIx(i)}
                 title={s.title}
+                aria-current={i === safeIx ? "page" : undefined}
                 style={{
                   width: 84,
                   height: 52,
@@ -206,15 +213,17 @@ export function SlidesView({ page }: SlidesViewProps) {
                   fontSize: 11,
                   overflow: "hidden",
                   cursor: "pointer",
+                  textAlign: "left",
                   borderRadius: 4,
-                  background: "#ffffff",
+                  background: "var(--zm-panel)",
+                  color: "var(--zm-text)",
                   opacity: s.hidden ? 0.55 : 1,
-                  border: i === safeIx ? "2px solid #1677ff" : s.hidden ? "1px dashed #d9d9d9" : "1px solid #e5e5e5",
+                  border: i === safeIx ? "2px solid var(--zm-accent)" : s.hidden ? "1px dashed var(--zm-border)" : "1px solid var(--zm-border)",
                 }}
               >
                 {i + 1}. {s.title}
                 {s.hidden ? <Tag style={{ marginInlineStart: 4, fontSize: 10, lineHeight: "16px" }}>隐藏</Tag> : null}
-              </div>
+              </button>
             ))}
           </div>
         </div>

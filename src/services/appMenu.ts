@@ -307,5 +307,9 @@ async function applyState(state: MenuState): Promise<void> {
  */
 export function syncAppMenu(state: MenuState): void {
   if (!appMenu) return;
-  syncChain = syncChain.then(() => applyState(state)).catch(() => {});
+  // 同步失败的后果是菜单停在上一份状态（撤销项还亮着之类的），不是崩溃；但也不能全静默，
+  // 否则"菜单灰了/没勾上"永远查不到原因。
+  syncChain = syncChain
+    .then(() => applyState(state))
+    .catch((e) => console.warn("原生菜单状态没同步上：", e));
 }

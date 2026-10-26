@@ -8,13 +8,15 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ClipboardEvent, KeyboardEvent } from "react";
-import { Alert, Button, Empty, Input, Modal, Segmented, Tooltip } from "antd";
+import { Alert, App as AntdApp, Button, Empty, Input, Modal, Segmented, Tooltip } from "antd";
 import { insertOutline } from "../engine/outline.ts";
 import type { InsertMode } from "../engine/outline.ts";
 import { outlineRows } from "../engine/projections.ts";
 import { accentAt } from "../engine/style.ts";
 import { usePalette } from "../stores/usePalette.ts";
-import { branchIndex, demote, insertSibling, promote, removeShape, setCollapsed, updateText } from "../engine/tree.ts";
+import { branchIndex, demote, descendants, insertSibling, promote, removeShape, setCollapsed, updateText } from "../engine/tree.ts";
+import { plainText } from "../types/model.ts";
+import { shortcutLabel } from "../utils/shortcuts.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { useUi } from "../stores/uiStore.ts";
 import type { Page } from "../types/model.ts";
@@ -38,6 +40,7 @@ function looksLikeMarkdown(raw: string): boolean {
 }
 
 export function OutlineView({ page }: OutlineViewProps) {
+  const { modal } = AntdApp.useApp();
   const rows = useMemo(() => outlineRows(page), [page]);
   // 行左缘的色条要跟画布同一支同色：色板来自文档自己的 theme.xml，不是写死的那十色。
   const palette = usePalette();
@@ -114,8 +117,25 @@ export function OutlineView({ page }: OutlineViewProps) {
   function removeRow(id: string, index: number) {
     if (!page.shapes[id]?.parentId) return; // 中心主题不可删（tree.removeShape 也会拒绝）
     const nextActive = rows[index - 1]?.id ?? page.rootId;
-    mutate("删除主题", (p) => removeShape(p, id));
-    focusRow(nextActive);
+    const run = () => {
+      mutate("删除主题", (p) => removeShape(p, id));
+      focusRow(nextActive);
+    };
+    // 与画布同一把尺：删一颗叶子是一步普通编辑（撤销就回来），整枝才会带走看不见的内容。
+    const kids = descendants(page, id).length;
+    if (!kids) {
+      run();
+      return;
+    }
+    modal.confirm({
+      title: `删除「${plainText(page.shapes[id]?.text ?? { paragraphs: [], characters: [] }) || "（空主题）"}」整枝？`,
+      content: `会一并删掉这一枝里的 ${kids + 1} 个主题；删除后按 ${shortcutLabel("undo")} 可撤销。`,
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      focusable: { autoFocusButton: "cancel" },
+      onOk: run,
+    });
   }
 
   /** 一段缩进文本 → 一整枝。三种入口（粘贴、批量对话框、Markdown）共用这一条路径。 */
@@ -169,14 +189,14 @@ export function OutlineView({ page }: OutlineViewProps) {
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "#ffffff" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "var(--zm-panel)" }}>
       <div
         style={{
           display: "flex",
           alignItems: "center",
           gap: 10,
           padding: "8px 12px",
-          borderBottom: "1px solid #eeeeee",
+          borderBottom: "1px solid var(--zm-border)",
           flexWrap: "wrap",
         }}
       >
@@ -184,7 +204,7 @@ export function OutlineView({ page }: OutlineViewProps) {
           批量添加
         </Button>
         <Tooltip title="每行一个主题；行首 Tab 缩进一级。也可在行内直接粘贴一段带缩进的文本或 Markdown。">
-          <span style={{ color: "#8c8c8c", fontSize: 12 }}>Tab 降级 · Shift+Tab 升级 · Enter 同级 · 上下键换行</span>
+          <span style={{ color: "var(--zm-text-2)", fontSize: 12 }}>Tab 降级 · Shift+Tab 升级 · Enter 同级 · 上下键换行</span>
         </Tooltip>
       </div>
 
@@ -214,12 +234,26 @@ export function OutlineView({ page }: OutlineViewProps) {
                   gap: 6,
                   paddingLeft: 10 + row.level * INDENT,
                   paddingRight: 12,
-                  background: focusId === row.id || selection.includes(row.id) ? "#f2f6ff" : undefined,
+                  background: focusId === row.id || selection.includes(row.id) ? "var(--zm-hover)" : undefined,
                   borderLeft: `3px solid ${row.level === 0 ? color : "transparent"}`,
                 }}
               >
-                <span
-                  style={{ width: 16, textAlign: "center", cursor: row.hasChildren ? "pointer" : "default", color: "#8c8c8c" }}
+                <button
+                  type="button"
+                  disabled={!row.hasChildren}
+                  aria-label={
+                    row.hasChildren ? (row.collapsed ? "展开分支" : "折叠分支") : "没有子主题"
+                  }
+                  aria-expanded={row.hasChildren ? !row.collapsed : undefined}
+                  style={{
+                    width: 16,
+                    padding: 0,
+                    border: 0,
+                    background: "transparent",
+                    textAlign: "center",
+                    cursor: row.hasChildren ? "pointer" : "default",
+                    color: "var(--zm-text-2)",
+                  }}
                   title={row.hasChildren ? (row.collapsed ? "展开分支" : "折叠分支") : undefined}
                   onClick={() => {
                     if (!row.hasChildren) return;
@@ -230,7 +264,7 @@ export function OutlineView({ page }: OutlineViewProps) {
                   }}
                 >
                   {row.hasChildren ? (row.collapsed ? "▸" : "▾") : "·"}
-                </span>
+                </button>
                 <span
                   style={{
                     width: 8,
@@ -257,7 +291,7 @@ export function OutlineView({ page }: OutlineViewProps) {
                     fontSize: row.level === 0 ? 15 : 13,
                     fontWeight: row.level <= 1 ? 600 : 400,
                     padding: "5px 2px",
-                    color: "#333333",
+                    color: "var(--zm-text)",
                   }}
                   onFocus={() => focusRow(row.id)}
                   onChange={(e) => {
@@ -286,6 +320,7 @@ export function OutlineView({ page }: OutlineViewProps) {
         title="批量添加主题"
         open={batch.open}
         okText="插入"
+        okButtonProps={{ disabled: batch.text.trim() === "" }}
         cancelText="取消"
         onCancel={() => setBatch((b) => ({ ...b, open: false }))}
         onOk={() => {
@@ -309,7 +344,7 @@ export function OutlineView({ page }: OutlineViewProps) {
           onChange={(e) => setBatch((b) => ({ ...b, text: e.target.value }))}
           placeholder={"每行一个主题\n\tTab 缩进一级\n\tShift+Tab 上升一级\n支持直接粘贴 Markdown 列表"}
         />
-        <div style={{ color: "#8c8c8c", fontSize: 12, marginTop: 8 }}>
+        <div style={{ color: "var(--zm-text-2)", fontSize: 12, marginTop: 8 }}>
           插入位置：{page.shapes[anchorId] ? rows.find((r) => r.id === anchorId)?.text || "（折叠中）" : "中心主题"}
         </div>
       </Modal>

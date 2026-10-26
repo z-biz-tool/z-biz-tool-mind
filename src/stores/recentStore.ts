@@ -20,11 +20,11 @@ interface RecentStore {
   refreshBackups: (path?: string) => Promise<void>;
   refreshTrash: () => Promise<void>;
   refreshAutosave: () => Promise<void>;
-  removeRecent: (path: string) => Promise<void>;
+  removeRecent: (path: string) => Promise<boolean>;
   /** 删除文档本身（进回收站），并把这条记录从最近列表摘掉。 */
   deleteFile: (path: string) => Promise<boolean>;
-  togglePin: (path: string) => Promise<void>;
-  clearRecent: () => Promise<void>;
+  togglePin: (path: string) => Promise<boolean>;
+  clearRecent: () => Promise<boolean>;
   deleteBackup: (id: string) => Promise<void>;
   purgeBackup: (days: number) => Promise<void>;
   restoreTrash: (id: string) => Promise<string | null>;
@@ -96,8 +96,10 @@ export const useRecent = create<RecentStore>((set, get) => ({
   async removeRecent(path) {
     try {
       set({ recent: await native.recentRemove(path) });
+      return true;
     } catch (e) {
       fail(set, e);
+      return false;
     }
   },
 
@@ -122,11 +124,13 @@ export const useRecent = create<RecentStore>((set, get) => ({
   // 不在前端再排一次，否则两边的排序规则会分叉。
   async togglePin(path) {
     const target = get().recent.find((r) => r.path === path);
-    if (!target) return;
+    if (!target) return false;
     try {
       set({ recent: await native.recentSetPinned(path, !target.pinned) });
+      return true;
     } catch (e) {
       fail(set, e);
+      return false;
     }
   },
 
@@ -134,8 +138,10 @@ export const useRecent = create<RecentStore>((set, get) => ({
     try {
       await native.recentClear();
       set({ recent: [] });
+      return true;
     } catch (e) {
       fail(set, e);
+      return false;
     }
   },
 

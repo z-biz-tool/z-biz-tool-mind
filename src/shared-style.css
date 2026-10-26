@@ -343,3 +343,32 @@
 .zm-tabs .ant-tabs-tab {
   padding: 4px 10px;
 }
+
+/* 900×600 的窄窗实测：工具条内容 ~970px，挤在 680px 里只能横向滚动，
+   右半边（缩放、侧栏、更多）看起来像不存在。窄窗让工具条独占一整行并换行，
+   代价是标题栏高一点，换来的是一屏之内所有动作都看得见。 */
+@media (max-width: 1100px) {
+  .zm-header {
+    height: auto;
+    min-height: 44px;
+    flex-wrap: wrap;
+    padding: 6px 12px;
+    row-gap: 6px;
+  }
+
+  .zm-title {
+    min-width: 0;
+  }
+
+  .zm-toolbar {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    overflow-x: visible;
+    row-gap: 6px;
+  }
+
+  .zm-footer {
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}

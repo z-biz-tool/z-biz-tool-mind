@@ -9,12 +9,12 @@
  * 外壳按其它面板的习惯把当前页传进来也照收不误（下面那个可选 props 就是为此），但不使用它。
  */
 import { useEffect, useState } from "react";
-import { Alert, Button, Modal, Popconfirm, Tabs, message } from "antd";
+import { Alert, App as AntdApp, Button, Modal, Popconfirm, Tabs, message } from "antd";
 import { BackupRow, EmptyState, ListSkeleton, SectionTitle } from "../_shared/index.ts";
 import { QUOTA } from "../model/constants.ts";
 import type { BackupEntry } from "../services/native.ts";
 import { native } from "../services/native.ts";
-import { useDoc } from "../stores/docStore.ts";
+import { dirtyOf, useDoc } from "../stores/docStore.ts";
 import { useRecent } from "../stores/recentStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import { humanSize, timestampName } from "../utils/id.ts";
@@ -42,6 +42,7 @@ function baseName(p: string): string {
 }
 
 export function HistoryPanel(_props?: HistoryPanelProps) {
+  const { modal } = AntdApp.useApp();
   const backups = useRecent((s) => s.backups);
   const trash = useRecent((s) => s.trash);
   const autosave = useRecent((s) => s.autosave);
@@ -77,8 +78,33 @@ export function HistoryPanel(_props?: HistoryPanelProps) {
     // path 变了要重查：新文档没历史、打开另一份要按它自己的路径筛。
   }, [path, refreshBackups, refreshTrash, refreshAutosave]);
 
-  async function doRestore(entry: BackupEntry) {
+  /**
+   * 恢复与载入都是"换掉内存里的文档"：有未保存改动时先问一句，
+   * 否则编辑器里的内容会无声消失，而且不在撤销栈里，事后也找不回来。
+   */
+  function guardDiscard(action: string, run: () => void) {
+    const s = useDoc.getState();
+    if (!s.hist || !dirtyOf(s)) {
+      run();
+      return;
+    }
+    modal.confirm({
+      title: `${action}会丢掉当前未保存的修改`,
+      content: `「${s.title}」里有还没写进文件的改动；继续之后这些改动不在撤销栈里。想保留就先取消，另存之后再来。`,
+      okText: "丢弃并继续",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      focusable: { autoFocusButton: "cancel" },
+      onOk: run,
+    });
+  }
+
+  function doRestore(entry: BackupEntry) {
     setPending(null);
+    guardDiscard("恢复这份历史版本", () => void runRestore(entry));
+  }
+
+  async function runRestore(entry: BackupEntry) {
     setBusy(true);
     try {
       const r = await native.backupRestore(entry.id);
@@ -96,7 +122,11 @@ export function HistoryPanel(_props?: HistoryPanelProps) {
     }
   }
 
-  async function loadAutosave(itemPath: string) {
+  function loadAutosave(itemPath: string) {
+    guardDiscard("载入这份自动保存", () => void runLoadAutosave(itemPath));
+  }
+
+  async function runLoadAutosave(itemPath: string) {
     setBusy(true);
     try {
       const bytes = await native.fileReadBytes(itemPath);

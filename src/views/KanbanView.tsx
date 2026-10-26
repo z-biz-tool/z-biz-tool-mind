@@ -9,7 +9,7 @@
  */
 import { useMemo, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Alert, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Select, Tag, Tooltip } from "antd";
+import { Alert, App as AntdApp, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Select, Tag, Tooltip } from "antd";
 import type { MenuProps } from "antd";
 import {
   filterCards,
@@ -21,10 +21,11 @@ import {
   type KanbanSortKey,
 } from "../engine/projections.ts";
 import { accentAt, defaultPalette } from "../engine/style.ts";
-import { duplicateShape, insertChild, moveShape, removeShape, updateExtras, updateText } from "../engine/tree.ts";
+import { descendants, duplicateShape, insertChild, moveShape, removeShape, updateExtras, updateText } from "../engine/tree.ts";
 import { useDoc } from "../stores/docStore.ts";
 import { useUi } from "../stores/uiStore.ts";
-import type { Page, TaskData, TaskPriority, TaskStatus } from "../types/model.ts";
+import { type Page, type TaskData, type TaskPriority, type TaskStatus } from "../types/model.ts";
+import { shortcutLabel } from "../utils/shortcuts.ts";
 
 interface KanbanViewProps {
   page: Page;
@@ -117,6 +118,7 @@ interface Column {
 }
 
 export function KanbanView({ page }: KanbanViewProps) {
+  const { modal } = AntdApp.useApp();
   const mutate = useDoc((s) => s.mutate);
   const select = useDoc((s) => s.select);
   const selection = useDoc((s) => s.selection);
@@ -204,6 +206,40 @@ export function KanbanView({ page }: KanbanViewProps) {
     mutate("新建看板卡片", (p) => insertChild(p, col.key, "新卡片").page);
   }
 
+  /**
+   * 与画布同一条口径：叶子卡片直接删（编辑主循环 + 撤销一步可回），
+   * 带子卡片的才打断；删列永远确认 —— 它带走的是整枝，不是一张卡。
+   */
+  function removeCard(card: KanbanCard) {
+    if (card.subCount === 0) {
+      mutate("删除卡片", (p) => removeShape(p, card.id));
+      return;
+    }
+    const gone = descendants(page, card.id).length + 1;
+    modal.confirm({
+      title: `删除卡片「${card.title || "（空主题）"}」整枝？`,
+      content: `会一并删掉这一枝里的 ${gone} 个主题；删除后按 ${shortcutLabel("undo")} 可撤销。`,
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => mutate("删除卡片", (p) => removeShape(p, card.id)),
+    });
+  }
+
+  function removeColumn(col: Column) {
+    const gone = descendants(page, col.key).length + 1;
+    modal.confirm({
+      title: `删除看板列「${col.title}」？`,
+      content: `这一列里的 ${col.cards.length} 张卡片会随整枝一起删掉（共 ${gone} 个主题）；删除后按 ${shortcutLabel("undo")} 可撤销。`,
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => mutate("删除看板列", (p) => removeShape(p, col.key)),
+    });
+  }
+
   /** 卡片菜单：任务字段的唯一编辑口（画布与甘特都只读这份 extras.task）。 */
   const cardMenu = (card: KanbanCard): MenuProps => ({
     items: [
@@ -265,7 +301,7 @@ export function KanbanView({ page }: KanbanViewProps) {
       } else if (key === "dup") {
         mutate("复制卡片", (p) => duplicateShape(p, card.id).page);
       } else if (key === "del") {
-        mutate("删除卡片", (p) => removeShape(p, card.id));
+        removeCard(card);
       }
     },
   });
@@ -279,15 +315,15 @@ export function KanbanView({ page }: KanbanViewProps) {
     onClick: ({ key, domEvent }) => {
       domEvent.stopPropagation();
       if (key === "rename") setRenaming({ id: col.key, name: col.title });
-      else if (key === "del") mutate("删除看板列", (p) => removeShape(p, col.key));
+      else if (key === "del") removeColumn(col);
     },
   });
 
   const today = Date.now();
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "#f5f6f8" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: "#ffffff", borderBottom: "1px solid #eeeeee", flexWrap: "wrap" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "var(--zm-bg)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: "var(--zm-panel)", borderBottom: "1px solid var(--zm-border)", flexWrap: "wrap" }}>
         <Segmented
           size="small"
           value={lane}
@@ -336,7 +372,7 @@ export function KanbanView({ page }: KanbanViewProps) {
             options={allTags.map((t) => ({ value: t, label: t }))}
           />
         ) : null}
-        <span style={{ color: "#8c8c8c", fontSize: 12 }}>拖卡片换列；右键卡片改任务字段</span>
+        <span style={{ color: "var(--zm-text-2)", fontSize: 12 }}>拖卡片换列；右键卡片改任务字段</span>
         {lane === "branch" ? (
           <Button
             size="small"
@@ -369,8 +405,8 @@ export function KanbanView({ page }: KanbanViewProps) {
                 flexShrink: 0,
                 display: "flex",
                 flexDirection: "column",
-                background: overKey === col.key ? "#e8f1ff" : "#ffffff",
-                border: "1px solid " + (overKey === col.key ? col.color : "#ebebeb"),
+                background: overKey === col.key ? "var(--zm-hover)" : "var(--zm-panel)",
+                border: "1px solid " + (overKey === col.key ? col.color : "var(--zm-border)"),
                 borderRadius: 8,
                 maxHeight: "100%",
               }}
@@ -382,7 +418,7 @@ export function KanbanView({ page }: KanbanViewProps) {
                       {col.title}
                     </b>
                   </Dropdown>
-                  <span style={{ fontSize: 12, color: "#8c8c8c" }}>{col.cards.length}</span>
+                  <span style={{ fontSize: 12, color: "var(--zm-text-2)" }}>{col.cards.length}</span>
                 </div>
                 <Progress percent={col.progress} size="small" showInfo={false} strokeColor={col.color} />
               </div>
@@ -406,8 +442,8 @@ export function KanbanView({ page }: KanbanViewProps) {
                         }}
                         onClick={() => select([card.id], card.id)}
                         style={{
-                          background: "#ffffff",
-                          border: "1px solid " + (selection.includes(card.id) || dragging === card.id ? col.color : "#ebebeb"),
+                          background: "var(--zm-panel)",
+                          border: "1px solid " + (selection.includes(card.id) || dragging === card.id ? col.color : "var(--zm-border)"),
                           borderRadius: 6,
                           padding: "8px 9px",
                           marginBottom: 8,
@@ -416,7 +452,7 @@ export function KanbanView({ page }: KanbanViewProps) {
                           boxShadow: "0 1px 2px rgba(0,0,0,.05)",
                         }}
                       >
-                        <div style={{ fontSize: 13, fontWeight: 500, color: "#262626", wordBreak: "break-word" }}>{card.title}</div>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: "var(--zm-text)", wordBreak: "break-word" }}>{card.title}</div>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
                           <Tooltip title={`当前：${STATUS_LABEL[card.status]}（点击切换）`}>
                             <Tag
@@ -444,7 +480,7 @@ export function KanbanView({ page }: KanbanViewProps) {
                               <span>≡</span>
                             </Tooltip>
                           ) : null}
-                          {card.subCount > 0 ? <span style={{ fontSize: 11, color: "#8c8c8c" }}>{card.subCount} 子卡</span> : null}
+                          {card.subCount > 0 ? <span style={{ fontSize: 11, color: "var(--zm-text-2)" }}>{card.subCount} 子卡</span> : null}
                           {card.tags.map((t) => (
                             <Tag key={t} style={{ marginInlineEnd: 0 }} variant="filled">
                               {t}
@@ -452,11 +488,11 @@ export function KanbanView({ page }: KanbanViewProps) {
                           ))}
                         </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
-                          <span style={{ fontSize: 12, color: "#595959", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <span style={{ fontSize: 12, color: "var(--zm-text-2)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {card.assignees.join("、") || "未指派"}
                           </span>
                           {(start || card.due) && (
-                            <span style={{ fontSize: 11, color: overdue ? "#d4380d" : "#8c8c8c" }}>
+                            <span style={{ fontSize: 11, color: overdue ? "#d4380d" : "var(--zm-text-2)" }}>
                               {start ? fmtDay(start).slice(5) : ""}
                               {start && card.due ? " ~ " : ""}
                               {card.due ? fmtDay(card.due) : ""}
@@ -468,7 +504,7 @@ export function KanbanView({ page }: KanbanViewProps) {
                     </Dropdown>
                   );
                 })}
-                <Button size="small" type="text" block onClick={() => addCard(col)} style={{ color: "#8c8c8c" }}>
+                <Button size="small" type="text" block onClick={() => addCard(col)} style={{ color: "var(--zm-text-2)" }}>
                   ＋ 新建卡片
                 </Button>
               </div>

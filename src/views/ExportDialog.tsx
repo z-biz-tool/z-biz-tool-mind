@@ -166,6 +166,8 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
     const ok = await useDoc.getState().saveAs(target);
     if (ok) {
       msgApi.success(`已导出：${target}`);
+      const notice = useDoc.getState().saveNotice;
+      if (notice) msgApi.warning(notice);
       return;
     }
     // saveAs 把失败原因写进 docStore.error（免费版文件数闸门也走这一条），原样搬过来；

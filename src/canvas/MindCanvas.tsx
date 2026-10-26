@@ -20,6 +20,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { App as AntdApp } from "antd";
 import type { LayoutCode, Page } from "../types/model.ts";
 import { plainText } from "../types/model.ts";
 import { DEFAULTS } from "../model/constants.ts";
@@ -65,6 +66,7 @@ import { useDoc } from "../stores/docStore.ts";
 import { usePalette } from "../stores/usePalette.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import { useUi } from "../stores/uiStore.ts";
+import { shortcutLabel } from "../utils/shortcuts.ts";
 import { keepActions, type MenuAction } from "./menuActions.ts";
 
 export interface MindCanvasProps {
@@ -270,6 +272,7 @@ function withOpenParent(page: Page, parentId: string): Page {
 }
 
 export function MindCanvas({ page }: MindCanvasProps) {
+  const { modal } = AntdApp.useApp();
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -728,7 +731,7 @@ export function MindCanvas({ page }: MindCanvasProps) {
     if (newId) doc.select([newId], newId);
   };
 
-  const removeTopics = (ids: string[]) => {
+  const deleteTopics = (ids: string[]) => {
     const doc = useDoc.getState();
     const pg = live.current.page;
     if (!doc.hist) return;
@@ -752,6 +755,51 @@ export function MindCanvas({ page }: MindCanvasProps) {
       )
     );
     doc.select([back ?? pg.rootId], back ?? pg.rootId);
+  };
+
+  /**
+   * 删除前的取舍：单颗叶子主题是编辑主循环（Delete 一键删、撤销一步就回来），再弹一次框
+   * 只会拖慢打字；会连带带走看不见的东西 —— 整枝子树、多选、成组的覆盖层 —— 才值得打断。
+   */
+  const removeTopics = (ids: string[]) => {
+    const pg = live.current.page;
+    if (!useDoc.getState().hist) return;
+    const layers = ids.filter((id) =>
+      ["Callout", "Boundary", "Summary"].includes(pg.shapes[id]?.type ?? "")
+    );
+    const doomed = ids.filter((id) => {
+      const sh = pg.shapes[id];
+      return Boolean(sh?.parentId) || Boolean(sh?.floating);
+    });
+    if (!doomed.length && !layers.length) return;
+    const risky =
+      doomed.length > 1 ||
+      layers.length > 0 ||
+      doomed.some((id) => (pg.shapes[id]?.childIds.length ?? 0) > 0);
+    if (!risky) {
+      deleteTopics(ids);
+      return;
+    }
+    const removed = new Set<string>();
+    for (const id of [...doomed, ...layers]) {
+      removed.add(id);
+      for (const child of descendants(pg, id)) removed.add(child);
+    }
+    const name =
+      doomed.length > 1
+        ? `选中的 ${doomed.length} 个主题`
+        : doomed.length === 1
+          ? `「${plainText(pg.shapes[doomed[0]].text) || "（空主题）"}」`
+          : `选中的 ${layers.length} 个标注/外框`;
+    modal.confirm({
+      title: `删除 ${name}？`,
+      content: `会一并删掉这组里的 ${removed.size} 项${layers.length ? `（含 ${layers.length} 个标注/外框）` : ""}；删除后按 ${shortcutLabel("undo")} 可撤销。`,
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => deleteTopics(ids),
+    });
   };
 
   // ------------------------------------------------------------ 键盘（§3.1 第一公民）
@@ -1355,10 +1403,10 @@ export function MindCanvas({ page }: MindCanvasProps) {
             height: 28,
             padding: "0 2px",
             boxSizing: "border-box",
-            background: "#ffffff",
-            border: "1px solid #d9d9d9",
+            background: "var(--zm-panel)",
+            border: "1px solid var(--zm-border)",
             borderRadius: 6,
-            boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
             alignItems: "center",
             cursor: "default",
           }}
@@ -1376,7 +1424,7 @@ export function MindCanvas({ page }: MindCanvasProps) {
                 height: 26,
                 fontSize: 12,
                 lineHeight: "26px",
-                color: "#333333",
+                color: "var(--zm-text)",
                 borderRadius: 5,
                 whiteSpace: "nowrap",
                 cursor: "pointer",
@@ -1402,11 +1450,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
               style={{
                 width: 112,
                 height: 24,
-                border: "1px solid #d9d9d9",
+                border: "1px solid var(--zm-border)",
                 borderRadius: 5,
                 padding: "0 6px",
                 fontSize: 12,
-                color: "#333333",
+                color: "var(--zm-text)",
+                background: "var(--zm-panel)",
                 outline: "none",
               }}
             />
@@ -1426,10 +1475,10 @@ export function MindCanvas({ page }: MindCanvasProps) {
             width: MENU_W,
             padding: "4px 0",
             boxSizing: "border-box",
-            background: "#ffffff",
-            border: "1px solid #d9d9d9",
+            background: "var(--zm-panel)",
+            border: "1px solid var(--zm-border)",
             borderRadius: 6,
-            boxShadow: "0 4px 16px rgba(0,0,0,0.16)",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.22)",
             cursor: "default",
           }}
         >
@@ -1452,7 +1501,7 @@ export function MindCanvas({ page }: MindCanvasProps) {
                 height: 26,
                 fontSize: 12,
                 lineHeight: "26px",
-                color: "#333333",
+                color: "var(--zm-text)",
                 textAlign: "left",
                 whiteSpace: "nowrap",
                 cursor: "pointer",
@@ -1523,11 +1572,11 @@ export function MindCanvas({ page }: MindCanvasProps) {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            background: "rgba(255, 255, 255, 0.55)",
+            background: "rgba(128, 128, 128, 0.28)",
             cursor: "progress",
             pointerEvents: "auto",
             fontSize: 13,
-            color: "#333333",
+            color: "var(--zm-text)",
           }}
         >
           <span>AI 生成中…（画布已锁定）</span>

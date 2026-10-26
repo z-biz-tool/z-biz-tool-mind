@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Alert,
+  App as AntdApp,
   Button,
   Checkbox,
   Input,
@@ -153,6 +154,7 @@ const CRASH_KEEP = 20;
 const ALL_MENU_KEYS = MENU_ACTION_GROUPS.map((g) => g.k);
 
 export function OptionsView({ open, onClose }: OptionsViewProps) {
+  const { message, modal } = AntdApp.useApp();
   const settings = useSettings((s) => s.settings);
   const loaded = useSettings((s) => s.loaded);
   const saving = useSettings((s) => s.saving);
@@ -453,11 +455,51 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
         }}
       >
         <b style={{ fontSize: 13 }}>{title}</b>
-        <Button size="small" onClick={() => void resetSection(section)}>
+        <Button
+          size="small"
+          onClick={() =>
+            modal.confirm({
+              title: `把「${title}」恢复为默认值？`,
+              content: "这一节里改过的所有设置都会被覆盖；其它分页不受影响，改完立即落盘。",
+              okText: "恢复默认",
+              okButtonProps: { danger: true },
+              cancelText: "取消",
+              focusable: { autoFocusButton: "cancel" },
+              onOk: () => void resetSection(section),
+            })
+          }
+        >
           恢复本节默认
         </Button>
       </div>
     );
+  }
+
+  /**
+   * 清空最近列表是一颗破坏性动作：说清条数与"文件不动"，失败时把 store 里的原生错误搬出来 ——
+   * 这里没有列表可看，静默失败等于用户以为清掉了。
+   */
+  function clearRecentList() {
+    const n = useRecent.getState().recent.length;
+    if (!n) {
+      message.info("最近文件列表已经是空的。");
+      return;
+    }
+    modal.confirm({
+      title: "清空最近文件列表？",
+      content: `会移除 ${n} 条记录（固定项也在内）；只清列表，磁盘上的文件不动。`,
+      okText: "清空",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      focusable: { autoFocusButton: "cancel" },
+      onOk: async () => {
+        if (await clearRecent()) {
+          message.success("已清空最近文件列表。");
+          return;
+        }
+        message.error(useRecent.getState().error ?? "清空最近文件列表失败。");
+      },
+    });
   }
 
   /**
@@ -1176,7 +1218,11 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                   onChange={(v) => {
                     const n = toInt(v, 1, QUOTA.recentMax);
                     void patch("recent", { maxCount: n });
-                    void native.recentSetCapacity(n).catch(() => undefined);
+                    void native.recentSetCapacity(n).catch((e) => {
+                      message.error(
+                        `没能把最近文件上限同步给服务侧（${e instanceof Error ? e.message : String(e)}），列表仍按旧阈值淘汰。`
+                      );
+                    });
                   }}
                 />
               </Field>
@@ -1184,7 +1230,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                 label="清空列表"
                 hint="只删列表条目，不动磁盘上的文件；找回文件请用开始页的“打开 .emmx”。"
               >
-                <Button size="small" danger onClick={() => void clearRecent()}>
+                <Button size="small" danger onClick={clearRecentList}>
                   清空最近文件列表
                 </Button>
               </Field>
