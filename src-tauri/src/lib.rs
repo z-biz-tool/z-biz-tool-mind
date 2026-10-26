@@ -1,4 +1,5 @@
 mod backup;
+mod ai;
 mod commands;
 mod config;
 mod crash;
@@ -175,10 +176,13 @@ pub fn run() {
             commands::trash_restore,
             commands::trash_purge,
             commands::trash_purge_older_than,
+            // 密钥命令：secret_reveal 已整体删除（2026-10-26）——
+            // 明文密钥不再回传前端界面，AI 请求由后端自取（见 ai.rs）
             commands::secret_store,
-            commands::secret_reveal,
             commands::secret_drop,
             commands::secret_exists,
+            // AI 生成收口到 Rust（cap-llm）：key 从本机加密库自取，不再回传前端界面
+            ai::ai_generate_outline,
             commands::reveal_in_folder,
             commands::history_list,
             openfile::open_take_pending,

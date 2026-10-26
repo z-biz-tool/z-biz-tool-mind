@@ -472,10 +472,9 @@ pub fn secret_store(name: String, value: String) -> Result<bool, String> {
     Ok(true)
 }
 
-#[tauri::command]
-pub fn secret_reveal(name: String) -> Result<Option<String>, String> {
-    secret::get(&name)
-}
+// secret_reveal 已删除（2026-10-26）：明文密钥不再进 webview。
+// 唯一需要 key 的地方是 AI 请求（ai.rs），后端从 secret::get 自取。
+// 保留条目名查询（secret_exists）给设置页判断「配没配过」。
 
 #[tauri::command]
 pub fn secret_drop(name: String) -> Result<bool, String> {

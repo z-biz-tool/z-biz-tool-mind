@@ -238,16 +238,8 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
     }
   }
 
-  async function loadKey() {
-    try {
-      const v = await native.secretReveal(AI_KEY_NAME);
-      setApiKey(v ?? "");
-      setHasKey(!!v);
-      setSecretTip(v ? "已从本机加密库载入。" : "这台机器上没有存过密钥。");
-    } catch (e) {
-      setSecretTip(e instanceof Error ? e.message : String(e));
-    }
-  }
+  // 「载入已有密钥」已删除（2026-10-26）：它是明文 key 进 webview 的唯一路径。
+  // 密钥只进不出 —— 保存后后端自取自用，换机器重新录入即可；删除走「清空密钥」。
 
   async function dropKey() {
     try {
@@ -1082,14 +1074,11 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                         保存密钥
                       </Button>
                     </Tooltip>
-                    <Button size="small" onClick={() => void loadKey()}>
-                      载入已有密钥
-                    </Button>
                     <Button size="small" danger onClick={() => void dropKey()}>
                       清空密钥
                     </Button>
                     {hasKey ? (
-                      <Tooltip title="只问“有没有”，不读出内容。输入框里现在是空的，点“载入已有密钥”才会把明文取回来。">
+                      <Tooltip title="只问“有没有”，不读出内容。明文密钥不会回到界面 —— 请求在后端发出，后端自己取钥。">
                         <Tag style={{ margin: 0, alignSelf: "center" }} color="green">
                           加密库里已存有一份
                         </Tag>

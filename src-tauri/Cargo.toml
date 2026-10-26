@@ -29,3 +29,5 @@ sha2 = "0.10"
 data-encoding = "2"
 aes-gcm = "0.10.3"
 getrandom = "0.2"
+# 能力共享层：协议/鉴权/错误脱敏统一在 cap-llm，mind 不再自建请求代码
+cap-llm = { path = "../../z-biz-tool-capability/crates/cap-llm" }

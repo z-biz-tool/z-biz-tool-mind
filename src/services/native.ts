@@ -532,10 +532,7 @@ export const native = {
     return call<boolean>("secret_store", { name, value });
   },
 
-  async secretReveal(name: string): Promise<string | null> {
-    if (!isTauri) return memSecrets.get(name) ?? null;
-    return call<string | null>("secret_reveal", { name });
-  },
+  // secretReveal 已删除（2026-10-26）：明文密钥不再进 webview，请求走 aiGenerateOutline。
 
   async secretDrop(name: string): Promise<boolean> {
     if (!isTauri) return memSecrets.delete(name);
@@ -545,6 +542,25 @@ export const native = {
   async secretExists(name: string): Promise<boolean> {
     if (!isTauri) return memSecrets.has(name);
     return call<boolean>("secret_exists", { name });
+  },
+
+  /**
+   * AI 生成（2026-10-26 起走 Rust 命令）。
+   *
+   * 明文 key 由后端从本机加密库解出，前端只传端点/模型/超时 —— 此前这里
+   * 是 fetch + Authorization 头，key 一直摊在 webview 内存里。
+   * 浏览器模式没有后端：抛出的错误与"没配过"同一条路径，由 ai.ts 统一引导。
+   */
+  async aiGenerateOutline(args: {
+    prompt: string;
+    endpoint: string;
+    model: string;
+    timeoutSec: number;
+  }): Promise<string> {
+    if (!isTauri) {
+      throw new Error("AI 生成需要在桌面版里使用（浏览器模式没有本机加密库与网络栈）。");
+    }
+    return call<string>("ai_generate_outline", { args });
   },
 
   async revealInFolder(path: string): Promise<void> {

@@ -3,7 +3,7 @@
  *
  * 两条约束决定了这里的形状：
  * 1) 只走 OpenAI 兼容的 chat/completions。复刻不绑某一家供应商，端点与模型名来自「选项 → 高级」，
- *    密钥走本机加密库（native.secretReveal），因此这里绝不打日志 —— 崩溃上报会把 console 带走。
+ *    密钥留在本机加密库、由 Rust 侧请求时自取（前端拿不到明文），因此这里绝不打日志 —— 崩溃上报会把 console 带走。
  * 2) 生成结果入树必须复用 engine/outline.ts（P-3）。批量录入、Markdown 粘贴、OCR、AI
  *    共用同一条缩进协议；再写一套解析，就会出现"AI 插进来的节点删不掉/升不了级"这种第二份数据结构的病。
  */
@@ -22,8 +22,6 @@ export interface AiRequest {
   prompt: string;
   endpoint: string;
   model: string;
-  apiKey?: string;
-  signal?: AbortSignal;
 }
 
 /** 与「选项 → 高级」的密钥输入框约定的槽位名（Rust secret.rs 同名）。 */
@@ -53,9 +51,7 @@ function originOf(url: string): string {
   }
 }
 
-const SYSTEM_PROMPT =
-  "你是思维导图大纲生成器。只输出大纲本身：每行一个主题，第一行为中心主题，用制表符缩进表示层级，" +
-  "不要解释、不要代码块围栏、不要编号。";
+// 系统提示词在 Rust 侧（ai.rs）—— 前端只管把用户的主题描述送过去。
 
 export async function generateOutline(req: AiRequest): Promise<string> {
   const endpoint = req.endpoint.trim();
@@ -68,100 +64,36 @@ export async function generateOutline(req: AiRequest): Promise<string> {
   if (!model) {
     throw new Error("尚未配置 AI 模型名称，请在「选项 → 高级」里填写，例如 gpt-4o-mini。");
   }
-  const apiKey = req.apiKey?.trim() ?? "";
-  if (!apiKey) {
-    throw new Error(
-      "尚未配置 AI API Key，请在「选项 → 高级」里填写密钥；密钥只存在本机加密库，不会写进配置文件。"
-    );
-  }
-
-  // 有人填baseUrl 有人填完整路径，两种都收，省一次"为什么 404"的客服问题。
-  const url = /\/chat\/completions\/?$/.test(endpoint)
-    ? endpoint
-    : `${endpoint.replace(/\/+$/, "")}/chat/completions`;
 
   // 超时读「选项 → 网络」：走代理的用户 20 秒不够，写死就是替用户做错了决定。
+  // 超时与重试语义由后端（cap-llm）执行 —— 它持有连接，也只有它能掐断它。
   const timeoutSec = Math.max(1, useSettings.getState().settings.network.timeoutSec || 20);
   logEvent(
     "debug",
-    `AI 请求 → ${originOf(url)}（模型 ${model}，超时 ${timeoutSec}s，描述 ${req.prompt.length} 字）`
+    `AI 请求 → ${originOf(endpoint)}（模型 ${model}，超时 ${timeoutSec}s，描述 ${req.prompt.length} 字）`
   );
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutSec * 1000);
-  const outer = req.signal;
-  if (outer) {
-    if (outer.aborted) ctrl.abort();
-    else outer.addEventListener("abort", () => ctrl.abort(), { once: true });
-  }
 
-  let res: Response;
+  // 2026-10-26 起请求走 Rust 命令（cap-llm）：明文 key 由后端从本机加密库解出，
+  // **不再回传 webview** —— 此前前端自己拼 Authorization 头 fetch，key 一直摊在 JS 内存里。
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        temperature: 0.3,
-        stream: false,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: req.prompt },
-        ],
-      }),
-      signal: ctrl.signal,
+    const content = await native.aiGenerateOutline({
+      prompt: req.prompt,
+      endpoint,
+      model,
+      timeoutSec,
     });
+    if (!content.trim()) {
+      logEvent("warn", `AI 返回空内容（${originOf(endpoint)}，模型 ${model}）`);
+      throw new Error("AI 服务没有返回任何内容，请换一种更具体的描述后重试。");
+    }
+    logEvent("info", `AI 返回 ${content.length} 字（${originOf(endpoint)}，模型 ${model}）`);
+    return content;
   } catch (e) {
-    // 三种中止原因要分清楚：用户主动停 ≠ 网络慢 ≠ 地址错了。
-    if (outer?.aborted) {
-      logEvent("info", "AI 生成被用户取消。");
-      throw new Error("AI 生成已取消。");
-    }
-    if (ctrl.signal.aborted) {
-      logEvent(
-        "error",
-        `AI 请求超时（${timeoutSec}s，${originOf(url)}）；代理档位 ${
-          useSettings.getState().settings.network.proxyMode
-        }`
-      );
-      throw new Error(
-        `AI 服务在 ${timeoutSec} 秒内没有响应，已超时；请在「选项 → 网络」里加大超时或检查代理设置。`
-      );
-    }
-    logEvent(
-      "error",
-      `AI 连接失败：${e instanceof Error ? e.message : String(e)}（${originOf(url)}）`
-    );
-    throw new Error(
-      `无法连接 AI 服务：${e instanceof Error ? e.message : String(e)}；请检查接口地址与网络代理。`
-    );
-  } finally {
-    clearTimeout(timer);
+    const message = e instanceof Error ? e.message : String(e);
+    // 后端的错误已经脱敏（不会带 key），这里只补日志；文案原样透传给用户。
+    logEvent("error", `AI 生成失败：${message}（${originOf(endpoint)}）`);
+    throw e instanceof Error ? e : new Error(message);
   }
-
-  if (!res.ok) {
-    // 只带状态码：有些网关的响应体会把 Authorization 回显出来，那句话不能进界面日志。
-    logEvent("error", `AI 服务返回 HTTP ${res.status}（${originOf(url)}，模型 ${model}）`);
-    throw new Error(
-      `AI 服务返回错误（HTTP ${res.status}），请确认接口地址、模型名称与 API Key 是否匹配。`
-    );
-  }
-
-  let content = "";
-  try {
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    content = data.choices?.[0]?.message?.content ?? "";
-  } catch {
-    logEvent("error", `AI 响应不是可解析的 JSON（HTTP ${res.status}，${originOf(url)}）`);
-    throw new Error(
-      "AI 服务返回的不是可解析的 JSON，请确认填写的是 OpenAI 兼容的 chat/completions 接口地址。"
-    );
-  }
-  if (!content.trim()) {
-    logEvent("warn", `AI 返回空内容（${originOf(url)}，模型 ${model}）`);
-    throw new Error("AI 服务没有返回任何内容，请换一种更具体的描述后重试。");
-  }
-  logEvent("info", `AI 返回 ${content.length} 字（${originOf(url)}，模型 ${model}）`);
-  return content;
 }
 
 /** AI 生成的内容打上 extras.ai（会话级打标；.emmx 无对应键，存盘重开即丢 —— 有意为之）。 */
@@ -221,8 +153,8 @@ export async function outlineToPage(page: Page, markdown: string): Promise<Page>
   return insertOutlineText(page, markdown);
 }
 
-/** 配置三件套（端点/模型/密钥）的检查与取回，runAiInsert 与 runAiOnTopic 共用。 */
-type AiConnection = { ok: true; endpoint: string; model: string; apiKey: string } | { ok: false; message: string };
+/** 配置三件套的检查（端点/模型在设置里，密钥只探存在不取明文），runAiInsert 与 runAiOnTopic 共用。 */
+type AiConnection = { ok: true; endpoint: string; model: string } | { ok: false; message: string };
 
 async function aiConnection(): Promise<AiConnection> {
   const settings = useSettings.getState().settings;
@@ -241,16 +173,18 @@ async function aiConnection(): Promise<AiConnection> {
     };
   }
 
-  let apiKey: string | null = null;
+  // 只探存在、不 reveal：明文 key 自 2026-10-26 起不出 Rust（请求在后端发，
+  // key 由后端从加密库解）。这里探不到就引导去「选项 → 高级」填。
+  let hasKey = false;
   try {
-    apiKey = await native.secretReveal(SECRET_KEY);
+    hasKey = await native.secretExists(SECRET_KEY);
   } catch {
-    apiKey = null; // 浏览器模式没有本机加密库：和"没配过"同样处理，别把原生错误抛给用户
+    hasKey = false; // 浏览器模式没有本机加密库：和"没配过"同样处理
   }
-  if (!apiKey) {
+  if (!hasKey) {
     return { ok: false, message: "尚未配置 AI API Key，请在「选项 → 高级」里填写密钥。" };
   }
-  return { ok: true, endpoint, model, apiKey };
+  return { ok: true, endpoint, model };
 }
 
 /** 生成完按实际上报字数结算；没扣下点数就不落树，否则白送一次生成。 */
@@ -269,7 +203,7 @@ async function billOutline(
 async function generateLocked(prompt: string, conn: Extract<AiConnection, { ok: true }>): Promise<string> {
   useUi.getState().setAiBusy(true);
   try {
-    return await generateOutline({ prompt, endpoint: conn.endpoint, model: conn.model, apiKey: conn.apiKey });
+    return await generateOutline({ prompt, endpoint: conn.endpoint, model: conn.model });
   } finally {
     useUi.getState().setAiBusy(false);
   }
