@@ -385,7 +385,7 @@ export function KanbanView({ page }: KanbanViewProps) {
       </div>
 
       {/* 配额是一等公民（P-4）：列数超限时不新建列，但已存在的卡片照样能看能拖。 */}
-      {!guard.ok ? <Alert type="warning" showIcon banner message={guard.reason ?? "看板列数已达上限"} /> : null}
+      {!guard.ok ? <Alert type="warning" showIcon banner title={guard.reason ?? "看板列数已达上限"} /> : null}
 
       {columns.length === 0 ? (
         <Empty description="看板还没有列：先在导图里建主分支" style={{ marginTop: 60 }} />

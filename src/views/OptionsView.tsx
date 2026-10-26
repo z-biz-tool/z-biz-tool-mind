@@ -1332,7 +1332,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
       }
     >
       {storeError ? (
-        <Alert type="error" showIcon message={storeError} style={{ marginBottom: 8 }} />
+        <Alert type="error" showIcon title={storeError} style={{ marginBottom: 8 }} />
       ) : null}
       {body}
     </Modal>

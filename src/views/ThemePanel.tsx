@@ -325,7 +325,7 @@ function ThemeEditor({ initial, isNew, canApply, onApply, onSave, onClose }: Edi
           <span style={{ width: 108, textAlign: "right", fontSize: 13, flexShrink: 0 }}>预览</span>
           <Preview theme={draft} />
         </div>
-        {tip ? <Alert type="error" showIcon message={tip} /> : null}
+        {tip ? <Alert type="error" showIcon title={tip} /> : null}
         <div style={{ fontSize: 12, color: "var(--zm-text-2)" }}>
           字体名要和系统里装的一样才显示得出来；导出的 SVG/PDF 只带这个名字，不带字体文件。
         </div>
@@ -467,7 +467,7 @@ export function ThemePanel({ open, onClose }: { open: boolean; onClose: () => vo
       }
     >
       {!loaded ? (
-        <Alert type="info" showIcon message="正在读取配置文件…" />
+        <Alert type="info" showIcon title="正在读取配置文件…" />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {current ? (
@@ -563,7 +563,7 @@ export function ThemePanel({ open, onClose }: { open: boolean; onClose: () => vo
             )}
           </Section>
 
-          {tip ? <Alert type="info" showIcon message={tip} /> : null}
+          {tip ? <Alert type="info" showIcon title={tip} /> : null}
         </div>
       )}
 

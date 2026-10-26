@@ -97,7 +97,7 @@ export function AiTopicDialog({ open, onClose }: AiTopicDialogProps) {
           </p>
         </>
       ) : (
-        <Alert type="info" showIcon message="先在画布里选中一个主题，再用 AI 助手。" />
+        <Alert type="info" showIcon title="先在画布里选中一个主题，再用 AI 助手。" />
       )}
     </Modal>
   );

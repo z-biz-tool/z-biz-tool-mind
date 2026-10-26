@@ -325,7 +325,7 @@ export function HistoryPanel(_props?: HistoryPanelProps) {
     >
       {msgHolder}
       {storeError ? (
-        <Alert type="error" showIcon message={storeError} style={{ margin: 8, fontSize: 12 }} />
+        <Alert type="error" showIcon title={storeError} style={{ margin: 8, fontSize: 12 }} />
       ) : null}
       {body}
 
