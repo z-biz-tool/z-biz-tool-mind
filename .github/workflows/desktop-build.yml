@@ -93,6 +93,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # cap-llm / cap-doc 走 ../../z-biz-tool-capability path 依赖；runner 上只有本仓，
+      # 把公共能力仓取到 workspace 内，再链接到 src-tauri 的同级目录。
+      - name: Checkout capability (path deps)
+        uses: actions/checkout@v4
+        with:
+          repository: z-biz-tool/z-biz-tool-capability
+          path: .capability
+
+      - name: Link capability (Unix)
+        if: runner.os != 'Windows'
+        run: ln -sfn "$GITHUB_WORKSPACE/.capability" "$GITHUB_WORKSPACE/../z-biz-tool-capability"
+
+      - name: Link capability (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: New-Item -ItemType Junction -Path "$env:GITHUB_WORKSPACE\..\z-biz-tool-capability" -Target "$env:GITHUB_WORKSPACE\.capability" | Out-Null
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -116,6 +133,23 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # cap-llm / cap-doc 走 ../../z-biz-tool-capability path 依赖；runner 上只有本仓，
+      # 把公共能力仓取到 workspace 内，再链接到 src-tauri 的同级目录。
+      - name: Checkout capability (path deps)
+        uses: actions/checkout@v4
+        with:
+          repository: z-biz-tool/z-biz-tool-capability
+          path: .capability
+
+      - name: Link capability (Unix)
+        if: runner.os != 'Windows'
+        run: ln -sfn "$GITHUB_WORKSPACE/.capability" "$GITHUB_WORKSPACE/../z-biz-tool-capability"
+
+      - name: Link capability (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: New-Item -ItemType Junction -Path "$env:GITHUB_WORKSPACE\..\z-biz-tool-capability" -Target "$env:GITHUB_WORKSPACE\.capability" | Out-Null
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -147,6 +181,23 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # cap-llm / cap-doc 走 ../../z-biz-tool-capability path 依赖；runner 上只有本仓，
+      # 把公共能力仓取到 workspace 内，再链接到 src-tauri 的同级目录。
+      - name: Checkout capability (path deps)
+        uses: actions/checkout@v4
+        with:
+          repository: z-biz-tool/z-biz-tool-capability
+          path: .capability
+
+      - name: Link capability (Unix)
+        if: runner.os != 'Windows'
+        run: ln -sfn "$GITHUB_WORKSPACE/.capability" "$GITHUB_WORKSPACE/../z-biz-tool-capability"
+
+      - name: Link capability (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: New-Item -ItemType Junction -Path "$env:GITHUB_WORKSPACE\..\z-biz-tool-capability" -Target "$env:GITHUB_WORKSPACE\.capability" | Out-Null
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -186,6 +237,23 @@ jobs:
             triple: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
+      # cap-llm / cap-doc 走 ../../z-biz-tool-capability path 依赖；runner 上只有本仓，
+      # 把公共能力仓取到 workspace 内，再链接到 src-tauri 的同级目录。
+      - name: Checkout capability (path deps)
+        uses: actions/checkout@v4
+        with:
+          repository: z-biz-tool/z-biz-tool-capability
+          path: .capability
+
+      - name: Link capability (Unix)
+        if: runner.os != 'Windows'
+        run: ln -sfn "$GITHUB_WORKSPACE/.capability" "$GITHUB_WORKSPACE/../z-biz-tool-capability"
+
+      - name: Link capability (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: New-Item -ItemType Junction -Path "$env:GITHUB_WORKSPACE\..\z-biz-tool-capability" -Target "$env:GITHUB_WORKSPACE\.capability" | Out-Null
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
