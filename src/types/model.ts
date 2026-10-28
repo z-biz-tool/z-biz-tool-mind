@@ -315,6 +315,8 @@ export type LayoutCode =
   | "timelineHorizontal" // 时间轴（向右）
   | "timelineLeft" // 时间轴（向左）
   | "timelineWinding" // 时间轴（S 形）
+  | "flowRight" // 流程图（右向，超出蓝本的自研版式）
+  | "flowDown" // 流程图（向下，超出蓝本的自研版式）
   | "free"; // 自由布局
 
 /** .emmx 的 `<Layout V="n">` 数字码。亿图自己的语料里只出现过 6 / 7 / 8，认不出的码由 codec 原样带回。 */

@@ -47,6 +47,12 @@ export interface ConnectorPath {
   toId: string;
   /** SVG path 的 d 属性，与 .emmx 的 Geometries(MoveTo/CurveTo) 一一对应。 */
   d: string;
+  /**
+   * 箭头（可选）：两条短线的开口 chevron，只有流程图族给。
+   * 不拼进 d —— 连线的 d 被全码通用的"折线不许有斜段"门盯着，箭头走 buildAxis.head 同一条先例，
+   * 画布与导出各补一笔同色 path。
+   */
+  head?: string;
   side: -1 | 0 | 1;
 }
 
@@ -1518,6 +1524,14 @@ function buildLayoutBase(
         layoutWinding(root, hs, vs);
         break;
       }
+      case "flowRight": {
+        layoutFlow(root, hs, vs, "h");
+        break;
+      }
+      case "flowDown": {
+        layoutFlow(root, hs, vs, "v");
+        break;
+      }
       case "matrix": {
         layoutMatrix(root, hs);
         break;
@@ -1944,6 +1958,81 @@ function layoutWinding(root: TreeNode, hs: number, vs: number): void {
 }
 
 /**
+ * 流程图（右向 / 向下，超出蓝本的自研版式，03 §1.3-32）。
+ *
+ * 一级分支不再是"枝"，是流程的步骤：按文档序沿主方向排成一条链，连线层画的
+ * 是步骤之间的流线箭头（见 buildConnectors 的 flow 分支）；根主题是流程名，
+ * 站在链头前面，第一条箭头从它出发。每个步骤的子树沿副轴排成目录
+ * （前序一行/列一个，盒子永不共行 ⇒ 永不相压），按深度向主方向逐层缩进，
+ * 肘形连线因此不会穿过任何盒子。右向/向下是同一套几何各转 90°，不是两套公式。
+ */
+function layoutFlow(root: TreeNode, hs: number, vs: number, axis: "h" | "v"): void {
+  const steps = root.children;
+  if (!steps.length) {
+    root.x = 0;
+    root.y = 0;
+    return;
+  }
+  if (axis === "h") {
+    let cursorX = 0;
+    for (const st of steps) {
+      st.x = cursorX + st.w / 2;
+      st.y = 0;
+      st.side = 1;
+      const sub = flowSubtree(st, hs, vs);
+      cursorX += Math.max(st.w / 2, sub.dx) + hs;
+    }
+    root.x = steps[0].x - steps[0].w / 2 - hs - root.w / 2;
+    root.y = 0;
+  } else {
+    let cursorY = 0;
+    for (const st of steps) {
+      st.x = 0;
+      st.y = cursorY + st.h / 2;
+      st.side = 1;
+      const sub = flowSubtree(st, hs, vs);
+      cursorY += Math.max(st.h / 2, sub.dy) + vs;
+    }
+    root.x = 0;
+    root.y = steps[0].y - steps[0].h / 2 - vs - root.h / 2;
+  }
+}
+
+/**
+ * 流程子树：挂在步骤右下角的目录式 —— 深度即列（每层列宽取该层最宽者，深层列
+ * 永远从浅层列的完整宽度之后起，连线因此不会穿框），前序即行（盒子永不分走同一行，
+ * 也就永不相压），与 layoutTreeCorner 是同一套规矩。两个码共用这一份几何：
+ * 右向 / 向下只是链的主方向不同，子树都是往右下长。
+ * 返回子树相对步骤中心的两向进深（右缘 dx / 下缘 dy），链上游标按它让位，
+ * 相邻步骤的子树才不会撞进同一片区间。
+ */
+function flowSubtree(st: TreeNode, hs: number, vs: number): { dx: number; dy: number } {
+  const colW: number[] = [];
+  const bump = (n: TreeNode, d: number) => {
+    colW[d] = Math.max(colW[d] ?? 0, n.w);
+    for (const c of n.children) bump(c, d + 1);
+  };
+  for (const c of st.children) bump(c, 1);
+  const colX: number[] = [];
+  let acc = st.w / 2 + hs;
+  for (let d = 1; d < colW.length; d++) {
+    colX[d] = acc;
+    acc += (colW[d] ?? 0) + hs;
+  }
+  const dx = colW.length > 1 ? acc - hs : 0;
+  let cursor = st.h / 2 + vs;
+  const walk = (n: TreeNode, depth: number) => {
+    n.x = st.x + colX[depth] + n.w / 2;
+    n.y = st.y + cursor + n.h / 2;
+    n.side = 1;
+    cursor += n.h + vs;
+    for (const c of n.children) walk(c, depth + 1);
+  };
+  for (const c of st.children) walk(c, 1);
+  return { dx, dy: st.children.length ? cursor - vs : 0 };
+}
+
+/**
  * 连线：分支线在思维导图里是曲线，在树/组织结构图里是直角折线。
  * page 参数用不上（父子关系已经进了 NodeBox.parentId），但它是本模块导出的签名，
  * 下划线保留形参位而不是删掉，免得外部调用方跟着改。
@@ -1994,6 +2083,8 @@ export function buildConnectors(
   // 树形表格不画连线：层级关系由"哪一栏 + 跨哪几条槽"表达，格线就是父子边界，
   // 再叠一层连线只会盖在字上。注意这两码名字以 tree 开头，必须抢在下面那条判据之前摘出去。
   if (TABLE_LAYOUTS.includes(code)) return out;
+  // 流程图也不走"父子桩"那一套：链上是步骤之间的流线箭头，见 flowConnectors。
+  if (code === "flowRight" || code === "flowDown") return flowConnectors(boxes, code);
   const elbow = code.startsWith("tree") || code.startsWith("org") || code === "matrix";
   const slant = SLANT_LAYOUTS.includes(code);
   const corner = CORNER_LAYOUTS[code];
@@ -2115,6 +2206,62 @@ function elbowPath(p: NodeBox, c: NodeBox, vertical: boolean): string {
 
 function round(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/**
+ * 流程图的连线（03 §1.3-32）：链上画的是步骤之间的流线箭头（根 → 步骤 1 → 步骤 2 …），
+ * 不再是"父到子的桩"；子步骤仍从父步骤出，走角向折线（cornerPath），
+ * 末端补一个开口 chevron 当箭头 —— 箭头直接拼进 d，不进 marker，
+ * 画布 / SVG / PDF 描的是同一份 path（buildAxis 的 head 同一条先例）。
+ */
+function flowConnectors(boxes: Record<string, NodeBox>, code: LayoutCode): ConnectorPath[] {
+  const axis = code === "flowRight" ? "h" : "v";
+  const list = Object.values(boxes);
+  const root = list.find((b) => b.level === 0 && b.parentId === null);
+  const chain = list.filter((b) => b.level === 1);
+  const out: ConnectorPath[] = [];
+  const seq = root && chain.length ? [root, ...chain] : chain;
+  for (let i = 0; i + 1 < seq.length; i++) {
+    const a = seq[i];
+    const b = seq[i + 1];
+    const { shaft, head } = flowArrow(a, b, axis);
+    out.push({ id: `c-${a.id}-${b.id}`, fromId: a.id, toId: b.id, side: 1, d: shaft, head });
+  }
+  for (const b of list) {
+    if (b.level < 2 || !b.parentId) continue;
+    const p = boxes[b.parentId];
+    if (!p) continue;
+    const tip = { x: b.x - b.w / 2, y: b.y };
+    out.push({
+      id: `c-${p.id}-${b.id}`,
+      fromId: p.id,
+      toId: b.id,
+      side: b.side,
+      d: cornerPath(p, b, 1, 1),
+      head: `M ${round(tip.x - 8)} ${round(tip.y - 4.5)} L ${round(tip.x)} ${round(tip.y)} L ${round(tip.x - 8)} ${round(tip.y + 4.5)}`,
+    });
+  }
+  return out.sort((a, b) => (a.id < b.id ? -1 : 1));
+}
+
+/** 链上箭头：从前驱的前缘到后继的后缘一根直线；箭头是末端的开口 chevron（head，不进 d）。 */
+function flowArrow(a: NodeBox, b: NodeBox, axis: "h" | "v"): { shaft: string; head: string } {
+  if (axis === "h") {
+    const x1 = a.x + a.w / 2;
+    const x2 = b.x - b.w / 2;
+    const y = (a.y + b.y) / 2;
+    return {
+      shaft: `M ${round(x1)} ${round(y)} L ${round(x2)} ${round(y)}`,
+      head: `M ${round(x2 - 8)} ${round(y - 4.5)} L ${round(x2)} ${round(y)} L ${round(x2 - 8)} ${round(y + 4.5)}`,
+    };
+  }
+  const y1 = a.y + a.h / 2;
+  const y2 = b.y - b.h / 2;
+  const x = (a.x + b.x) / 2;
+  return {
+    shaft: `M ${round(x)} ${round(y1)} L ${round(x)} ${round(y2)}`,
+    head: `M ${round(x - 4.5)} ${round(y2 - 8)} L ${round(x)} ${round(y2)} L ${round(x + 4.5)} ${round(y2 - 8)}`,
+  };
 }
 
 /** 影响布局的几项参数，变了才需要重算。 */

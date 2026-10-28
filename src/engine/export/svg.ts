@@ -250,7 +250,9 @@ export function renderSvg(p: Paint, view: SvgView = fullView(p)): string {
   }
   out.push(`<g fill="none" stroke-linecap="round">`);
   for (const c of p.connectors) {
-    out.push(`<path d="${esc(c.d)}" stroke="${strokeOf(p, c)}" stroke-width="1.6"/>`);
+    const stroke = strokeOf(p, c);
+    out.push(`<path d="${esc(c.d)}" stroke="${stroke}" stroke-width="1.6"/>`);
+    if (c.head) out.push(`<path d="${esc(c.head)}" stroke="${stroke}" stroke-width="1.6"/>`);
   }
   // 主轴与连线同一个 <g>：线帽、无填充这些公共属性只写一次，屏上与导出也就少一处能错开
   if (p.layout.axis) {

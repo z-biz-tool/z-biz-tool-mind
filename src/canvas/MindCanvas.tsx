@@ -1174,12 +1174,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
           )}
           <g fill="none" strokeLinecap="round">
             {paint.connectors.map((c) => (
-              <path
-                key={c.id}
-                d={c.d}
-                stroke={lineOf.get(c.toId) ?? DEFAULTS.lineColor}
-                strokeWidth={1.6}
-              />
+              <g key={c.id}>
+                <path d={c.d} stroke={lineOf.get(c.toId) ?? DEFAULTS.lineColor} strokeWidth={1.6} />
+                {c.head ? (
+                  <path d={c.head} stroke={lineOf.get(c.toId) ?? DEFAULTS.lineColor} strokeWidth={1.6} />
+                ) : null}
+              </g>
             ))}
             {axis
               ? [axis.d, axis.head].map((d, i) => (

@@ -156,6 +156,8 @@ export function pdfPagesOf(page: Page, opts: ExportOptions = {}): PdfPage[] {
   const ops: PdfOp[] = [{ k: "rect", x: 0, y: 0, w: paper.width, h: paper.height, fill: "#ffffff" }];
   for (const c of paint.connectors) {
     ops.push({ k: "path", d: transformPath(c.d, fx, fy), stroke: "#9aa0a6", lineWidth: 1 });
+    if (c.head)
+      ops.push({ k: "path", d: transformPath(c.head, fx, fy), stroke: "#9aa0a6", lineWidth: 1 });
   }
   for (const b of paint.boxes) {
     ops.push({
