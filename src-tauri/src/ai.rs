@@ -62,6 +62,9 @@ pub fn to_cap(args: &AiGenerateArgs) -> Result<LlmConfig, String> {
         timeout: std::time::Duration::from_secs(args.timeout_sec.max(1)),
         temperature: Some(0.3),
         max_tokens: None,
+        // 本仓要求显式填接口地址（复刻方案 §3.13），因此不绑定供应商预设 ——
+        // 预设会在 base_url 为空时自动补地址，与本仓「必须显式填写」的约定相悖。
+        preset: None,
     })
 }
 
