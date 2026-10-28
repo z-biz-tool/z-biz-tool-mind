@@ -8,8 +8,10 @@
 import { useMemo, useState } from "react";
 import { Alert, Button, Modal, message } from "antd";
 import { AI_VERB_LABEL, runAiOnTopic, type AiVerb } from "../services/ai.ts";
+import type { AiFailure } from "../services/aiFailure.ts";
 import { activePage, useDoc } from "../stores/docStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
+import { useUi } from "../stores/uiStore.ts";
 import { isTopic, plainText } from "../types/model.ts";
 
 const VERBS: readonly { verb: AiVerb; tip: string }[] = [
@@ -30,6 +32,16 @@ export function AiTopicDialog({ open, onClose }: AiTopicDialogProps) {
   const focusId = useDoc((s) => s.focusId);
   const quota = useSettings((s) => s.settings.quota);
   const [busy, setBusy] = useState<AiVerb | null>(null);
+  /**
+   * 上一次失败的结构化描述。
+   *
+   * ## 为什么不再只用 `message.warning`
+   *
+   * toast 三秒就没了，而「密钥失效」这类错误用户是要**照着改**的：
+   * 一条会自动消失的浮动提示，等于让他凭记忆去改设置。
+   * 这里把失败留在对话框里，并直接给一个按钮把人送到该改的那一栏。
+   */
+  const [failure, setFailure] = useState<AiFailure | null>(null);
 
   // 锚点只认真主题：标注泡/外框/概要进了"子主题"语义就是一棵亿图读不懂的树，
   // 画布入口在 actionsFor 里已经挡过一次，这里再挡是因为选中可能换人。
@@ -46,15 +58,32 @@ export function AiTopicDialog({ open, onClose }: AiTopicDialogProps) {
   const run = async (verb: AiVerb) => {
     if (!anchor || busy) return;
     setBusy(verb);
+    setFailure(null);
     try {
       const r = await runAiOnTopic(anchor.id, verb);
-      if (r.ok) message.success(r.message);
-      else message.warning(r.message);
-      if (r.ok) onClose();
+      if (r.ok) {
+        message.success(r.message);
+        onClose();
+      } else if (r.failure) {
+        // 能判断的失败留在面板里（可照着改），不再是一条三秒就没的 toast
+        setFailure(r.failure);
+      } else {
+        message.warning(r.message);
+      }
     } finally {
       setBusy(null);
     }
   };
+
+  /** 把用户送到该改的那一栏。「选项」是单例对话框，直接切换即可。 */
+  const goFix = () => {
+    useUi.getState().openDialog("options");
+    onClose();
+  };
+
+  /** 按钮文案要指出「改什么」，只写「确定」等于没给动作。 */
+  const fixLabel = (f: AiFailure) =>
+    f.focus === "apiKey" ? "去填密钥" : f.focus === "model" ? "去改模型名" : "去改接口地址";
 
   const left = Math.max(0, quota.aiPoints - quota.aiUsed);
 
@@ -77,6 +106,26 @@ export function AiTopicDialog({ open, onClose }: AiTopicDialogProps) {
           <p style={{ margin: "0 0 12px", color: "var(--zm-text-2)", fontSize: 12 }}>
             可用 AI 点数：{left} / {quota.aiPoints}
           </p>
+          {/* 失败留在面板里：说明「为什么」+ 一个能点的动作。
+              原始错误放在描述里，给想深究的人；hint 给只想让它能用的人。 */}
+          {failure && (
+            <Alert
+              type="error"
+              showIcon
+              style={{ marginBottom: 12 }}
+              title={failure.message}
+              description={failure.hint || undefined}
+              action={
+                failure.focus === "none" ? undefined : (
+                  <Button size="small" onClick={goFix}>
+                    {fixLabel(failure)}
+                  </Button>
+                )
+              }
+              closable
+              onClose={() => setFailure(null)}
+            />
+          )}
           <div style={{ display: "grid", gap: 8 }}>
             {VERBS.map(({ verb, tip }) => (
               <Button

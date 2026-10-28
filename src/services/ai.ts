@@ -17,6 +17,16 @@ import { useSettings } from "../stores/settingsStore.ts";
 import { useUi } from "../stores/uiStore.ts";
 import { canGenerate } from "../utils/entitlement.ts";
 import { native } from "./native.ts";
+import { type AiFailure, failureOf, toAiFailureError } from "./aiFailure.ts";
+
+/**
+ * UI 直接调用的结果。
+ *
+ * `failure` 只在「后端/配置给出了**可判断**的失败」时出现（缺密钥、401、404…）；
+ * 配额不足、文档已关闭这类只有一句话结论的情况不带它 ——
+ * 给它们编一个 `focus` 会把用户送进一个跟失败无关的输入框。
+ */
+export type AiResult = { ok: boolean; message: string; failure?: AiFailure };
 
 export interface AiRequest {
   prompt: string;
@@ -89,10 +99,14 @@ export async function generateOutline(req: AiRequest): Promise<string> {
     logEvent("info", `AI 返回 ${content.length} 字（${originOf(endpoint)}，模型 ${model}）`);
     return content;
   } catch (e) {
+    // 后端的失败是结构化的（kind/status/hint/focus），一路带上去给对话框分流。
+    // 这里若把它压成一句 message，界面就只剩「AI 生成失败」——
+    // 用户知道失败了，但不知道是密钥、地址、模型还是网络。
+    const failure = failureOf(e);
     const message = e instanceof Error ? e.message : String(e);
     // 后端的错误已经脱敏（不会带 key），这里只补日志；文案原样透传给用户。
     logEvent("error", `AI 生成失败：${message}（${originOf(endpoint)}）`);
-    throw e instanceof Error ? e : new Error(message);
+    throw failure ? toAiFailureError(e) : e instanceof Error ? e : new Error(message);
   }
 }
 
@@ -154,8 +168,16 @@ export async function outlineToPage(page: Page, markdown: string): Promise<Page>
 }
 
 /** 配置三件套的检查（端点/模型在设置里，密钥只探存在不取明文），runAiInsert 与 runAiOnTopic 共用。 */
-type AiConnection = { ok: true; endpoint: string; model: string } | { ok: false; message: string };
+type AiConnection =
+  | { ok: true; endpoint: string; model: string }
+  | { ok: false; message: string; failure?: AiFailure };
 
+/**
+ * 配置三件事的本地预检。
+ *
+ * 每一项失败都带 `focus`：地址、模型、密钥分处「选项 → 高级」的三个输入框。
+ * 只说「去填一下」等于让用户把三个框都试一遍，所以连光标该落哪儿一起给出去。
+ */
 async function aiConnection(): Promise<AiConnection> {
   const settings = useSettings.getState().settings;
   const endpoint = settings.advanced.aiEndpoint.trim();
@@ -164,12 +186,26 @@ async function aiConnection(): Promise<AiConnection> {
     return {
       ok: false,
       message: "尚未配置 AI 接口地址，请在「选项 → 高级」里填写 OpenAI 兼容的服务地址后再生成。",
+      failure: {
+        kind: "notConfigured",
+        status: null,
+        message: "尚未配置 AI 接口地址。",
+        hint: "填 OpenAI 兼容的服务地址，例如 https://api.openai.com/v1、https://api.deepseek.com/v1。",
+        focus: "baseUrl",
+      },
     };
   }
   if (!model) {
     return {
       ok: false,
       message: "尚未配置 AI 模型名称，请在「选项 → 高级」里填写，例如 gpt-4o-mini。",
+      failure: {
+        kind: "notConfigured",
+        status: null,
+        message: "尚未配置 AI 模型名称。",
+        hint: "填一个能对话的模型，例如 gpt-4o-mini、deepseek-chat、qwen-plus。",
+        focus: "model",
+      },
     };
   }
 
@@ -182,7 +218,17 @@ async function aiConnection(): Promise<AiConnection> {
     hasKey = false; // 浏览器模式没有本机加密库：和"没配过"同样处理
   }
   if (!hasKey) {
-    return { ok: false, message: "尚未配置 AI API Key，请在「选项 → 高级」里填写密钥。" };
+    return {
+      ok: false,
+      message: "尚未配置 AI API Key，请在「选项 → 高级」里填写密钥。",
+      failure: {
+        kind: "notConfigured",
+        status: null,
+        message: "尚未配置 AI API Key。",
+        hint: "在「选项 → 高级」粘贴服务商给的密钥。它只存本机加密库，不会写入配置文件。",
+        focus: "apiKey",
+      },
+    };
   }
   return { ok: true, endpoint, model };
 }
@@ -213,7 +259,7 @@ async function generateLocked(prompt: string, conn: Extract<AiConnection, { ok: 
  * UI 直接调的那一条完整流程：配置检查 → 配额预检 → 生成 → 结算 → 提交。
  * 返回的句子原样 show 出来，所以每个失败分支都得说清楚"缺什么、去哪儿填"。
  */
-export async function runAiInsert(label: string): Promise<{ ok: boolean; message: string }> {
+export async function runAiInsert(label: string): Promise<AiResult> {
   const conn = await aiConnection();
   if (!conn.ok) return conn;
 
@@ -241,7 +287,13 @@ export async function runAiInsert(label: string): Promise<{ ok: boolean; message
       conn
     );
   } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    // 生成失败一律带上结构化失败（缺密钥 / 401 / 404 / 网络…），
+    // 界面的动作按钮全靠它决定把用户送去哪一栏。
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : String(e),
+      failure: failureOf(e) ?? undefined,
+    };
   }
 
   const billed = await billOutline(outline);
@@ -320,7 +372,7 @@ export function applyTopicAction(page: Page, id: string, verb: AiVerb, outline: 
 }
 
 /** 选中主题上的完整流程，与 runAiInsert 同一条纪律：配置 → 预检 → 锁 → 生成 → 结算 → 提交。 */
-export async function runAiOnTopic(id: string, verb: AiVerb): Promise<{ ok: boolean; message: string }> {
+export async function runAiOnTopic(id: string, verb: AiVerb): Promise<AiResult> {
   const conn = await aiConnection();
   if (!conn.ok) return conn;
 
@@ -349,7 +401,13 @@ export async function runAiOnTopic(id: string, verb: AiVerb): Promise<{ ok: bool
   try {
     outline = await generateLocked(prompt, conn);
   } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    // 生成失败一律带上结构化失败（缺密钥 / 401 / 404 / 网络…），
+    // 界面的动作按钮全靠它决定把用户送去哪一栏。
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : String(e),
+      failure: failureOf(e) ?? undefined,
+    };
   }
 
   const billed = await billOutline(outline);

@@ -4,11 +4,14 @@
  * 两件事决定这里的形状：
  * 1) Rust 侧命令一律 `Result<T, String>`，错误是完整中文句子，前端可以直接 show 出来，
  *    所以这里不再包一层错误类型 —— 再包一次只会把"读取文件失败: xxx"切成两半。
+ *    **例外**：`ai_generate_outline` 的 Err 是结构化对象（见 services/aiFailure.ts），
+ *    那个必须包成 Error 才能穿过按 `instanceof Error` 判分支的调用方。
  * 2) 界面必须被真实点过一遍才算验证，而 `vite dev` 在浏览器里跑时没有 IPC。
  *    于是每个命令都有一份 Web 端实现：配置/最近文件落 localStorage，备份与自动保存落内存，
  *    字节读写走 File System Access API（不支持时退到 <input type=file> + <a download>）。
  *    浏览器分支不是"假装成功"：它真的能读 .emmx、真的能存盘，只是历史版本关在标签页里。
  */
+import { toAiFailureError } from "./aiFailure.ts";
 export interface AppInfo {
   version: string;
   configDir: string;
@@ -560,7 +563,14 @@ export const native = {
     if (!isTauri) {
       throw new Error("AI 生成需要在桌面版里使用（浏览器模式没有本机加密库与网络栈）。");
     }
-    return call<string>("ai_generate_outline", { args });
+    try {
+      return await call<string>("ai_generate_outline", { args });
+    } catch (e) {
+      // 后端的失败是**对象**（kind/status/message/hint/focus），invoke 会原样 reject。
+      // 这里必须把它包成 Error 再往上抛：调用方按 `instanceof Error` 判分支，
+      // 直接把裸对象抛出去会被当成「未知异常」，结构化字段全丢。
+      throw toAiFailureError(e);
+    }
   },
 
   async revealInFolder(path: string): Promise<void> {

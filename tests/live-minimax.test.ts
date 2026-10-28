@@ -44,6 +44,8 @@ async function main(): Promise<void> {
       prompt: "只回三个字：连通成功",
       endpoint: BASE,
       model: MODEL,
+      // 密钥自 2026-10-26 起由 Rust 从本机加密库自取，不再经前端传参 ——
+      // 跑这条真机用例前请先在「选项 → 高级」把 key 存好。
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

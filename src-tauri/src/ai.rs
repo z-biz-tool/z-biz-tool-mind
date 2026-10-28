@@ -11,10 +11,123 @@
 //! 不出 Rust 进程 —— 设置页也不需要它（只探 `secret_exists`）。
 
 use cap_llm::{LlmConfig, Message, ProviderKind};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// 与前端「选项 → 高级」密钥输入框约定的槽位名（secret.rs 同名）
 const SECRET_KEY: &str = "ai-api-key";
+
+/**
+ * 给界面的结构化失败。
+ *
+ * ## 为什么不是 `Result<_, String>`
+ *
+ * 字符串只能被「读」，不能被「判断」。界面要给出的恰恰是判断：
+ * 缺地址、缺模型、缺密钥、401、429 是五件不同的事，用户的下一步也各不相同。
+ * 靠正则去猜文案里的字眼，等于把逻辑绑在措辞上 —— 谁改一个标点，分流就静默失效，
+ * 而失效的表现是「所有错误都显示同一句话」，没人会把它当 bug 报上来。
+ *
+ * `focus` 是刻意加的：只说「去填密钥」而不把光标送过去，用户还得自己找那一栏。
+ */
+#[derive(Debug, Serialize)]
+pub struct LlmFailure {
+    /// 机器可判的类别：notConfigured / network / timeout / http / parse / unsupported / io
+    pub kind: &'static str,
+    /// HTTP 状态码（仅 kind == "http" 时非空）
+    pub status: Option<u16>,
+    /// 原始错误，已脱敏、已截断
+    pub message: String,
+    /// 一句话动机 + 一个动作
+    pub hint: String,
+    /// 该把光标送进哪一栏：apiKey / baseUrl / model / none
+    pub focus: &'static str,
+}
+
+impl LlmFailure {
+    /// 本地校验失败：没有协议错误可判，但同样要能定位到具体那一栏。
+    fn local(message: impl Into<String>, focus: &'static str) -> Self {
+        Self {
+            kind: "notConfigured",
+            status: None,
+            message: message.into(),
+            hint: "在「选项 → 高级」里补齐这一项后再试。密钥只存本机加密库，不会写进配置文件。"
+                .into(),
+            focus,
+        }
+    }
+
+    fn from_error(e: cap_llm::LlmError) -> Self {
+        Self {
+            kind: kind_key(e.kind),
+            status: e.status,
+            hint: hint_for(e.kind, e.status),
+            focus: focus_for(e.kind, e.status),
+            message: e.to_string(),
+        }
+    }
+}
+
+fn kind_key(k: cap_llm::ErrorKind) -> &'static str {
+    use cap_llm::ErrorKind as E;
+    match k {
+        E::NotConfigured => "notConfigured",
+        E::Network => "network",
+        E::Timeout => "timeout",
+        E::Http => "http",
+        E::Parse => "parse",
+        E::Unsupported => "unsupported",
+        E::Io => "io",
+    }
+}
+
+/// 把类别 + 状态码翻译成「用户下一步该做什么」。每条都指一个具体动作，不复述错误。
+fn hint_for(kind: cap_llm::ErrorKind, status: Option<u16>) -> String {
+    use cap_llm::ErrorKind as E;
+    match (kind, status) {
+        (E::NotConfigured, _) => "配置还差一项。补齐「选项 → 高级」里空着的字段后重试。".into(),
+        (E::Network, _) => {
+            "连不上这个地址。国内厂商一般直连即可，开了代理先关掉；海外厂商（OpenAI / Gemini）相反，需要代理。"
+                .into()
+        }
+        (E::Timeout, _) => {
+            "等太久没等到回应。可能是链路慢或模型在排队 —— 可以在「选项 → 网络」把超时调大，或换个小模型。"
+                .into()
+        }
+        (E::Http, Some(401)) | (E::Http, Some(403)) => {
+            "API Key 无效、已过期，或没有该模型的权限。重新粘贴一次密钥；刚续费过要确认用的是新 key。"
+                .into()
+        }
+        (E::Http, Some(404)) => {
+            "地址或模型名不存在。常见原因是地址多写／少写了一段路径 —— \
+             OpenAI 带 /v1，智谱是 /api/paas/v4，火山是 /api/v3。"
+                .into()
+        }
+        (E::Http, Some(429)) => {
+            "额度用尽或被限流。这不是你配错了 —— 换个时段再试，或到服务商后台充值／提额。".into()
+        }
+        (E::Http, Some(s)) if s >= 500 => "服务商那边故障了，不是你配置的问题。稍后重试即可。".into(),
+        (E::Http, _) => "服务端拒绝了这次请求。原始错误见下方详情。".into(),
+        (E::Parse, _) => {
+            "对方回了内容但不是预期格式。多半是这个地址其实不是 OpenAI 兼容服务 —— \
+             检查一下接口地址是不是填成了别家协议的端点。"
+                .into()
+        }
+        (E::Unsupported, _) => "这家服务不支持当前操作。换一个模型或服务商再试。".into(),
+        (E::Io, _) => "本机读写配置出错。检查配置目录是否可写。".into(),
+    }
+}
+
+/// 这个失败该把光标送到哪一栏。分类必须与 [`hint_for`] 的文案一致 ——
+/// 文案说「重新粘贴密钥」而光标停在地址栏，比不给光标更糟。
+fn focus_for(kind: cap_llm::ErrorKind, status: Option<u16>) -> &'static str {
+    use cap_llm::ErrorKind as E;
+    match (kind, status) {
+        (E::NotConfigured, _) => "none",
+        (E::Http, Some(401)) | (E::Http, Some(403)) => "apiKey",
+        (E::Http, Some(404)) | (E::Parse, _) => "baseUrl",
+        (E::Unsupported, _) => "model",
+        _ => "none",
+    }
+}
 
 /// 命令参数
 #[derive(Debug, Deserialize)]
@@ -34,24 +147,33 @@ fn default_timeout() -> u64 {
 }
 
 /// 配置三件套校验 + 拼 cap-llm 配置。key 缺失在这里就报错，不发请求。
-pub fn to_cap(args: &AiGenerateArgs) -> Result<LlmConfig, String> {
+///
+/// 每一项失败都带 `focus`：三项分处「选项 → 高级」的三个输入框，
+/// 只说「去填一下」等于让用户把三个框都试一遍。
+pub fn to_cap(args: &AiGenerateArgs) -> Result<LlmConfig, LlmFailure> {
     let endpoint = args.endpoint.trim();
     if endpoint.is_empty() {
-        return Err(
-            "尚未配置 AI 接口地址，请在「选项 → 高级」里填写 OpenAI 兼容的服务地址（如 https://api.openai.com/v1）。"
-                .to_string(),
-        );
+        return Err(LlmFailure::local(
+            "尚未配置 AI 接口地址。请填写 OpenAI 兼容的服务地址（如 https://api.openai.com/v1）。",
+            "baseUrl",
+        ));
     }
     let model = args.model.trim();
     if model.is_empty() {
-        return Err("尚未配置 AI 模型名称，请在「选项 → 高级」里填写，例如 gpt-4o-mini。".to_string());
+        return Err(LlmFailure::local(
+            "尚未配置 AI 模型名称。填一个能对话的模型，例如 gpt-4o-mini、deepseek-chat。",
+            "model",
+        ));
     }
-    let key = crate::secret::get(SECRET_KEY)?
+    let key = crate::secret::get(SECRET_KEY)
+        .map_err(|e| LlmFailure::local(e, "apiKey"))?
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
         .ok_or_else(|| {
-            "尚未配置 AI API Key，请在「选项 → 高级」里填写密钥；密钥只存在本机加密库，不会写进配置文件。"
-                .to_string()
+            LlmFailure::local(
+                "尚未配置 AI API Key。密钥只存在本机加密库，不会写进配置文件。",
+                "apiKey",
+            )
         })?;
 
     Ok(LlmConfig {
@@ -70,7 +192,7 @@ pub fn to_cap(args: &AiGenerateArgs) -> Result<LlmConfig, String> {
 
 /// 生成大纲（非流式）。key 从本机加密库解出、请求后即弃，不回传前端。
 #[tauri::command]
-pub async fn ai_generate_outline(args: AiGenerateArgs) -> Result<String, String> {
+pub async fn ai_generate_outline(args: AiGenerateArgs) -> Result<String, LlmFailure> {
     let cfg = to_cap(&args)?;
     let messages = [
         Message::system(
@@ -81,7 +203,7 @@ pub async fn ai_generate_outline(args: AiGenerateArgs) -> Result<String, String>
     ];
     let reply = cap_llm::chat(&cfg, &messages)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(LlmFailure::from_error)?;
     Ok(reply.content)
 }
 
@@ -101,9 +223,46 @@ mod tests {
     #[test]
     fn empty_endpoint_and_model_are_reported_before_key() {
         let e = to_cap(&args(" ", "gpt-4o-mini")).unwrap_err();
-        assert!(e.contains("接口地址"));
+        assert!(e.message.contains("接口地址"));
+        // 报错必须指到具体那一栏 —— 三项分处三个输入框，
+        // 只说「去填一下」等于让用户把三个都试一遍。
+        assert_eq!(e.focus, "baseUrl");
         let e = to_cap(&args("https://api.openai.com/v1", " ")).unwrap_err();
-        assert!(e.contains("模型名称"));
+        assert!(e.message.contains("模型名称"));
+        assert_eq!(e.focus, "model");
+    }
+
+    #[test]
+    fn every_local_failure_carries_an_actionable_hint() {
+        // 「缺配置」是最常见的一种失败，提示里必须写清在哪儿补、以及密钥存在哪 ——
+        // 否则用户会去配置文件里找密钥（它根本不在那儿）。
+        let e = to_cap(&args("", "m")).unwrap_err();
+        assert_eq!(e.kind, "notConfigured");
+        assert!(e.hint.contains("选项"));
+        assert!(e.hint.chars().count() >= 10);
+    }
+
+    #[test]
+    fn focus_target_never_contradicts_the_hint() {
+        use cap_llm::ErrorKind as E;
+        assert_eq!(focus_for(E::Http, Some(401)), "apiKey");
+        assert_eq!(focus_for(E::Http, Some(403)), "apiKey");
+        assert_eq!(focus_for(E::Http, Some(404)), "baseUrl");
+        assert_eq!(focus_for(E::Parse, None), "baseUrl");
+        assert_eq!(focus_for(E::Unsupported, None), "model");
+        // 网络/超时/限流都不是配置写错，不该把用户往表单里推
+        assert_eq!(focus_for(E::Network, None), "none");
+        assert_eq!(focus_for(E::Timeout, None), "none");
+        assert_eq!(focus_for(E::Http, Some(429)), "none");
+    }
+
+    #[test]
+    fn http_failure_is_classified_not_just_stringified() {
+        let f = LlmFailure::from_error(cap_llm::LlmError::http(401, "invalid api key"));
+        assert_eq!(f.kind, "http");
+        assert_eq!(f.status, Some(401));
+        assert_eq!(f.focus, "apiKey");
+        assert!(f.message.contains("401"));
     }
 
     #[test]
