@@ -16,6 +16,7 @@ import { insertChild } from "../src/engine/tree.ts";
 import { computeLayout } from "../src/engine/layout.ts";
 import { paintPage, renderSvg } from "../src/engine/export/svg.ts";
 import type { NodeBox } from "../src/engine/layout.ts";
+import type { LayoutCode } from "../src/types/model.ts";
 
 let page = createPage("流程");
 page = insertChild(page, page.rootId, "第一步").page;
@@ -163,5 +164,78 @@ const svg = renderSvg(paint);
 const ds = (svg.match(/<path d="([^"]+)"/g) ?? []).map((m) => m.slice("<path d=\"".length, -1));
 const chevrons = ds.filter((d) => !d.includes("C") && slanted(d) > 0);
 eq("SVG 里恰好 7 支 chevron path", chevrons.length, 7);
+
+/* ---------------- 四向：左/上 是 右/下 的镜像，不是第二套公式（03 §1.3-34） ---------------- */
+
+/** 两份布局逐盒比对：mirrored 的坐标应当是 base 沿对应轴取负、另一轴相等。 */
+const mirrorWorst = (base: LayoutCode, mirrored: LayoutCode, axis: "x" | "y") => {
+  const A = computeLayout({ ...page, layout: { ...page.layout, code: base } });
+  const B = computeLayout({ ...page, layout: { ...page.layout, code: mirrored } });
+  let mirror = 0;
+  let same = 0;
+  for (const id of Object.keys(A.boxes)) {
+    const a = A.boxes[id];
+    const b = B.boxes[id];
+    if (!b) return { mirror: Infinity, same: Infinity };
+    const mx = axis === "x" ? Math.abs(a.x + b.x) : Math.abs(a.x - b.x);
+    const my = axis === "x" ? Math.abs(a.y - b.y) : Math.abs(a.y + b.y);
+    mirror = Math.max(mirror, mx, my);
+    same = Math.max(same, Math.abs(a.w - b.w), Math.abs(a.h - b.h));
+  }
+  return { mirror, same };
+};
+
+const lx = mirrorWorst("flowRight", "flowLeft", "x");
+// 容差 1：collect 落盒时 Math.round 对 .5 向 +∞ 收，取负之后天然差 1（镜像公式本身是精确的）
+ok(
+  "左向 = 右向的 x 镜像（全部盒子 x 取负、y 相等、尺寸相等）",
+  lx.mirror <= 1.01 && lx.same <= 0.01,
+  `镜像偏差 ${lx.mirror}，尺寸偏差 ${lx.same}`
+);
+const uy = mirrorWorst("flowDown", "flowUp", "y");
+ok(
+  "向上 = 向下的 y 镜像（全部盒子 y 取负、x 相等、尺寸相等）",
+  uy.mirror <= 1.01 && uy.same <= 0.01,
+  `镜像偏差 ${uy.mirror}，尺寸偏差 ${uy.same}`
+);
+
+const Lft = computeLayout({ ...page, layout: { ...page.layout, code: "flowLeft" } });
+const lb = (id: string) => Lft.boxes[id];
+eq(
+  "左向：步骤按文档序从右往左",
+  [lb(s1).x > lb(s2).x, lb(s2).x > lb(s3).x],
+  [true, true]
+);
+ok("左向：根主题站在链尾右侧", lb(root).x - lb(root).w / 2 >= lb(s1).x + lb(s1).w / 2, "");
+ok("左向：子步骤长在步骤左侧", lb(sa).x < lb(s1).x, "");
+const lchain = Lft.connectors.find((c) => c.id === `c-${root}-${s1}`);
+ok("左向：链箭头指向左（翼在来路一侧、即尖顶右侧）", (() => {
+  if (!lchain) return false;
+  const h = lchain.head ? pts(lchain.head) : [];
+  const p = pts(lchain.d);
+  return p[1][0] < p[0][0] && h.length === 3 && h[0][0] > h[1][0] && h[2][0] > h[1][0];
+})(), "");
+
+const Up = computeLayout({ ...page, layout: { ...page.layout, code: "flowUp" } });
+const ub = (id: string) => Up.boxes[id];
+eq(
+  "向上：步骤按文档序从下往上",
+  [ub(s1).y > ub(s2).y, ub(s2).y > ub(s3).y],
+  [true, true]
+);
+ok("向上：根主题站在链尾之下", ub(root).y - ub(root).h / 2 >= ub(s1).y + ub(s1).h / 2, "");
+ok("向上：子步骤长在步骤上方", ub(sa).y < ub(s1).y, "");
+const uStub = Up.connectors.find((c) => c.id === `c-${s1}-${sa}`);
+ok("向上：子步骤桩从父顶边出、指入子步骤左缘", (() => {
+  if (!uStub) return false;
+  const p = pts(uStub.d);
+  const tip = p[p.length - 1];
+  return (
+    Math.abs(p[0][1] - (ub(s1).y - ub(s1).h / 2)) < 0.51 &&
+    Math.abs(tip[0] - (ub(sa).x - ub(sa).w / 2)) < 0.51
+  );
+})(), "");
+eq("向上：盒子互不压框", overlapBad(Up.boxes), []);
+eq("左向：盒子互不压框", overlapBad(Lft.boxes), []);
 
 done();

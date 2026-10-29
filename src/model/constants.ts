@@ -167,6 +167,8 @@ export const LAYOUT_LABELS: Record<string, string> = {
   timelineLeft: "时间轴（向左）",
   timelineWinding: "时间轴（S 形）",
   flowRight: "流程图（右向）",
+  flowLeft: "流程图（左向）",
   flowDown: "流程图（向下）",
+  flowUp: "流程图（向上）",
   free: "自由布局",
 };
