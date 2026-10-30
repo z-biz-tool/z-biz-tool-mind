@@ -555,7 +555,12 @@ jobs:
       - name: Upload updater manifest fragments
         uses: actions/upload-artifact@v4
         with:
-          name: updater-frag-*
+          # ⚠️ artifact 名必须是字面量：写成 `updater-frag-*` 想「一个平台一个 artifact」
+          # 会被 upload-artifact 直接拒绝 —— `*` 在非法字符表里（Double quote / Colon /
+          # Asterisk / Question mark … 都不许出现在 artifact 名中）。v0.2.0 第六轮实测：
+          # 三条打包腿全绿、Release 也发出来了，只倒在这一步。
+          # 合并作业本来就按目录一次性收，所以全部片段放进同一个 artifact 即可。
+          name: updater-fragments
           path: updater-fragments/*.json
           if-no-files-found: error
 
@@ -579,9 +584,9 @@ jobs:
       - name: Download platform fragments
         uses: actions/download-artifact@v4
         with:
-          pattern: updater-frag-*
+          # 与上传侧同名（字面量），不能用 `pattern:` 配通配名
+          name: updater-fragments
           path: updater-fragments
-          merge-multiple: true
 
       - name: Compose latest.json and push to main
         env:
