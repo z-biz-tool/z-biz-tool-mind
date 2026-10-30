@@ -234,7 +234,14 @@ jobs:
             echo "mode=unsigned" >> "$GITHUB_OUTPUT"
             echo "extra-args=--no-sign" >> "$GITHUB_OUTPUT"
           fi
+      # ⚠️ 这两个 env 必须跟着 run 步骤传下去：tauri build 是 build-desktop.mjs
+      # 的子进程，父步骤不注入环境变量的话，脚本体里根本拿不到私钥，
+      # 于是 tauri 直接报 "A public key has been found, but no private key"。
+      # v0.2.0 首次发版实测踩到（三条腿全部在打包最后一步倒下）。
       - run: node scripts/build-desktop.mjs --skip-check ${{ steps.signing.outputs.extra-args }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.signing.outputs.mode == 'signed' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ steps.signing.outputs.mode == 'signed' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
       - uses: actions/upload-artifact@v4
         with:
           name: z-biz-tool-mind-windows
@@ -316,6 +323,9 @@ jobs:
             echo "extra-args=--no-sign" >> "$GITHUB_OUTPUT"
           fi
       - run: node scripts/build-desktop.mjs --skip-check --arch=${{ matrix.arch }} ${{ steps.signing.outputs.extra-args }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.signing.outputs.mode == 'signed' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ steps.signing.outputs.mode == 'signed' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
       # .app 是目录，直接 upload 会丢可执行位与 Frameworks 里的符号链接，先打成 tar。
       - name: 打包 .app
         run: tar -czf z-biz-tool-mind-${{ matrix.triple }}.app.tar.gz -C src-tauri/target/${{ matrix.triple }}/release/bundle/macos .
@@ -395,7 +405,7 @@ jobs:
           merge-multiple: true
       - name: Create release and upload assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -440,7 +450,7 @@ jobs:
           merge-multiple: true
       - name: Build manifest fragments
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -542,7 +552,7 @@ jobs:
 
       - name: Compose latest.json and push to main
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ github.ref_name }}"
