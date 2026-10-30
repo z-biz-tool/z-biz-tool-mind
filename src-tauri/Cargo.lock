@@ -455,6 +455,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cap-hub"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+]
+
+[[package]]
 name = "cap-llm"
 version = "0.1.0"
 dependencies = [
@@ -6004,6 +6013,7 @@ name = "z-biz-tool-mind"
 version = "0.2.0"
 dependencies = [
  "aes-gcm",
+ "cap-hub",
  "cap-llm",
  "chrono",
  "data-encoding",
