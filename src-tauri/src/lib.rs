@@ -1,5 +1,5 @@
-mod backup;
 mod ai;
+mod backup;
 mod commands;
 mod config;
 mod crash;
