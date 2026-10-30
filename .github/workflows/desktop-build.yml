@@ -603,7 +603,20 @@ jobs:
             exit 0
           fi
 
-          NOTES=$(gh release view "$TAG" --json body -q .body 2>/dev/null || echo "Release $TAG")
+          # notes 优先取 CHANGELOG.md 的本版本段落；取不到才回落到 Release body
+          # （后者默认是 "See the assets below…"，对更新弹窗没有信息量）。pet v1.5.0 起验证可用。
+          NOTES=$(node -e '
+            const fs = require("fs");
+            const version = process.argv[1];
+            let text = "";
+            try { text = fs.readFileSync("CHANGELOG.md", "utf8"); } catch { process.exit(1); }
+            const re = new RegExp("##\\s*\\[?" + version.replace(/\./g, "\\.") + "\\]?[^\\n]*\\n([\\s\\S]*?)(?=\\n##\\s|$)");
+            const m = text.match(re);
+            if (!m) process.exit(1);
+            const body = m[1].trim();
+            if (!body) process.exit(1);
+            process.stdout.write(body);
+          ' "$VERSION" || gh release view "$TAG" --json body -q .body 2>/dev/null || echo "Release $TAG")
           node -e '
             const fs = require("fs");
             const [version, notes] = process.argv.slice(1);
