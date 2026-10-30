@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "notes": "See the assets below to download this version.",
+  "pub_date": "2026-10-30T15:46:12Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "url": "https://github.com/z-biz-tool/z-biz-tool-mind/releases/download/v0.2.0/z-biz-tool-mind_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK2VwdHF0N2p3aVZjdDNYckg5NlZFNklRMzd1VEQ2dys4NjVNYzZoWXRsdTU5ZHd1SGo5R282dUdIT1ZvZDdDMk55azlkVnZGM1FNMTJNdElsYjFkSmdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMzc1MDcyCWZpbGU6ei1iaXotdG9vbC1taW5kLmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMApRazlzeG8xMlNhcGZyNDFwK3Z5RmVnei9ONUtiTStkVGtiQ2FKMzczVXp4RUNyZXVueTBhaUVmbnM2d3FCcG5uNlVkdnMrVWNoY3VHM0lmOWNFZ1lDZz09Cg=="
+    },
+    "darwin-x86_64": {
+      "url": "https://github.com/z-biz-tool/z-biz-tool-mind/releases/download/v0.2.0/z-biz-tool-mind_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK1JKOXYwTks4UWRESHZHUWcrLzY3NUZMQWkvc0dZclBOZms0N3VkeHpIUEdmOFZzbXlRNG9KMnBTajEvM1VMN0tyUktYd282TGdsUXovdzQ1Y2x6ZlFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMzc1MDUyCWZpbGU6ei1iaXotdG9vbC1taW5kLmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMApPL0hOaFV5eEtIYXJsMHZHNzgzMDZDQUlabmgySXpiSGpvNkY0eWJaME5BbUtucXJITHltT3dTYmFiVzRQWXF0YUFMRGN2bGk4Qmx6R3ZwUzBkOFhEQT09Cg=="
+    },
+    "windows-x86_64": {
+      "url": "https://github.com/z-biz-tool/z-biz-tool-mind/releases/download/v0.2.0/z-biz-tool-mind_0.2.0_x64_en-US.msi",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK1liYVR5cE93WmhVMzVSMzNualJ1RUlxOFZaOHdvOGh2MncvZFl0eXdEdHhvYTYvUTB5TXpuanVUclFpaFlhZVNsQy9kblZnOU5wUjRNbDg3cEh0TVFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMzc1MTIyCWZpbGU6ei1iaXotdG9vbC1taW5kXzAuMi4wX3g2NF9lbi1VUy5tc2kJdmVyc2lvbjowLjIuMAo5WWJUTGdDcUtQYmFXYytKMy8xSzhxQzI3d0tSK2JHQ3pFZVJ6TVN0N1lETU94cDEzU3N2Q2tsQlRXSTJlSkRhQ2JqQ2pSaHNwUnBHcVRuMEhRbzhDQT09Cg=="
+    }
+  }
+}
