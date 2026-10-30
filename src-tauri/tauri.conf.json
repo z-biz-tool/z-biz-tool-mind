@@ -39,11 +39,12 @@
     "updater": {
       "endpoints": ["https://raw.githubusercontent.com/z-biz-tool/z-biz-tool-mind/main/latest.json"],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY5MjA2OThBNzlDN0IyNkUKUldSdXNzZDVpbWtnK2MvNSthMmJ5MU1nTmY5U2IrNFUzMURxdjBTQlpUNElwVGRJSHZDTG1FNFMK",
-      "//": "mind 为 private 仓，raw latest.json 目前不可匿名访问；updater 插件先接入但按设计静默降级，待公开分发通道后再开 createUpdaterArtifacts。pubkey 与 db/file/sys 同一把，私钥存 GitHub Secrets。"
+      "//": "mind 原为 private 仓、raw latest.json 不可匿名访问，才把更新通道按设计静默降级；2026-10-30 起本仓已公开，降级前提消失，正式接上官方更新通道。pubkey 与 db/file/sys 同一把，私钥存 GitHub Secrets（TAURI_SIGNING_PRIVATE_KEY）。"
     }
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "publisher": "z-biz-tool",
     "license": "MIT",
