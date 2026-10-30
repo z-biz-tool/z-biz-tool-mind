@@ -410,19 +410,32 @@ jobs:
         run: |
           set -euo pipefail
           REPO="${{ github.repository }}"
+          # ⚠️ 不能用 installers/* —— download-artifact 会保留 artifact 内的目录结构
+          # （installers/msi/…、installers/nsis/…），而 gh release upload 不接受目录，
+          # 会以 `read installers/msi: is a directory` 失败。只取文件。
+          # v0.2.0 实测踩到：Release 建成了，资产一个都没传上去。
+          mapfile -t FILES < <(find installers -type f 2>/dev/null)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "::error::installers/ 下没有任何文件 —— 上游 artifact 可能没产出安装包"
+            find installers -maxdepth 3 2>/dev/null || true
+            exit 1
+          fi
+          echo "待上传安装包 ${#FILES[@]} 个："
+          printf '  %s\n' "${FILES[@]}"
           # 重打同一个 tag 时 Release 已存在 ⇒ create 报错，改成 upload 补传。
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
             gh release create "$TAG" \
               --title "$TAG" \
               --notes "See the assets below to download this version." \
               --repo "$REPO" \
-              installers/*
+              "${FILES[@]}"
           fi
-          gh release upload "$TAG" installers/* --repo "$REPO" --clobber
+          gh release upload "$TAG" "${FILES[@]}" --repo "$REPO" --clobber
           # 更新包 + 签名一起发布：.sig 是客户端验签的依据，
           # manifest 里的 signature 字段取的就是它。
-          if compgen -G "updater-assets/*" > /dev/null; then
-            gh release upload "$TAG" updater-assets/* --repo "$REPO" --clobber
+          mapfile -t UPD < <(find updater-assets -type f 2>/dev/null)
+          if [ ${#UPD[@]} -gt 0 ]; then
+            gh release upload "$TAG" "${UPD[@]}" --repo "$REPO" --clobber
           fi
           echo "--- release 资产："
           gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[] | .name'
