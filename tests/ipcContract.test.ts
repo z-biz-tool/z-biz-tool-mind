@@ -324,7 +324,14 @@ function frontendListens(): ListenHit[] {
  * 刻意不做界面入口的命令，每条都要写明理由。
  * 清单不是豁免名单 —— 门禁会反过来检查它：接了就必须删掉。
  */
-const RESERVED_NOT_WIRED = new Map<string, string>([]);
+const RESERVED_NOT_WIRED = new Map<string, string>([
+  [
+    "zbiz_take_pending",
+    "家族深链（zbiz://）接收侧：后端队列与冷启动 seed 已就位（cap_hub::receiver），" +
+      "但 mind 目前没有可被深链跳转的目标——先把入口留着，等「从 box 跳到某张图」这类真实动作确定后再接界面。" +
+      "接上后本条必须删掉。",
+  ],
+]);
 
 /* ────────────────────────── 门禁 ────────────────────────── */
 
