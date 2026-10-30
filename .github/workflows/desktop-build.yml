@@ -446,6 +446,12 @@ jobs:
           if [ ${#UPD[@]} -gt 0 ]; then
             gh release upload "$TAG" "${UPD[@]}" --repo "$REPO" --clobber
           fi
+          # ⚠️ 必须显式解除 draft：**删掉 tag 会把关联的 Release 自动转成 draft**，
+          # 而 `gh release view` 对 draft 仍然能查到（所以上面的 create 分支被跳过），
+          # 于是资产传进了 draft，Release 却没发布 ⇒ 下一步 manifest 用
+          # `releases/tags/$TAG` 查会直接 404（v0.2.0 第四轮实测踩到）。
+          # 重打 tag 是本家族的标准发布动作，这一步不能省。
+          gh release edit "$TAG" --draft=false --repo "$REPO"
           echo "--- release 资产："
           gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[] | .name'
 
