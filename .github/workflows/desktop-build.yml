@@ -327,14 +327,23 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ steps.signing.outputs.mode == 'signed' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ steps.signing.outputs.mode == 'signed' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
       # .app 是目录，直接 upload 会丢可执行位与 Frameworks 里的符号链接，先打成 tar。
+      # ⚠️ 这个手工 tar **不能混进 installers/**：它的名字带完整 triple
+      # （z-biz-tool-mind-aarch64-apple-darwin.app.tar.gz），而 tauri 自己产的更新包
+      # 加后缀后是 z-biz-tool-mind_aarch64.app.tar.gz —— 两个都满足
+      # 「以 .app.tar.gz 结尾 + 含 aarch64」，manifest 会匹配到 2 个资产直接报错
+      # （v0.2.0 实测踩到）。改为独立 artifact，仅供人工下载检查 .app 完整性，
+      # 永不进 Release。
       - name: 打包 .app
         run: tar -czf z-biz-tool-mind-${{ matrix.triple }}.app.tar.gz -C src-tauri/target/${{ matrix.triple }}/release/bundle/macos .
       - uses: actions/upload-artifact@v4
         with:
+          name: app-bundle-${{ matrix.triple }}
+          path: z-biz-tool-mind-${{ matrix.triple }}.app.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
           name: z-biz-tool-mind-${{ matrix.triple }}
-          path: |
-            src-tauri/target/${{ matrix.triple }}/release/bundle/dmg/*.dmg
-            z-biz-tool-mind-${{ matrix.triple }}.app.tar.gz
+          path: src-tauri/target/${{ matrix.triple }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
       # ⚠️ 两条腿（arm64 / x86_64）跑在不同 runner，各自产出的更新包**同名**
       # （都是 z-biz-tool-mind.app.tar.gz）。同名文件合并下载时后者会覆盖前者 ⇒ 架构就丢了；
@@ -486,8 +495,13 @@ jobs:
             fi
             LOCAL_NAME=$(basename "$LOCAL")
             EXT=".${LOCAL_NAME#*.}"
+            # 除了「结尾=扩展名 且 含架构词」，再排除名字里带完整 triple 的资产
+            # （-apple-darwin / -pc-windows / -unknown-linux）。那是人工打包用的
+            # 中间产物特征，不是 tauri 产出的更新包；一旦混进 Release 就会和真
+            # 更新包一起命中，变成「匹配到 2 个」（v0.2.0 实测踩到）。
             MATCHES=$(awk -F'\t' -v ext="$EXT" -v arch="$ARCH" \
-              'index($2, ext) == length($2) - length(ext) + 1 && index($2, arch) > 0 { print }' /tmp/assets.tsv)
+              'index($2, ext) == length($2) - length(ext) + 1 && index($2, arch) > 0 \
+               && $2 !~ /-(apple-darwin|pc-windows|unknown-linux)/ { print }' /tmp/assets.tsv)
             COUNT=$(printf '%s\n' "$MATCHES" | awk 'NF' | wc -l | tr -d ' ')
             if [ "$COUNT" != "1" ]; then
               echo "::error::按「$EXT + $ARCH」匹配到 $COUNT 个资产（应为 1）："
