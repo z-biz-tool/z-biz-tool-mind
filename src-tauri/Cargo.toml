@@ -1,6 +1,6 @@
 [package]
 name = "z-biz-tool-mind"
-version = "0.1.0"
+version = "0.2.0"
 description = "思维导图桌面工具 - 对标亿图脑图MindMaster"
 authors = ["z-biz-tool"]
 edition = "2021"
