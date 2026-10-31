@@ -115,14 +115,18 @@ const invokeByName = async <T = unknown>(
  * 1. ctc 侧登记 `http://127.0.0.1:<端口>/callback`（端口由内核分配，
  *    所以登记时要用**通配端口**或让 ctc 侧接受任意回环端口 —— 这点要跟 ctc 侧确认）；
  * 2. 把下面四个常量填上真实值。
+ *
+ * 注意这里**不带 `as const`**：测试要用一个假 ctc（本地 HTTP 服务扮演）
+ * 走完整链路，得临时把这几个字段填上 —— `as const` 会把字段锁成空串，
+ * 测试里改不动。真实值上线后这里仍然只有测试会写。
  */
-const CTC_CONFIG = {
+export const CTC_CONFIG = {
   authorizeUrl: "",
   tokenUrl: "",
   userInfoUrl: "",
   clientId: "",
   scope: "openid profile email",
-} as const;
+};
 
 /**
  * SSO 配置是否齐全。
@@ -169,7 +173,22 @@ export async function login(): Promise<SsoResult<SsoSession>> {
     clientId: CTC_CONFIG.clientId,
     scope: CTC_CONFIG.scope,
   };
-  return await startSsoLogin(config, invokeByName);
+  const result = await startSsoLogin(config, invokeByName);
+  if (result.ok) {
+    // 登录成功必须落盘 —— 否则重启即丢登录态，而启动时的
+    // 「上次是谁登录的」永远读到 null。失败不阻断登录结果：
+    // 会话已在内存里，这次登录仍然算成功，只是下次启动要重登。
+    await ssoSessionStore
+      .save({
+        accessToken: result.value.accessToken,
+        refreshToken: result.value.refreshToken,
+        expiresAt: result.value.expiresAt,
+        tokenType: result.value.tokenType,
+        user: result.value.user,
+      })
+      .catch(() => undefined);
+  }
+  return result;
 }
 
 /** 退出登录：清掉密钥库里的会话。 */
