@@ -61,6 +61,8 @@ import {
 } from "./services/autosave.ts";
 import { installCrashWatch } from "./services/crash.ts";
 import { runAiInsert } from "./services/ai.ts";
+import { startDeepLinkReceiver } from "z-biz-tool-shared/protocol";
+import { resolveMindDeepLink } from "./_shared/deepLink.ts";
 import {
   dirOf,
   listen,
@@ -276,6 +278,59 @@ function Shell() {
       message.warning(`收到 ${paths.length} 个文件，只打开了第 1 个：一个窗口只能放一份脑图。`);
     }
   }, [message, openPicked]);
+
+  /**
+   * 家族深链（zbiz://mind/open?file=…）：box 等产品递过来的脑图文件。
+   *
+   * 机制（冷启动补取 + zbiz-open 监听 + 不静默吞掉）在共享层 startDeepLinkReceiver，
+   * 本仓只提供语义：resolveMindDeepLink 决定「要打开哪个路径」。
+   *
+   * 落地必须走 openPicked —— 它带「手上还有没存的改动」的脏检查，
+   * 跟手动「打开」完全一致。绕过它自己调 openPath 的话，深链会把用户的
+   * 未保存改动静默顶掉，而用户根本没意识到刚才递过来了一份文件。
+   */
+  useEffect(() => {
+    const stop = startDeepLinkReceiver({
+      productId: "mind",
+      invoke: () => native.takePendingDeepLinks(),
+      listen: (event, handler) => listen(event, () => handler()),
+      translate: (item) => {
+        const out = resolveMindDeepLink(item);
+        if (!out.path) {
+          return { ok: false, problem: out.problem ?? "深链里没有要打开的文件" };
+        }
+        return { ok: true, effect: { path: out.path, asImport: out.asImport } };
+      },
+      onProblem: (msg) => {
+        console.warn("[mind] 深链:", msg);
+        message.warning(msg);
+      },
+      onEffect: (effect) => {
+        const path = effect.path as string;
+        if (effect.asImport) {
+          // 导入路径：走引擎的 importBytes（能吃 .xmind 等格式），
+          // 但仍要过脏检查 —— 导入同样会顶掉当前画布。
+          guard("导入", () => {
+            void (async () => {
+              try {
+                const bytes = await native.fileReadBytes(path);
+                const built = await importBytes(path, bytes);
+                if (useDoc.getState().applyDoc(built, null, stemOf(path))) {
+                  setStartPage(false);
+                  message.success(`已导入 ${stemOf(path)}，还没有写进 .emmx，用「保存」落盘。`);
+                }
+              } catch (e) {
+                message.error(e instanceof Error ? e.message : String(e));
+              }
+            })();
+          });
+          return;
+        }
+        openPicked(path);
+      },
+    });
+    return stop;
+  }, [guard, message, openPicked, setStartPage]);
 
   /**
    * 导入。格式分发只认 importBytes 这一处：这里再抄一份 switch，引擎加了格式界面却

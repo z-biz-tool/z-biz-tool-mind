@@ -12,6 +12,7 @@
  *    浏览器分支不是"假装成功"：它真的能读 .emmx、真的能存盘，只是历史版本关在标签页里。
  */
 import { toAiFailureError } from "./aiFailure.ts";
+import type { HandoffItem } from "../_shared/deepLink.ts";
 export interface AppInfo {
   version: string;
   configDir: string;
@@ -587,6 +588,20 @@ export const native = {
   async takeOpenPaths(): Promise<string[]> {
     if (!isTauri) return [];
     return call<string[]>("open_take_pending");
+  },
+
+  /**
+   * 取走家族统一深链队列（zbiz://…）。
+   *
+   * 与 takeOpenPaths 是**两套不同的队列**：
+   * - open_take_pending：双击 .emmx 交给本应用的路径（操作系统关联打开）；
+   * - zbiz_take_pending：家族产品之间互递（box 递文件给 mind 这类）。
+   *
+   * 出队即清空，语义与 Rust 侧 cap_hub::Pending 一致。
+   */
+  async takePendingDeepLinks(): Promise<HandoffItem[]> {
+    if (!isTauri) return [];
+    return call<HandoffItem[]>("zbiz_take_pending");
   },
 
   // ---------- 运行日志 ----------
