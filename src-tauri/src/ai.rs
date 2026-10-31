@@ -168,15 +168,9 @@ pub fn to_cap(args: &AiGenerateArgs) -> Result<LlmConfig, LlmFailure> {
     let key = crate::secret::get(SECRET_KEY)
         .map_err(|e| LlmFailure::local(e, "apiKey"))?
         .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
-        .ok_or_else(|| {
-            LlmFailure::local(
-                "尚未配置 AI API Key。密钥只存在本机加密库，不会写进配置文件。",
-                "apiKey",
-            )
-        })?;
+        .unwrap_or_default();
 
-    Ok(LlmConfig {
+    let cap = LlmConfig {
         kind: ProviderKind::Custom, // 只走 OpenAI 兼容协议（复刻方案 §3.13 的约束）
         base_url: endpoint.to_string(),
         api_key: key,
@@ -187,7 +181,18 @@ pub fn to_cap(args: &AiGenerateArgs) -> Result<LlmConfig, LlmFailure> {
         // 本仓要求显式填接口地址（复刻方案 §3.13），因此不绑定供应商预设 ——
         // 预设会在 base_url 为空时自动补地址，与本仓「必须显式填写」的约定相悖。
         preset: None,
-    })
+    };
+
+    // 要不要 key 交给 cap-llm 判（私网 / 回环地址上的自建服务没有鉴权层）。
+    // 2026-10-31 修：此前把「加密库里没密钥」直接当致命错误，于是 mind 指向
+    // mini 的本地网关（无鉴权）时，用户必须往加密库里塞一个假密钥才能生成大纲。
+    if cap.needs_api_key() && cap.api_key.is_empty() {
+        return Err(LlmFailure::local(
+            "尚未配置 AI API Key。密钥只存在本机加密库，不会写进配置文件。",
+            "apiKey",
+        ));
+    }
+    Ok(cap)
 }
 
 /// 生成大纲（非流式）。key 从本机加密库解出、请求后即弃，不回传前端。
@@ -279,5 +284,46 @@ mod tests {
         let json = r#"{"prompt":"p","endpoint":"https://x.com","model":"m"}"#;
         let a: AiGenerateArgs = serde_json::from_str(json).unwrap();
         assert_eq!(a.timeout_sec, 20);
+    }
+
+    // ==================== 真实网关直连 ====================
+
+    /// 免密钥的私有网关必须能生成大纲（未设 `ZBIZ_GW` 时静默跳过）。
+    ///
+    /// mind 的密钥只存在本机加密库，`to_cap` 以前把它当硬性条件 ——
+    /// 指向无鉴权的本地网关时，用户必须往加密库里塞一个假密钥。
+    /// 这里用独立配置目录，确保读到的是「空库」而不是本机真实密钥。
+    ///
+    /// ```sh
+    /// ZBIZ_GW=http://192.168.31.249:8200/v1 ZBIZ_MODEL=zBiz-Text-35B \
+    ///   cargo test -p z-biz-tool-mind live_zbiz -- --nocapture
+    /// ```
+    #[tokio::test]
+    async fn live_zbiz_gateway_accepts_keyless_and_replies() {
+        let Ok(gw) = std::env::var("ZBIZ_GW") else {
+            return;
+        };
+        let model = std::env::var("ZBIZ_MODEL").unwrap_or_else(|_| "zBiz-Text-35B".to_string());
+
+        // 别人的用例可能正在改同一个环境变量，必须拿锁（见 crate 顶部注释）
+        let _guard = crate::CONFIG_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("zbiz-mind-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建临时配置目录失败");
+        std::env::set_var("Z_MIND_CONFIG_DIR", &dir);
+
+        let args = AiGenerateArgs {
+            prompt: "本地大模型的三个优点".to_string(),
+            endpoint: gw.clone(),
+            model,
+            timeout_sec: 120,
+        };
+        let cap = to_cap(&args).expect("免 Key 的本地网关必须通过校验");
+        assert!(!cap.needs_api_key(), "私有地址不该要求 key");
+
+        let out = ai_generate_outline(args).await.expect("真实调用失败");
+        assert!(!out.trim().is_empty(), "返回为空（网关 {gw}）");
+        println!("[mind → {gw}] {}", out.trim());
     }
 }

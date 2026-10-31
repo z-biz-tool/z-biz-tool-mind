@@ -33,3 +33,8 @@ aes-gcm = "0.10.3"
 getrandom = "0.2"
 # 能力共享层：协议/鉴权/错误脱敏统一在 cap-llm，mind 不再自建请求代码
 cap-llm = { path = "../../z-biz-tool-capability/crates/cap-llm" }
+
+[dev-dependencies]
+# 只为真实网关直连用例（live_zbiz_*）提供 #[tokio::test]；
+# 不设 ZBIZ_GW 时这些用例直接返回，不发起任何网络请求。
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
