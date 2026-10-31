@@ -11,6 +11,7 @@ mod paths;
 mod quota;
 mod recent;
 mod secret;
+mod sso;
 
 /// 测试用的进程级串行锁。
 ///
@@ -144,6 +145,12 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // 开浏览器：SSO 要跳 ctc 授权页。shell 的 open 在 v2.3 起已 deprecated。
+        .plugin(tauri_plugin_opener::init())
+        // SSO（ctc 统一登录）：回环服务器 + 开浏览器 + OS 密钥库。
+        // 登录态走 OS 密钥库，不落 localStorage —— 后者是明文 JSON，
+        // 任何能读用户目录的进程都能拿到 token。
+        .manage(sso::SsoState::default())
         // 自动更新：前端 UpdaterGate 延时 check()，endpoint/pubkey 见 tauri.conf.json
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 更新安装完成后的「立即重启」
@@ -162,6 +169,16 @@ pub fn run() {
             // 会员许可：验签在 Rust 侧，前端只读结果
             commands::license_status,
             commands::license_redeem,
+            // SSO（ctc 统一登录）：IO 胶水在 cap-sso，协议在 shared/src/sso/oauth.ts。
+            // 本仓只做命令层，不含协议逻辑。
+            sso::sso_start_callback,
+            sso::sso_wait_callback,
+            sso::sso_cancel_callback,
+            sso::sso_open_browser,
+            sso::sso_set_tokens,
+            sso::sso_get_tokens,
+            sso::sso_clear_tokens,
+            sso::sso_secure_store_available,
             commands::recent_remove,
             commands::recent_clear,
             commands::recent_set_capacity,

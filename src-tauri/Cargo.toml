@@ -16,9 +16,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # 家族统一深链协议（cap-hub）：zbiz:// 的构造、解析、待处理队列与产品清单。
 cap-hub = { path = "../../z-biz-tool-capability/crates/cap-hub", features = ["tauri"] }
+# 家族统一 SSO（cap-sso）的 IO 胶水：本地回环回调服务器 + 开浏览器 + OS 密钥库。
+# 协议逻辑在 z-biz-tool-shared/src/sso/oauth.ts，本仓不重复实现。
+cap-sso = { path = "../../z-biz-tool-capability/crates/cap-sso", features = ["tauri"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = { version = "2", features = [] }
 tauri-plugin-clipboard-manager = { version = "2", features = [] }
+# 开浏览器：SSO 要跳 ctc 授权页。shell 的 open 在 v2.3 起已 deprecated。
+tauri-plugin-opener = "~2.5.5"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"

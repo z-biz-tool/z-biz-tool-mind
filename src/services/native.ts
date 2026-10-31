@@ -104,7 +104,16 @@ export interface LicenseStatus {
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+/**
+ * 调一个后端命令。
+ *
+ * **这个出口是给「命令名当数据用」的场景的**（SSO 适配层要把 `invoke`
+ * 注入给共享层，而共享层的命令名是运行时才知道的）。
+ *
+ * 常规调用请走 `native` 里的具名方法 —— 那样 ipcContract 门禁能扫到
+ * 调用点，少一个「命令实现了却没人调」或「前端调了后端没注册」的破口。
+ */
+export async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) throw new Error(`桌面功能 "${cmd}" 在浏览器里不可用`);
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(cmd, args);

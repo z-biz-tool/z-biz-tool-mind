@@ -42,6 +42,13 @@ import type { AppInfo, CrashInfo, LogInfo, ProxyStatus } from "../services/nativ
 import { useQuota } from "../stores/quotaStore.ts";
 import { useRecent } from "../stores/recentStore.ts";
 import { useLicense } from "../stores/licenseStore.ts";
+import {
+  login as ssoLogin,
+  loadSession as ssoLoadSession,
+  logout as ssoLogout,
+  ssoConfigured,
+  ssoSecureStoreAvailable,
+} from "../services/sso.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import type { Settings } from "../stores/settingsStore.ts";
 import {
@@ -192,6 +199,31 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
   // 落盘的是 Rust 侧签发的许可，不是这串字符本身。
   const [redeemCode, setRedeemCode] = useState("");
   const [redeemTip, setRedeemTip] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
+  // SSO（ctc 统一登录）：两个条件都满足才显示入口 ——
+  // ① 配置齐全（ctc 侧参数定了才有得登）；② OS 密钥库可用（token 得有地方放）。
+  // 少任一条都不显示：半套配置比没有配置更糟，用户会点了才发现登不上。
+  const [ssoReady, setSsoReady] = useState(false);
+  const [ssoBusy, setSsoBusy] = useState(false);
+  const [ssoTip, setSsoTip] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
+  const [ssoUser, setSsoUser] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    void (async () => {
+      if (!ssoConfigured()) {
+        setSsoReady(false);
+        return;
+      }
+      // 密钥库不可用就不给入口 —— 而不是等用户点了之后才报错。
+      const ok = await ssoSecureStoreAvailable().catch(() => false);
+      setSsoReady(ok);
+      if (!ok) return;
+      // 显示「上次是谁登录的」：展示信息在 localStorage，不含 token。
+      const session = await ssoLoadSession();
+      const profile = session?.profile as { displayName?: string | null; username?: string | null } | null;
+      setSsoUser(profile?.displayName || profile?.username || null);
+    })();
+  }, [open]);
 
   useEffect(() => {
     // 这些读的是外壳里的**现状**，不是设置值：日志份数、崩溃份数、加密库里有没有密钥，
@@ -260,6 +292,56 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
     } else {
       // redeem() 没抛错但也没成为会员 —— 只有"空码"会走这条，store 里已把原因写进 error。
       setRedeemTip({ tone: "bad", text: useLicense.getState().error ?? "兑换未生效。" });
+    }
+  }
+
+  /**
+   * ctc 统一登录。
+   *
+   * 登录成功后拿到的只是**身份**（sub / 显示名 / 邮箱），不是会员权益 ——
+   * 会员态的真相仍在 Rust 侧（license.rs 的 ed25519 验签）。
+   * 两者是**两件事**：SSO 回答「你是谁」，会员回答「你能用多少」。
+   * 所以登录成功**不**顺带把会员态改成 active —— 那是另一个判据。
+   */
+  async function doSsoLogin() {
+    if (ssoBusy) return;
+    setSsoBusy(true);
+    setSsoTip(null);
+    try {
+      const res = await ssoLogin();
+      if (!res.ok) {
+        // 用户主动取消是**正常状态**，不该报成"出错了"。
+        // 协议层把「拒绝授权」归成 cancelled —— 这里照着静默处理。
+        if (res.code === "cancelled") {
+          setSsoTip({ tone: "bad", text: "已取消登录。" });
+        } else {
+          setSsoTip({ tone: "bad", text: res.reason });
+        }
+        return;
+      }
+      const name = res.value.user.displayName || res.value.user.username || res.value.user.email;
+      setSsoUser(name || null);
+      setSsoTip({ tone: "good", text: `已登录${name ? `：${name}` : ""}。` });
+    } catch (e) {
+      setSsoTip({ tone: "bad", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSsoBusy(false);
+    }
+  }
+
+  /** 退出登录：清掉密钥库里的会话。幂等 —— 连点两次也不报错。 */
+  async function doSsoLogout() {
+    if (ssoBusy) return;
+    setSsoBusy(true);
+    setSsoTip(null);
+    try {
+      await ssoLogout();
+      setSsoUser(null);
+      setSsoTip({ tone: "good", text: "已退出登录。" });
+    } catch (e) {
+      setSsoTip({ tone: "bad", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSsoBusy(false);
     }
   }
 
@@ -1272,6 +1354,65 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
           children: (
             <div>
               {sectionHeader("quota", "会员与配额")}
+              {/* —— SSO（ctc 统一账号）——
+                  与下面的兑换码是**两件事**：SSO 回答「你是谁」（身份），
+                  兑换码回答「你能用多少」（权益）。SSO 登录成功**不会**自动开通会员。
+                  入口只在「配置齐全 + 密钥库可用」时出现：半套配置比没有配置更糟。 */}
+              {ssoReady ? (
+                <div
+                  style={{
+                    border: "1px solid var(--zm-border)",
+                    borderRadius: 4,
+                    padding: "10px 12px",
+                    marginBottom: 10,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <span style={{ fontSize: 13 }}>
+                      <b>统一账号</b>
+                      {ssoUser ? (
+                        <span style={{ color: "var(--zm-text-2)" }}>　{ssoUser}</span>
+                      ) : (
+                        <span style={{ color: "var(--zm-text-2)" }}>　未登录</span>
+                      )}
+                    </span>
+                    {ssoUser ? (
+                      <Button size="small" loading={ssoBusy} onClick={() => void doSsoLogout()}>
+                        退出
+                      </Button>
+                    ) : (
+                      <Button
+                        size="small"
+                        type="primary"
+                        loading={ssoBusy}
+                        onClick={() => void doSsoLogin()}
+                      >
+                        用 ctc 账号登录
+                      </Button>
+                    )}
+                  </div>
+                  {ssoTip ? (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        marginTop: 6,
+                        lineHeight: 1.6,
+                        color: ssoTip.tone === "bad" ? "#d4380d" : "var(--zm-text-2)",
+                      }}
+                    >
+                      {ssoTip.text}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {/* —— 当前档位 + 兑换入口 ——
                   会员判定的真相在 Rust（license.rs，每次读都重新验签），
                   这里只是把它显示出来；前端不持有任何"是不是会员"的判据。 */}
