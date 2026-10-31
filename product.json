@@ -1,0 +1,16 @@
+{
+  "id": "mind",
+  "displayName": "思维导图桌面工具",
+  "description": "对标亿图脑图 MindMaster —— .xmind 导入导出 + 多页画布 + 原生菜单栏",
+  "acceptsDeepLink": true,
+  "actions": [
+    "open",
+    "import"
+  ],
+  "keywords": [
+    "思维导图",
+    "脑图",
+    "xmind",
+    "画布"
+  ]
+}
