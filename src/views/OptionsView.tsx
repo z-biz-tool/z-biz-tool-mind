@@ -41,6 +41,7 @@ import {
 import type { AppInfo, CrashInfo, LogInfo, ProxyStatus } from "../services/native.ts";
 import { useQuota } from "../stores/quotaStore.ts";
 import { useRecent } from "../stores/recentStore.ts";
+import { useLicense } from "../stores/licenseStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import type { Settings } from "../stores/settingsStore.ts";
 import {
@@ -164,6 +165,9 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
   const resetSection = useSettings((s) => s.resetSection);
   const savedFiles = useQuota((s) => s.saved.length);
   const clearRecent = useRecent((s) => s.clearRecent);
+  // 会员态读的是 Rust 侧验签后的结果（见 stores/licenseStore.ts），这里只负责展示。
+  const license = useLicense((s) => s.status);
+  const redeeming = useLicense((s) => s.redeeming);
 
   // API Key 是唯一不能进 settings 的输入：它只活在下面这份临时态里，按"保存密钥"才进本机加密库。
   const [apiKey, setApiKey] = useState("");
@@ -184,6 +188,10 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
   const [menuProfileTip, setMenuProfileTip] = useState<ProfileTip | null>(null);
   const [keyProfileTip, setKeyProfileTip] = useState<ProfileTip | null>(null);
   const [profileBusy, setProfileBusy] = useState(false);
+  // 兑换码是**不进 settings 的临时态**（和 API Key 同一类）：它是一次性凭据，
+  // 落盘的是 Rust 侧签发的许可，不是这串字符本身。
+  const [redeemCode, setRedeemCode] = useState("");
+  const [redeemTip, setRedeemTip] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
 
   useEffect(() => {
     // 这些读的是外壳里的**现状**，不是设置值：日志份数、崩溃份数、加密库里有没有密钥，
@@ -220,8 +228,40 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
   useEffect(() => {
     // "已用 N" 得跟着盘上的真实情况走：打开面板时重读一次账本，
     // 而不是只信 App 启动那回缓存 —— 在资源管理器里删掉的文件要当场从计数里退掉。
-    if (open) void useQuota.getState().refresh();
+    //
+    // 会员态同理：Rust 每次读都重新验签，用户可能在别的窗口改过 license.json。
+    if (open) {
+      void useQuota.getState().refresh();
+      void useLicense.getState().refresh();
+      setRedeemTip(null);
+    }
   }, [open]);
+
+  /**
+   * 兑换。成功后由 licenseStore 回读一次状态（Rust 侧重新验签），
+   * 所以这里判断"是不是真生效了"要看回读结果，而不是看 redeem() 没抛错。
+   */
+  async function doRedeem() {
+    const code = redeemCode.trim();
+    if (!code) {
+      setRedeemTip({ tone: "bad", text: "请输入兑换码。" });
+      return;
+    }
+    try {
+      await useLicense.getState().redeem(code);
+    } catch (e) {
+      // Rust 侧给的是完整中文句子（如"兑换码编码不合法: …"），直接展示。
+      setRedeemTip({ tone: "bad", text: e instanceof Error ? e.message : String(e) });
+      return;
+    }
+    if (useLicense.getState().status.active) {
+      setRedeemCode("");
+      setRedeemTip({ tone: "good", text: "兑换成功，会员权益已生效。" });
+    } else {
+      // redeem() 没抛错但也没成为会员 —— 只有"空码"会走这条，store 里已把原因写进 error。
+      setRedeemTip({ tone: "bad", text: useLicense.getState().error ?? "兑换未生效。" });
+    }
+  }
 
   async function saveKey() {
     const v = apiKey.trim();
@@ -1228,10 +1268,120 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
         },
         {
           key: "quota",
-          label: "配额",
+          label: "会员",
           children: (
             <div>
-              {sectionHeader("quota", "免费版规则（只读）")}
+              {sectionHeader("quota", "会员与配额")}
+              {/* —— 当前档位 + 兑换入口 ——
+                  会员判定的真相在 Rust（license.rs，每次读都重新验签），
+                  这里只是把它显示出来；前端不持有任何"是不是会员"的判据。 */}
+              <div
+                style={{
+                  border: "1px solid var(--zm-border)",
+                  borderRadius: 4,
+                  padding: "10px 12px",
+                  marginBottom: 10,
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                  }}
+                >
+                  <span>
+                    <b style={{ fontSize: 13 }}>
+                      {license.active
+                        ? "会员已激活"
+                        : license.state === "invalid"
+                          ? "许可未通过校验"
+                          : "免费版"}
+                    </b>
+                    <Tag
+                      style={{ marginLeft: 8 }}
+                      color={
+                        license.active ? "green" : license.state === "invalid" ? "red" : undefined
+                      }
+                    >
+                      {license.state}
+                    </Tag>
+                  </span>
+                  {license.active && license.redeemedAt ? (
+                    <span style={{ fontSize: 12, color: "var(--zm-text-2)", flexShrink: 0 }}>
+                      兑换于 {license.redeemedAt}
+                    </span>
+                  ) : null}
+                </div>
+                {license.active ? (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "var(--zm-text-2)",
+                      marginTop: 6,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    买断制：保存文件数与 AI 点数都不再受限。下面那张表是免费版的规则，留着供对照。
+                    {license.issued ? `　签发日 ${license.issued}` : ""}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 8 }}>
+                    {/* reason 是 Rust 侧的中文整句（"尚未激活…" / "许可校验未通过…"），
+                        直接显示；许可无效时说清楚"该怎么办"，语气要和免费态区分开。 */}
+                    {license.reason ? (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: license.state === "invalid" ? "#d4380d" : "var(--zm-text-2)",
+                          marginBottom: 6,
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        {license.reason}
+                      </div>
+                    ) : null}
+                    <div
+                      style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
+                    >
+                      <Input
+                        size="small"
+                        style={{ maxWidth: 340, minWidth: 200 }}
+                        placeholder="ZBIZ-MIND-…"
+                        aria-label="兑换码"
+                        value={redeemCode}
+                        onChange={(e) => {
+                          setRedeemCode(e.target.value);
+                          setRedeemTip(null);
+                        }}
+                        onPressEnter={() => void doRedeem()}
+                        disabled={redeeming}
+                      />
+                      <Button
+                        size="small"
+                        type="primary"
+                        loading={redeeming}
+                        onClick={() => void doRedeem()}
+                      >
+                        兑换
+                      </Button>
+                    </div>
+                    {redeemTip ? (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          marginTop: 6,
+                          lineHeight: 1.6,
+                          color: redeemTip.tone === "bad" ? "#d4380d" : "var(--zm-text-2)",
+                        }}
+                      >
+                        {redeemTip.text}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
               <div
                 style={{
                   fontSize: 12,
@@ -1240,7 +1390,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                   lineHeight: 1.6,
                 }}
               >
-                这些数字来自 model/constants.ts 的
+                下面这些数字来自 model/constants.ts 的
                 QUOTA，是业务规则而不是可调项（P-4）：界面上每一处限制都从同一份常量取，
                 改这里才会改到全部；把它们做成开关，等于把付费墙藏起来。
               </div>
@@ -1257,13 +1407,23 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
               >
                 <span>剩余 AI 点数</span>
                 <span>
-                  <b>
-                    {settings.quota.aiPoints - settings.quota.aiUsed}
-                    <span style={{ fontWeight: 400, color: "var(--zm-text-2)" }}>
-                      {" "}
-                      / {settings.quota.aiPoints}（已用 {settings.quota.aiUsed}）
-                    </span>
-                  </b>
+                  {license.active ? (
+                    <b>
+                      不限
+                      <span style={{ fontWeight: 400, color: "var(--zm-text-2)" }}>
+                        {" "}
+                        （会员不扣点）
+                      </span>
+                    </b>
+                  ) : (
+                    <b>
+                      {settings.quota.aiPoints - settings.quota.aiUsed}
+                      <span style={{ fontWeight: 400, color: "var(--zm-text-2)" }}>
+                        {" "}
+                        / {settings.quota.aiPoints}（已用 {settings.quota.aiUsed}）
+                      </span>
+                    </b>
+                  )}
                 </span>
                 {quotaRows(savedFiles).map((r) => (
                   <div key={r.label} style={{ display: "contents" }}>
@@ -1274,7 +1434,7 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
               </div>
               <div style={{ fontSize: 12, color: "var(--zm-text-2)", marginTop: 8 }}>
                 点数按“约 {QUOTA.aiCharsPerPoint} 个汉字 1 点”向上取整扣，见
-                useSettings.spendAiPoints。
+                useSettings.spendAiPoints{license.active ? "；会员不走这条扣减" : ""}。
               </div>
               {info ? (
                 <div

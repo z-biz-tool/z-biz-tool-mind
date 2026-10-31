@@ -87,6 +87,21 @@ export interface CrashInfo {
   latest: string;
 }
 
+/** 会员态。真相在 Rust 侧（license.rs），每次读都重新验签 —— 这里只是它的镜像。 */
+export interface LicenseStatus {
+  /** 是否是可用的会员（验签通过且字段合规）。 */
+  active: boolean;
+  /** member | free | invalid。invalid = 有许可文件但校验不过。 */
+  state: string;
+  tier: string;
+  /** 签发日期 YYYY-MM-DD，未激活为空串。 */
+  issued: string;
+  /** 兑换时间（本机本地时间），未激活为空串。 */
+  redeemedAt: string;
+  /** 非会员时说明为什么；直接展示，前端不再拼文案。 */
+  reason: string;
+}
+
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -119,6 +134,16 @@ const LS_CONFIG = "z-mind:config";
 const LS_RECENT = "z-mind:recent";
 /** 已保存配额账本（与 Rust 侧 saved.json 同语义）：不随最近列表清空而重置。 */
 const LS_SAVED = "z-mind:saved";
+
+/** 浏览器后备的会员态：恒为免费档。理由见 native.licenseStatus 的注释。 */
+const FREE_LICENSE: LicenseStatus = {
+  active: false,
+  state: "free",
+  tier: "free",
+  issued: "",
+  redeemedAt: "",
+  reason: "浏览器预览模式没有会员体系，请在桌面版中查看或兑换。",
+};
 
 // 与 Rust 侧 recent.rs 的默认 max_count 对齐；QUOTA.recentMax 是"用户能调到多少"，
 // 这里是"没调过时的容量"，两者不是一回事，别拿 UI 那个数当后备。
@@ -281,6 +306,30 @@ export const native = {
   async quotaSavedList(): Promise<string[]> {
     if (!isTauri) return lsGet<string[]>(LS_SAVED, []);
     return call<string[]>("quota_saved_list");
+  },
+
+  /**
+   * 当前会员态。
+   *
+   * 浏览器后备**恒为免费档**：验签在 Rust 侧做（客户端只内置公钥），
+   * 浏览器里没有那把公钥、也没有 license.json 可写。
+   * 这里不是"假装没开通"——浏览器模式本来就没有付费墙可绕：
+   * 它连保存都落 localStorage，闸门在那儿毫无意义。
+   */
+  async licenseStatus(): Promise<LicenseStatus> {
+    if (!isTauri) return FREE_LICENSE;
+    return call<LicenseStatus>("license_status");
+  },
+
+  /**
+   * 兑换一张兑换码。验不过时 Rust 侧返回 Err（中文整句），这里原样抛给界面。
+   *
+   * 浏览器模式直接拒绝：让"兑换"这个动作在没有真实验签的地方**不成立**，
+   * 而不是默默成功 —— 后者会让用户以为在网页里也开通了，回到桌面版却仍是免费档。
+   */
+  async licenseRedeem(code: string): Promise<LicenseStatus> {
+    if (!isTauri) throw new Error("浏览器里无法兑换会员，请在桌面版中输入兑换码。");
+    return call<LicenseStatus>("license_redeem", { code });
   },
 
   async recentRemove(path: string): Promise<RecentItem[]> {
@@ -779,7 +828,7 @@ export async function pickOpenPath(opts: PickOptions): Promise<string | null> {
     const r = await open({
       title: opts.title,
       // 打开框也一样：调用方没点名位置就从「文档」目录起，别停在进程工作目录。
-      defaultPath: opts.defaultPath ?? ((await documentDir()) ?? undefined),
+      defaultPath: opts.defaultPath ?? (await documentDir()) ?? undefined,
       filters: opts.filters,
     });
     return typeof r === "string" ? r : null;

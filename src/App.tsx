@@ -41,6 +41,7 @@ import { countTopics } from "./engine/tree.ts";
 import { PROJECTIONS, useUi, type Projection } from "./stores/uiStore.ts";
 import { THEME_LABEL, THEME_ORDER, type ThemeMode } from "./model/constants.ts";
 import { startRecentListeners, useRecent } from "./stores/recentStore.ts";
+import { useLicense } from "./stores/licenseStore.ts";
 import { useSettings } from "./stores/settingsStore.ts";
 import {
   registerShortcuts,
@@ -410,6 +411,9 @@ function Shell() {
   useEffect(() => {
     void useSettings.getState().load();
     void useRecent.getState().refreshAll();
+    // 会员态要在任何闸门（canSave / canGenerate）被问到之前就位，否则启动后头几秒
+    // 会被当成免费档，已兑换的用户会看到"还差 N 个文件"这种一闪而过的错话。
+    void useLicense.getState().refresh();
   }, []);
 
   useEffect(() => startAutosave(), []);

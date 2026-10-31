@@ -9,8 +9,14 @@ import type { DocumentModel } from "../types/model.ts";
 import { ILLEGAL_TITLE_CHARS, QUOTA } from "../model/constants.ts";
 import { activeDoc, useDoc } from "../stores/docStore.ts";
 import { useQuota } from "../stores/quotaStore.ts";
+import { isMember } from "../stores/licenseStore.ts";
 
 export function canSave(doc: DocumentModel): { ok: boolean; reason: string } {
+  // 会员不限文件数（CEO 2026-10-31 裁定：买断 ¥199，按方案清单全放开）。
+  //
+  // 判据放在**闸门函数里**而不是 UI 里：将来若要给会员加「单文档大小上限」之类
+  // 的新约束，改动落在这一个文件，不会漏到某个忘了接 store 的界面后面。
+  if (isMember()) return { ok: true, reason: "" };
   // 名额数的是 saved.json 里"真的落过盘"的那些。这里曾经是拿最近列表去重近似的，
   // 而 recentTouch 在打开文档时就调了 —— 于是"打开过 10 份"变成"一个都存不了"（01 A-13）。
   const used = new Set(useQuota.getState().saved);
@@ -29,9 +35,16 @@ export function canSave(doc: DocumentModel): { ok: boolean; reason: string } {
 }
 
 /** 点数换算按 aiCharsPerPoint 向上取整：用户看到的是整点，不是 0.7 点这种小数目。 */
-export function canGenerate(chars: number, points: number, used: number): { ok: boolean; need: number; reason: string } {
+export function canGenerate(
+  chars: number,
+  points: number,
+  used: number
+): { ok: boolean; need: number; reason: string } {
   const c = Number.isFinite(chars) && chars > 0 ? chars : 0;
   const need = Math.ceil(c / QUOTA.aiCharsPerPoint);
+  // 会员免点数。need 仍然算出来返回 —— 调用方可能拿它做进度提示，
+  // 而"这次要扣多少"和"这次扣不扣"本来就是两件事。
+  if (isMember()) return { ok: true, need, reason: "" };
   const left = points - used;
   if (need > left) {
     return {

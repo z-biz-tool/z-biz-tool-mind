@@ -7,6 +7,8 @@ import { create } from "zustand";
 import { native } from "../services/native.ts";
 import { QUOTA } from "../model/constants.ts";
 import { sanitizeThemes, type StoredTheme } from "../engine/themelib.ts";
+// 扣点必须跟闸门同一个判据，否则会员会被扣成负数（见 spendAiPoints）。
+import { isMember } from "./licenseStore.ts";
 
 export interface Settings {
   general: {
@@ -37,7 +39,13 @@ export interface Settings {
   network: { proxyMode: string; proxyHost: string; proxyPort: number; timeoutSec: number };
   /** 快捷键自定义：命令 → 键串，空串 = 禁用这条，缺键 = 用默认（utils/shortcuts.ts）。 */
   shortcut: { custom: Record<string, string> };
-  advanced: { autoUpdate: boolean; crashReport: boolean; logLevel: string; aiEndpoint: string; aiModel: string };
+  advanced: {
+    autoUpdate: boolean;
+    crashReport: boolean;
+    logLevel: string;
+    aiEndpoint: string;
+    aiModel: string;
+  };
   /** 画布右键菜单的动作白名单：空 = 全部显示，裁剪规则在 canvas/menuActions.ts。 */
   rightMenu: { enabled: string[] };
   recent: { maxCount: number };
@@ -45,10 +53,29 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  general: { theme: "system", language: "zh-CN", restoreLastSession: true, showQuickBar: true, canvasDragButton: "right", wheelZoom: "cursor" },
-  format: { defaultLayout: "balanced", defaultThemeId: "default", autoFitOnOpen: true, topicWidthMode: "auto" },
+  general: {
+    theme: "system",
+    language: "zh-CN",
+    restoreLastSession: true,
+    showQuickBar: true,
+    canvasDragButton: "right",
+    wheelZoom: "cursor",
+  },
+  format: {
+    defaultLayout: "balanced",
+    defaultThemeId: "default",
+    autoFitOnOpen: true,
+    topicWidthMode: "auto",
+  },
   themes: { custom: [] },
-  save: { autoSave: true, autoSaveIntervalMin: 5, historyCount: QUOTA.historyMax, backupOnSave: true, backupDir: "", backupKeepDays: QUOTA.trashKeepDays },
+  save: {
+    autoSave: true,
+    autoSaveIntervalMin: 5,
+    historyCount: QUOTA.historyMax,
+    backupOnSave: true,
+    backupDir: "",
+    backupKeepDays: QUOTA.trashKeepDays,
+  },
   network: { proxyMode: "system", proxyHost: "", proxyPort: 0, timeoutSec: 20 },
   shortcut: { custom: {} },
   advanced: { autoUpdate: true, crashReport: false, logLevel: "info", aiEndpoint: "", aiModel: "" },
@@ -66,7 +93,10 @@ interface SettingsStore {
   error: string | null;
   load: () => Promise<void>;
   /** 局部改一节。返回落盘后真正的那一节；写失败返回 null（settings 保留乐观值 + error）。 */
-  patch: <K extends Section>(section: K, patch: Partial<Settings[K]>) => Promise<Settings[K] | null>;
+  patch: <K extends Section>(
+    section: K,
+    patch: Partial<Settings[K]>
+  ) => Promise<Settings[K] | null>;
   resetSection: (section: Section) => Promise<void>;
   /** 免费版点数用完后要限流的 AI 额度。 */
   spendAiPoints: (chars: number) => Promise<boolean>;
@@ -98,10 +128,16 @@ export const useSettings = create<SettingsStore>((set, get) => ({
   },
 
   async patch(section, value) {
-    const next: Settings = { ...get().settings, [section]: { ...get().settings[section], ...value } };
+    const next: Settings = {
+      ...get().settings,
+      [section]: { ...get().settings[section], ...value },
+    };
     set({ settings: next, saving: true });
     try {
-      const raw = (await native.configSet(section, value as Record<string, unknown>)) as Partial<Settings>;
+      const raw = (await native.configSet(
+        section,
+        value as Record<string, unknown>
+      )) as Partial<Settings>;
       // 以落盘结果为准，不信乐观值：Rust 会在写之前改写某些节（network 切走手动档就清掉
       // 地址和端口）。继续显示改之前的值，就成了"框里填着、文件里没有"。
       const stored = raw[section] as object | undefined;
@@ -129,6 +165,12 @@ export const useSettings = create<SettingsStore>((set, get) => ({
   },
 
   async spendAiPoints(chars) {
+    // 会员免点数：**这里必须跟 entitlement.canGenerate 同一口径**。
+    //
+    // 曾经只在 canGenerate 里放行，而扣点在这儿独立判 —— 于是闸门说"可以生成"，
+    // 扣点却因为点数不足返回 false，ai.ts 把它当计费失败拦下：
+    // 会员点了按钮毫无反应，而闸门明明已经放行。两处分叉就是这么来的。
+    if (isMember()) return true;
     const need = Math.ceil(chars / QUOTA.aiCharsPerPoint);
     const q = get().settings.quota;
     // 点数是"约 10 个汉字 1 点"，向上取整让用户看到的是整数点而不是小数。
