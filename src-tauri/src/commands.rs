@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
-use crate::{backup, config, crash, log, net, paths, quota, recent, secret};
+use crate::{backup, config, crash, license, log, net, paths, quota, recent, secret};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -198,6 +198,23 @@ pub fn quota_mark_saved(path: String) -> Result<usize, String> {
 #[tauri::command]
 pub fn quota_saved_list() -> Result<Vec<String>, String> {
     Ok(quota::list())
+}
+
+// ---------- 会员许可 ----------
+//
+// 判定全部在 Rust 侧（license.rs）：前端拿到的只是结果，没有能被绕过的前端闸门。
+// 这里不返回 Result::Err 表示"没有会员"——没兑换是正常状态，不是错误。
+
+/// 当前会员态。每次调用都会重新验签，手改 license.json 立刻失效。
+#[tauri::command]
+pub fn license_status() -> license::LicenseStatus {
+    license::status()
+}
+
+/// 兑换一张兑换码。验不过直接报错（中文整句，前端直接展示），且不落盘。
+#[tauri::command]
+pub fn license_redeem(code: String) -> Result<license::LicenseStatus, String> {
+    license::redeem(&code)
 }
 
 // ---------- 文件字节 ----------

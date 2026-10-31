@@ -31,6 +31,10 @@ sha2 = "0.10"
 data-encoding = "2"
 aes-gcm = "0.10.3"
 getrandom = "0.2"
+# 会员许可（license.rs）：ed25519 验签。客户端只内置**公钥**，私钥留在签发侧
+# （lead 的 scripts/issue-license.mjs）。实测在家族 pin 的 rustc 1.99.0 上编译/测试
+# 全绿（lock 解析到 2.2.0）；3.x 是新转正的 RC 序列，不用。
+ed25519-dalek = "2.1.1"
 # 能力共享层：协议/鉴权/错误脱敏统一在 cap-llm，mind 不再自建请求代码
 cap-llm = { path = "../../z-biz-tool-capability/crates/cap-llm" }
 

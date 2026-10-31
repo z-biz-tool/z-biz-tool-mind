@@ -3,6 +3,7 @@ mod backup;
 mod commands;
 mod config;
 mod crash;
+mod license;
 mod log;
 mod net;
 mod openfile;
@@ -158,6 +159,9 @@ pub fn run() {
             commands::recent_touch,
             commands::quota_mark_saved,
             commands::quota_saved_list,
+            // 会员许可：验签在 Rust 侧，前端只读结果
+            commands::license_status,
+            commands::license_redeem,
             commands::recent_remove,
             commands::recent_clear,
             commands::recent_set_capacity,
