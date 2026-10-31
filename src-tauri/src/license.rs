@@ -615,4 +615,34 @@ mod tests {
         std::env::remove_var("Z_MIND_CONFIG_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// **跨语言端到端**：Node 签发工具（lead 的 `scripts/issue-license.mjs`）产出的码，
+    /// Rust 客户端认不认。
+    ///
+    /// 上面那条 `e2e_real_key_redeem` 是**用 Rust 签、Rust 验** —— 它证明密钥是一对、
+    /// 编码自洽，但证明不了两个实现对齐：载荷的字段顺序、`base64url` 是否带补位、
+    /// 签名是 64 字节裸签名还是 DER —— 这三样只要有一样不一致，
+    /// 表现就是「工具签得出码、用户兑不上」，而且**两边各自的测试都是绿的**。
+    ///
+    /// 所以这条测试不吃 Rust 造的码，只吃从外面喂进来的真码：
+    ///
+    /// ```text
+    /// cd z-biz-tool-lead && node scripts/issue-license.mjs --product mind --tier member --issued 2026-10-31
+    /// cd z-biz-tool-mind/src-tauri
+    /// ZBIZ_E2E_CODE='ZBIZ-MIND-…' cargo test --lib license::tests::e2e_external_code -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "需要环境变量 ZBIZ_E2E_CODE 里放一张由 issue-license.mjs 签出的码"]
+    fn e2e_external_code_from_node_issuer_is_accepted() {
+        let _g = crate::lock_config_env();
+        let code = std::env::var("ZBIZ_E2E_CODE").unwrap_or_else(|_| {
+            panic!("没给 ZBIZ_E2E_CODE —— 先用 lead 的 issue-license.mjs 签一张，再把码放进来")
+        });
+        let dir = isolated("e2e-ext");
+        let s = redeem(code.trim()).expect("外部签发工具产出的码必须能兑换");
+        assert!(s.active, "外部码兑换后应是会员: {s:?}");
+        assert_eq!(s.tier, "member");
+        std::env::remove_var("Z_MIND_CONFIG_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
