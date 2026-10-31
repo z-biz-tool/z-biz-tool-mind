@@ -150,7 +150,21 @@ fn default_timeout() -> u64 {
 ///
 /// 每一项失败都带 `focus`：三项分处「选项 → 高级」的三个输入框，
 /// 只说「去填一下」等于让用户把三个框都试一遍。
+/// 配置三件套校验 + 拼 cap-llm 配置（**测试用入口**）。
+///
+/// 生产路径走 [`prepare`]（同一个同步准备阶段）。
+/// 保留这个公开别名是因为测试直接断言它的错误分类与 `focus`。
+#[cfg(test)]
 pub fn to_cap(args: &AiGenerateArgs) -> Result<LlmConfig, LlmFailure> {
+    prepare(args)
+}
+
+/// 同步准备阶段：校验三件套 + 从加密库取密钥 + 拼 cap-llm 配置。
+///
+/// 与 [`to_cap`] 等价，但**刻意保持为独立的同步函数** ——
+/// 调用方若要在测试里持配置目录锁，必须让锁只覆盖本函数，
+/// 不能覆盖后续的 await（见 [`ai_generate_outline`] 的注释）。
+fn prepare(args: &AiGenerateArgs) -> Result<LlmConfig, LlmFailure> {
     let endpoint = args.endpoint.trim();
     if endpoint.is_empty() {
         return Err(LlmFailure::local(
@@ -196,9 +210,21 @@ pub fn to_cap(args: &AiGenerateArgs) -> Result<LlmConfig, LlmFailure> {
 }
 
 /// 生成大纲（非流式）。key 从本机加密库解出、请求后即弃，不回传前端。
+///
+/// ## 为什么拆成两段（2026-10-31）
+///
+/// `to_cap` 要读加密库（读配置目录环境变量），而配置目录环境变量是**进程级**的，
+/// 测试期间必须持锁。但网络请求是 await 的 —— 持着 `MutexGuard` 跨 await 会：
+///
+/// 1. 触发 clippy 的 `await_holding_lock`（CI 闸门直接红）；
+/// 2. 即使过了 clippy，也是真错：锁被一把网络请求的时长占住，
+///    别的测试想改配置目录就得干等，隔离沙盒的意义就废了。
+///
+/// 所以拆成「同步准备配置」+「异步发请求」两段，锁只覆盖第一段。
+/// `prepare` 是同步函数，锁在它返回时就已经释放。
 #[tauri::command]
 pub async fn ai_generate_outline(args: AiGenerateArgs) -> Result<String, LlmFailure> {
-    let cfg = to_cap(&args)?;
+    let cfg = prepare(&args)?;
     let messages = [
         Message::system(
             "你是思维导图大纲生成器。只输出大纲本身：每行一个主题，第一行为中心主题，用制表符缩进表示层级，\
@@ -305,21 +331,29 @@ mod tests {
         };
         let model = std::env::var("ZBIZ_MODEL").unwrap_or_else(|_| "zBiz-Text-35B".to_string());
 
-        // 别人的用例可能正在改同一个环境变量，必须拿锁（见 crate 顶部注释）
-        let _guard = crate::CONFIG_ENV_GUARD
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let dir = std::env::temp_dir().join(format!("zbiz-mind-live-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("建临时配置目录失败");
-        std::env::set_var("Z_MIND_CONFIG_DIR", &dir);
-
         let args = AiGenerateArgs {
             prompt: "本地大模型的三个优点".to_string(),
             endpoint: gw.clone(),
             model,
             timeout_sec: 120,
         };
-        let cap = to_cap(&args).expect("免 Key 的本地网关必须通过校验");
+
+        // 锁只覆盖「改配置目录 + 读密钥」这一段同步准备。
+        //
+        // 绝不能持着它跨 await：一是 clippy 的 `await_holding_lock` 会让 CI 闸门红；
+        // 二是真错 —— 锁被一把网络请求的时长占住，别的测试想改配置目录就得干等。
+        //
+        // 用一个显式作用域把 `_guard` 限制在准备阶段，出了作用域锁就释放了。
+        let (cap, _dir) = {
+            let _guard = crate::CONFIG_ENV_GUARD
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!("zbiz-mind-live-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("建临时配置目录失败");
+            std::env::set_var("Z_MIND_CONFIG_DIR", &dir);
+            let cap = prepare(&args).expect("免 Key 的本地网关必须通过校验");
+            (cap, dir)
+        };
         assert!(!cap.needs_api_key(), "私有地址不该要求 key");
 
         let out = ai_generate_outline(args).await.expect("真实调用失败");
