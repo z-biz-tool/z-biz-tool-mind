@@ -110,7 +110,7 @@ jobs:
         shell: pwsh
         run: New-Item -ItemType Junction -Path "$env:GITHUB_WORKSPACE\..\z-biz-tool-capability" -Target "$env:GITHUB_WORKSPACE\.capability" | Out-Null
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: rustfmt, clippy
       # Runner 会往 ~/.cargo/config.toml 里塞凭证配置，cargo 认不得这个格式就直接报错退出。
@@ -154,7 +154,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -205,7 +205,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -299,7 +299,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.0
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
