@@ -21,7 +21,7 @@ export const PROJECTIONS: { id: Projection; label: string }[] = [
 ];
 
 export type DialogKind =
-  "export" | "print" | "options" | "search" | "history" | "share" | "topicInfo" | "themes" | "aiTopic" | "aiDiagram" | "aiImage" | "aiVision" | null;
+  "export" | "print" | "options" | "search" | "history" | "share" | "topicInfo" | "themes" | "aiTopic" | "aiDiagram" | "aiImage" | "aiVision" | "aiEditImage" | null;
 
 interface UiState {
   projection: Projection;
@@ -70,6 +70,9 @@ interface UiState {
   /** 「AI 看图」对话框要读的主题：打开对话框时钉住，关掉清空。 */
   visionShapeId: string;
   openVision: (shapeId: string) => void;
+  /** 「AI 改图」对话框要读的主题：与看图同一枚钉子（两者都只对带图的主题开放）。 */
+  editImageShapeId: string;
+  openEditImage: (shapeId: string) => void;
   openDialog: (d: DialogKind) => void;
   closeDialog: () => void;
   setExportFormat: (f: ExportFormat) => void;
@@ -150,8 +153,11 @@ export const useUi = create<UiState>((set, get) => ({
   setAiBusy: (aiBusy) => set({ aiBusy }),
   visionShapeId: "",
   openVision: (visionShapeId) => set({ visionShapeId, dialog: "aiVision" }),
+  editImageShapeId: "",
+  openEditImage: (editImageShapeId) => set({ editImageShapeId, dialog: "aiEditImage" }),
   openDialog: (dialog) => set({ dialog, searchOpen: dialog === "search" }),
-  closeDialog: () => set({ dialog: null, searchOpen: false, visionShapeId: "" }),
+  closeDialog: () =>
+    set({ dialog: null, searchOpen: false, visionShapeId: "", editImageShapeId: "" }),
   setExportFormat: (exportFormat) => set({ exportFormat }),
   setSearch: (patch) => set({ ...patch, activeMatch: -1 }),
   setActiveMatch: (activeMatch) => set({ activeMatch }),

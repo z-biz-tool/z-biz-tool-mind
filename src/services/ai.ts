@@ -11,7 +11,13 @@ import type { Page } from "../types/model.ts";
 import { plainText } from "../types/model.ts";
 import { insertOutline, parseOutline } from "../engine/outline.ts";
 import type { InsertMode, OutlineLine } from "../engine/outline.ts";
-import { parseDiagram, placeDiagram, attachImageToShape, imageMediaName } from "../engine/diagram.ts";
+import {
+  parseDiagram,
+  placeDiagram,
+  attachImageToShape,
+  imageMediaName,
+  replaceImageBytes,
+} from "../engine/diagram.ts";
 import type { NormalizedDiagram } from "../engine/diagram.ts";
 import { removeShape, insertChild, setFloating } from "../engine/tree.ts";
 import { activePage, activeDoc, useDoc } from "../stores/docStore.ts";
@@ -903,5 +909,174 @@ export async function runAiVision(
   return {
     ok: true,
     message: `AI 看图完成：新增 ${added} 个主题，消耗 ${billed.need} 点，剩余 ${left} 点。`,
+  };
+}
+
+// ======================================================================
+// AI 改图（第四步，图生图）：画布上已有的图 + 一句改动要求 → 新的图。
+//
+// 与前三步的分工：结构图管逻辑、像素图管观感、看图管「读懂」、
+// 改图管「重画」—— 有了图之后能不能继续迭代，是「什么图都能造」的最后一块。
+//
+// ## 为什么原地替换，而不是新开一个主题
+//
+// 用户说「把这张改成夜景」，期望的是**这根枝上的图变了**，不是旁边多出一张。
+// 原地替换还有一个好处：media 字节在文档快照里（structuredClone 认得
+// Uint8Array），所以撤销能真的把原图还回来 —— 新开主题的话，撤销只撤主题，
+// 那张被替换掉的原图就没了。
+//
+// ## 为什么 denoise 默认 0.85
+//
+// 实测 FLUX schnell 在 0.5~0.6 只改纹理，≥0.85 才明显改结构。
+// 「改图」这个动作的期望就是**看得出的变化**，力度定低等于功能不存在。
+// ======================================================================
+
+/** 力度档位：给用户「改多少」的语义，而不是裸数字。 */
+export const EDIT_DENOISE_PRESETS = [
+  { key: "light", label: "轻微", denoise: 0.45, tip: "保留原图大部分，只调色调、光线、质感" },
+  { key: "medium", label: "适中", denoise: 0.7, tip: "改动明显，但主体还是原来那个" },
+  { key: "strong", label: "大幅", denoise: 0.9, tip: "按要求重画，构图与细节都可能变" },
+] as const;
+
+export type EditDenoiseKey = (typeof EDIT_DENOISE_PRESETS)[number]["key"];
+
+/** 默认档位：大幅。「改图」若只改出一点纹理，用户会以为功能坏了。 */
+export const DEFAULT_EDIT_DENOISE_KEY: EditDenoiseKey = "strong";
+
+/** 纯函数：档位 → denoise 数值（网关与 Rust 侧都接受 0.05~0.95）。 */
+export function denoiseOf(key: EditDenoiseKey): number {
+  return EDIT_DENOISE_PRESETS.find((p) => p.key === key)?.denoise ?? 0.85;
+}
+
+/** 纯函数：改图提示词。单独导出便于测试钉住协议要点。 */
+export function buildEditPrompt(requirement: string, topic: string): string {
+  const t = topic ? `（这张图挂在主题「${topic}」下）` : "";
+  return (
+    `请按照下面的要求重画这张图片${t}。\n` +
+    `要求：${requirement}\n` +
+    `保持与原图一致的画幅尺寸；除要求改动的内容外，其余部分尽量保持原样。`
+  );
+}
+
+/**
+ * 「AI 改图」完整流程：取原图 → 预检 → 生成 → 结算 → 原地替换。
+ *
+ * 纪律与生图一致：
+ * - 配置预检（复用 imageConnection：与生图同一处配置，不新增设置项）；
+ * - 配额预检按「一张图」的粗口径（200 字折算），注定失败的请求不发出；
+ * - **不锁画布**：改图同样可能两三分钟，锁着不可编辑是不可接受的；
+ * - 结算按实际生成结果计。
+ */
+export async function runAiImageEdit(
+  shapeId: string,
+  requirement: string,
+  denoiseKey: EditDenoiseKey = DEFAULT_EDIT_DENOISE_KEY
+): Promise<AiResult> {
+  const req = requirement.trim();
+  if (!req) {
+    return { ok: false, message: "请先说明要把这张图改成什么样，例如「改成夜晚的街道」。" };
+  }
+
+  const page = activePage(useDoc.getState());
+  const shape = page?.shapes[shapeId];
+  if (!page || !shape) {
+    return { ok: false, message: "选中的主题已经不在画布上了，请重新选择后再用 AI 改图。" };
+  }
+
+  // ---- 取原图：extras.image 引用 → doc.media 字节。引用在字节不在 = 报错不静默。
+  const doc = activeDoc(useDoc.getState());
+  const ref = shape.extras.image;
+  if (!ref) {
+    return {
+      ok: false,
+      message: "这个主题上没有图片。先插入图片（或用「AI 绘图」生成一张），再改图。",
+    };
+  }
+  const bytes = doc?.media[ref.relId];
+  if (!bytes || !bytes.length) {
+    return {
+      ok: false,
+      message: "图片数据缺失（引用在，字节不在）。这个文件可能在别的设备上生成、同步时丢了媒体内容。",
+    };
+  }
+
+  const conn = await imageConnection();
+  if (!conn.ok) return conn;
+
+  // ---- 配额预检：按张折算（与看图同量级）。
+  const IMAGE_BILLED_CHARS = 200;
+  const q = useSettings.getState().settings.quota;
+  const precheck = canGenerate(IMAGE_BILLED_CHARS, q.aiPoints, q.aiUsed);
+  if (!precheck.ok) {
+    logEvent(
+      "warn",
+      `AI 配额不足（改图）：需要 ${precheck.need} 点，可用 ${Math.max(0, q.aiPoints - q.aiUsed)} 点`
+    );
+    return { ok: false, message: precheck.reason };
+  }
+
+  const denoise = denoiseOf(denoiseKey);
+  const prompt = buildEditPrompt(req, plainText(shape.text));
+  logEvent(
+    "info",
+    `AI 改图请求 → ${originOf(conn.endpoint)}（模型 ${conn.model}，力度 ${denoise}，原图 ${bytes.length} 字节）`
+  );
+
+  let r: { b64?: string; url?: string; seed?: number; elapsedS?: number };
+  try {
+    r = await native.aiEditImage({
+      endpoint: conn.endpoint,
+      model: conn.model,
+      prompt,
+      image: `data:image/png;base64,${bytesToBase64(bytes)}`,
+      denoise,
+      timeoutSec: Math.max(300, useSettings.getState().settings.network.timeoutSec || 300),
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : String(e),
+      failure: failureOf(e) ?? undefined,
+    };
+  }
+
+  if (!r.b64 && !r.url) {
+    return { ok: false, message: "图像服务没有返回新的图片数据。" };
+  }
+
+  // b64 → 字节（回调外解好：mutateDoc 的回调必须同步）。
+  let newBytes: Uint8Array | null = null;
+  if (r.b64) {
+    const bin = atob(r.b64);
+    newBytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) newBytes[i] = bin.charCodeAt(i);
+  }
+  if (!newBytes) {
+    return { ok: false, message: "图像服务只返回了图片地址，本次改图没有拿到字节，未覆盖原图。" };
+  }
+
+  // ---- 原地替换：media 字节换新，extras.image 引用不动（尺寸沿用原图的，
+  // 网关 img2img 输出尺寸 = 输入尺寸，尺寸不变才不会让画布布局跳动）。
+  // 换字节的规则住在 engine/diagram.ts —— 媒体约定只有那一处说了算。
+  const relId = ref.relId;
+  const committed = useDoc
+    .getState()
+    .mutateDoc("AI 改图", (d) => replaceImageBytes(d, relId, newBytes as Uint8Array));
+  if (!committed) {
+    logEvent("error", "AI 改图结果未能写入：文档已关闭");
+    return { ok: false, message: "AI 改图失败：文档已经关闭，生成结果没有写入。" };
+  }
+
+  const after = useSettings.getState().settings.quota;
+  const left = Math.max(0, after.aiPoints - after.aiUsed);
+  // 像素生成目前只做配额预检、不扣点（按张计费的口径还没定），
+  // 但日志里要写清剩余点数 —— 事后问「为什么还能用」时得有据可查。
+  logEvent(
+    "info",
+    `AI 改图落图成功（锚点 ${shapeId}，力度 ${denoise}，seed=${r.seed ?? "?"}，耗时 ${r.elapsedS ?? "?"}s，余 ${left} 点）`
+  );
+  return {
+    ok: true,
+    message: `AI 改图完成（耗时 ${r.elapsedS ?? "?"} 秒）。原图已被替换，可用 Ctrl+Z 撤销。`,
   };
 }

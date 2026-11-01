@@ -39,7 +39,7 @@
  * 任何一道不过就整份拒绝（返回原因），而不是"尽力而为地修一修"——
  * 半修半坏的结构比明确失败更难排查。
  */
-import type { Page, RelationshipShape } from "../types/model.ts";
+import type { Page, RelationshipShape, DocumentModel } from "../types/model.ts";
 import { makeText, plainText } from "../types/model.ts";
 import { retypeSubtree, toggleRelationship } from "./tree.ts";
 import { nextShapeId } from "../model/factory.ts";
@@ -537,6 +537,29 @@ export function attachImageToShape(
 /** media 字典的键（docStore 侧用它写 DocumentModel.media）。 */
 export function imageMediaName(shapeId: string): string {
   return `ai-${shapeId}.png`;
+}
+
+/**
+ * 原地替换一张图的字节（AI 改图用）。
+ *
+ * ## 为什么只换字节、不动引用
+ *
+ * `extras.image` 记着 relId 与宽高。改图时**引用必须保持不变**：
+ * - relId 不变 ⇒ 形状不用重建，位置、层级、折叠状态、连���全不受影响；
+ * - 宽高不变 ⇒ 画布布局不跳（网关的 img2img 输出尺寸 = 输入尺寸，
+ *   尺寸本来就不该变；真变了也要按原尺寸走，否则这根枝会忽然长一截）。
+ *
+ * 换字节而不是换新主题还有第二个好处：media 在文档快照里
+ * （structuredClone 认得 Uint8Array），所以撤销能真的把原图还回来。
+ *
+ * 纯函数：媒体约定只有这一份，别处再写一遍"怎么换图"迟早会和 attachImageToShape 漂移。
+ */
+export function replaceImageBytes(
+  doc: DocumentModel,
+  relId: string,
+  bytes: Uint8Array
+): DocumentModel {
+  return { ...doc, media: { ...doc.media, [relId]: bytes } };
 }
 
 /** 关系线的类型别名导出，便于外部引用而不必引 types/model.ts。 */

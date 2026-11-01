@@ -1026,6 +1026,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
             tip: "读懂这张图：转成导图 / 提取文字 / 描述内容",
             run: () => useUi.getState().openVision(id),
           });
+          out.push({
+            k: "aiEditImage",
+            label: "AI 改图",
+            tip: "按一句要求重画这张图（新图原地替换原图，可撤销）",
+            run: () => useUi.getState().openEditImage(id),
+          });
         }
       }
     }

@@ -308,30 +308,10 @@ pub async fn ai_generate_image(args: ImageGenArgs) -> Result<serde_json::Value, 
         req = req.bearer_auth(args.api_key.trim());
     }
 
-    let resp = req.send().await.map_err(|e| {
-        // 连接层失败：区分「地址打不开」和「等太久」，两者下一步动作不同
-        let msg = e.to_string();
-        let (kind, hint) = if msg.contains("timed out") || msg.contains("timeout") {
-            (
-                "timeout",
-                "图像服务在超时时间内没有返回。自建 FLUX 网关冷启动可能超过 2 分钟——\
-                     到「选项 → 网络」把超时调大（生图建议 ≥300s），或确认网关已启动。",
-            )
-        } else {
-            (
-                "network",
-                "连不上图像服务。请确认地址正确、服务在线（浏览器打开 {host}/health 验证）。\
-                     生图网关是自建服务，不保证 7x24 在线。",
-            )
-        };
-        LlmFailure {
-            kind,
-            status: None,
-            hint: hint.replace("{host}", endpoint.split('/').nth(2).unwrap_or("网关")),
-            focus: "baseUrl",
-            message: cap_llm::redact(&msg, &args.api_key),
-        }
-    })?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| image_send_failure(&e, &endpoint, &args.api_key, "生成"))?;
 
     let status = resp.status().as_u16();
     let body = resp.text().await.map_err(|e| LlmFailure {
@@ -342,20 +322,223 @@ pub async fn ai_generate_image(args: ImageGenArgs) -> Result<serde_json::Value, 
         message: e.to_string(),
     })?;
     if status >= 400 {
-        return Err(LlmFailure {
-            kind: "http",
-            status: Some(status),
-            hint: match status {
-                401 | 403 => "图像服务要求鉴权。到「选项 → 高级 → 图像服务密钥」填写网关的 Bearer Token。".into(),
-                404 => "端点路径不对。确认地址末尾是 /v1（完整地址形如 http://host:8200/v1）。".into(),
-                _ => "图像服务返回了错误。检查网关日志；若提示模型不存在，核对「图像模型名」与网关 /v1/models 列表一致。".into(),
-            },
-            focus: if status == 401 || status == 403 { "apiKey" } else { "baseUrl" },
-            message: cap_llm::truncate_chars(&cap_llm::redact(&body, &args.api_key), 300),
-        });
+        return Err(image_http_failure(status, &body, &args.api_key));
     }
 
-    let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| LlmFailure {
+    parse_image_response(&body, status)
+}
+
+// ======================================================================
+// 图生图（AI 改图）：拿画布上已有的图当底，按一句要求重画。
+//
+// 端点形状与生图不同（/images/edits），但**失败纪律必须一模一样** ——
+// 两套措辞漂移，用户就要在「同一个网关、同一个地址」下学两种报错。
+// 下面三个 helper 是生图与改图共用的唯一一份判据。
+// ======================================================================
+
+/// 改图命令参数。
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageEditArgs {
+    /// OpenAI 兼容的生图网关根地址（与生图同一处配置）
+    pub endpoint: String,
+    /// 模型名（与生图同一处配置；网关实际按 prompt 走图生图工作流）
+    pub model: String,
+    /// 改动要求（用户的一句话）
+    pub prompt: String,
+    /// 原图：data URL 或裸 base64（前端给 data URL，网关两种都收）
+    pub image: String,
+    /// 重绘强度 0.05~0.95：越小越贴原图，越大越自由。
+    /// 实测 FLUX schnell 在 0.5~0.6 只改纹理，≥0.85 才明显改结构 ——
+    /// 默认取 0.85，是因为「改图」这个动作的期望就是**看得出的变化**。
+    #[serde(default = "default_denoise")]
+    pub denoise: f64,
+    /// 网关 Bearer 密钥（自建网关常免鉴权，可空）
+    #[serde(default)]
+    pub api_key: String,
+    /// 秒。改图同样可能分钟级，给足余量
+    #[serde(default = "default_image_timeout")]
+    pub timeout_sec: u64,
+}
+
+fn default_denoise() -> f64 {
+    0.85
+}
+
+/// 把 denoise 钳进网关能接受的范围。
+///
+/// 网关侧钳制在 0.05~0.95（KSampler 的 denoise=1.0 是"完全重画"，会把原图丢掉）。
+/// 前端也钳一次，是为了让**用户看到自己发出去的值**——
+/// 传 1.5 被服务端悄悄改成 0.95，用户会以为"力度没生效"。
+pub fn clamp_denoise(d: f64) -> f64 {
+    // NaN 才是「无法解析」→ 走默认。Infinity 是「比任何有效值都大」→
+    // 该钳到上限 0.95；把它当 NaN 处理会让「力度调到最大」变成「力度默认」，
+    // 用户明明要重画却只拿到一次轻改。
+    if d.is_nan() {
+        return default_denoise();
+    }
+    d.clamp(0.05, 0.95)
+}
+
+/// 改图的本地校验（四项缺一不可）。
+///
+/// 独立成同步函数，与生图那边「prepare 是同步的」同一思路：
+/// 校验路径不该必须发一次网络请求才能测。
+fn image_edit_validate(args: &ImageEditArgs) -> Result<String, LlmFailure> {
+    if args.endpoint.trim().is_empty() {
+        return Err(LlmFailure::local_with_hint(
+            "尚未配置图像服务地址。请在「选项 → 高级 → 图像服务端点」填写 OpenAI 兼容的生图网关（如 http://192.168.31.249:8200/v1）。",
+            Focus::BaseUrl,
+            LOCAL_HINT,
+        ));
+    }
+    if args.model.trim().is_empty() {
+        return Err(LlmFailure::local_with_hint(
+            "尚未配置图像模型名（如 zBiz-Image-FLUX、flux.1-schnell）。",
+            Focus::Model,
+            LOCAL_HINT,
+        ));
+    }
+    if args.prompt.trim().is_empty() {
+        return Err(LlmFailure::local_with_hint(
+            "改图要求不能为空：请说明要把这张图改成什么样。",
+            Focus::None,
+            LOCAL_HINT,
+        ));
+    }
+    if args.image.trim().is_empty() {
+        return Err(LlmFailure::local_with_hint(
+            "这张图没有可用的原图数据，无法改图。",
+            Focus::None,
+            LOCAL_HINT,
+        ));
+    }
+    Ok(args.endpoint.trim().trim_end_matches('/').to_string())
+}
+
+/// 图生图：POST {endpoint}/images/edits，JSON 形态（网关同时收 multipart，桌面端走 JSON 更省事）。
+///
+/// 兜底纪律与生图完全一致：未配置/不可达/超时/HTTP 错误四类分开说，绝不静默失败。
+/// **不设重试** —— 一次改图几分钟，重试等于翻倍等待。
+#[tauri::command]
+pub async fn ai_edit_image(args: ImageEditArgs) -> Result<serde_json::Value, LlmFailure> {
+    use serde_json::json;
+
+    let endpoint = image_edit_validate(&args)?;
+
+    let url = format!("{}/images/edits", endpoint);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(args.timeout_sec.max(1)))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| LlmFailure {
+            kind: "io",
+            status: None,
+            hint: "本机网络栈初始化失败，请重启应用重试。".into(),
+            focus: "none",
+            message: e.to_string(),
+        })?;
+
+    let mut req = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&json!({
+            "model": args.model.trim(),
+            "prompt": args.prompt.trim(),
+            "image": args.image.trim(),
+            "denoise": clamp_denoise(args.denoise),
+        }));
+    if !args.api_key.trim().is_empty() {
+        req = req.bearer_auth(args.api_key.trim());
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| image_send_failure(&e, &endpoint, &args.api_key, "改图"))?;
+
+    let status = resp.status().as_u16();
+    let body = resp.text().await.map_err(|e| LlmFailure {
+        kind: "network",
+        status: Some(status),
+        hint: "服务响应无法读取。".into(),
+        focus: "none",
+        message: e.to_string(),
+    })?;
+    if status >= 400 {
+        return Err(image_http_failure(status, &body, &args.api_key));
+    }
+
+    parse_image_response(&body, status)
+}
+
+// ---------- 生图与改图共用的失败判据（唯一一份） ----------
+
+/// 连接层失败：区分「地址打不开」和「等太久」，两者下一步动作不同。
+fn image_send_failure(
+    e: &reqwest::Error,
+    endpoint: &str,
+    api_key: &str,
+    action: &str,
+) -> LlmFailure {
+    let msg = e.to_string();
+    let (kind, hint) = if msg.contains("timed out") || msg.contains("timeout") {
+        (
+            "timeout",
+            format!(
+                "图像服务在超时时间内没有返回。自建 FLUX 网关冷启动可能超过 2 分钟——\
+                 到「选项 → 网络」把超时调大（{action}建议 ≥300s），或确认网关已启动。"
+            ),
+        )
+    } else {
+        (
+            "network",
+            "连不上图像服务。请确认地址正确、服务在线（浏览器打开 {host}/health 验证）。\
+             生图网关是自建服务，不保证 7x24 在线。"
+                .to_string(),
+        )
+    };
+    LlmFailure {
+        kind,
+        status: None,
+        hint: hint.replace("{host}", endpoint.split('/').nth(2).unwrap_or("网关")),
+        focus: "baseUrl",
+        message: cap_llm::redact(&msg, api_key),
+    }
+}
+
+/// HTTP 4xx/5xx：状态码决定下一步动作，措辞按「缺什么 → 去哪儿补」写。
+fn image_http_failure(status: u16, body: &str, api_key: &str) -> LlmFailure {
+    // 图太小是实测踩到过的真实失败（FLUX 的 VAE 有 3x3 卷积核，
+    // 输入比 kernel 还小就直接报错）—— 用户拿一张几十像素的小图标来改图就会遇到。
+    // 这时给一句"换个图"，比让他对着 "Kernel size can't be greater than
+    // actual input size" 发愣有用得多。
+    let too_small = body.contains("Kernel size can't be greater")
+        || body.contains("actual input size")
+        || body.contains("padded input size");
+    LlmFailure {
+        kind: "http",
+        status: Some(status),
+        hint: match status {
+            401 | 403 => "图像服务要求鉴权。到「选项 → 高级 → 图像服务密钥」填写网关的 Bearer Token。".into(),
+            404 => "端点路径不对。确认地址末尾是 /v1（完整地址形如 http://host:8200/v1）；\
+                    改图还需要网关支持 /images/edits（较旧的网关没有这个端点）。".into(),
+            400 => "图像服务拒绝了这次请求。若是改图：检查原图格式与提示词；\
+                    网关要求 prompt 与 image 两个字段都要有。".into(),
+            _ if too_small => "这张图太小，图像服务没法处理（模型要求图片不小于 64×64）。\
+                    请换一张更大的图再试 —— 画布上的小图标通常改不了。".into(),
+            _ => "图像服务返回了错误。检查网关日志；若提示模型不存在，核对「图像模型名」与网关 /v1/models 列表一致。".into(),
+        },
+        focus: if status == 401 || status == 403 { "apiKey" } else { "baseUrl" },
+        message: cap_llm::truncate_chars(&cap_llm::redact(body, api_key), 300),
+    }
+}
+
+/// 解析 OpenAI 兼容的图片响应：b64_json 优先，url 兜底，都没有就是协议不对。
+fn parse_image_response(body: &str, status: u16) -> Result<serde_json::Value, LlmFailure> {
+    use serde_json::json;
+
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| LlmFailure {
         kind: "parse",
         status: Some(status),
         hint: "服务响应不是 JSON——这个地址可能不是 OpenAI 兼容生图端点。".into(),
@@ -510,6 +693,113 @@ mod tests {
         assert_eq!(a.timeout_sec, 120);
     }
 
+    // ==================== 图生图（AI 改图） ====================
+
+    fn edit_args(endpoint: &str, model: &str, prompt: &str, image: &str) -> ImageEditArgs {
+        ImageEditArgs {
+            endpoint: endpoint.to_string(),
+            model: model.to_string(),
+            prompt: prompt.to_string(),
+            image: image.to_string(),
+            denoise: default_denoise(),
+            api_key: String::new(),
+            timeout_sec: 600,
+        }
+    }
+
+    #[test]
+    fn edit_args_round_trip_camel_case() {
+        let a = edit_args(
+            "http://192.168.31.249:8200/v1",
+            "zBiz-Image-FLUX",
+            "改成夜景",
+            "data:image/png;base64,QUJD",
+        );
+        let json = serde_json::to_value(&a).unwrap();
+        // 前端传的键必须是 camelCase：denoise / timeoutSec / apiKey
+        assert!(json.get("denoise").is_some(), "{json}");
+        assert!(json.get("timeoutSec").is_some(), "{json}");
+        assert!(json.get("apiKey").is_some(), "{json}");
+        assert!(json.get("image").is_some(), "{json}");
+    }
+
+    #[test]
+    fn edit_denoise_default_is_high_enough_to_change_structure() {
+        // 实测：FLUX schnell 在 denoise 0.5~0.6 只改纹理，≥0.85 才明显改结构。
+        // 默认值定低 ⇒ 用户说「改成跑车」却只换了个滤镜 ⇒ 功能等于没有。
+        assert!(default_denoise() >= 0.85, "默认力度必须能改结构");
+        // 也不能是 1.0 —— 那是完全重画，原图彻底丢掉。
+        assert!(default_denoise() < 1.0, "1.0 会丢掉原图");
+    }
+
+    #[test]
+    fn denoise_is_clamped_into_the_accepted_range() {
+        // 网关侧钳在 0.05~0.95；前端也钳一次，用户看到的值才等于实际生效的值。
+        assert_eq!(clamp_denoise(0.0), 0.05);
+        assert_eq!(clamp_denoise(1.0), 0.95);
+        assert_eq!(clamp_denoise(2.5), 0.95);
+        assert_eq!(clamp_denoise(-1.0), 0.05);
+        assert_eq!(clamp_denoise(0.85), 0.85);
+        // NaN 走默认，不能变成 0.05（那等于「几乎不重画」）。
+        assert_eq!(clamp_denoise(f64::NAN), default_denoise());
+        assert_eq!(clamp_denoise(f64::INFINITY), 0.95);
+    }
+
+    #[test]
+    fn edit_requires_endpoint_model_prompt_and_image() {
+        // 四项缺一不可：少了任何一项都是「必然失败的请求」，本地就该拦下。
+        let e = image_edit_validate(&edit_args("", "m", "p", "img")).unwrap_err();
+        assert_eq!(e.focus, "baseUrl");
+        assert!(e.message.contains("图像服务地址"));
+
+        let e = image_edit_validate(&edit_args("http://x/v1", " ", "p", "img")).unwrap_err();
+        assert_eq!(e.focus, "model");
+
+        let e = image_edit_validate(&edit_args("http://x/v1", "m", " ", "img")).unwrap_err();
+        assert!(e.message.contains("改图要求"));
+        assert_eq!(e.focus, "none");
+
+        let e = image_edit_validate(&edit_args("http://x/v1", "m", "p", " ")).unwrap_err();
+        assert!(e.message.contains("原图"));
+    }
+
+    #[test]
+    fn edit_image_response_is_parsed_like_generation() {
+        // 改图与生图共用一个响应协议 —— 网关返回形状一样，解析就该一样。
+        let body = r#"{"data":[{"b64_json":"QUJD","seed":7,"elapsed_s":12.5}]}"#;
+        let v = parse_image_response(body, 200).unwrap();
+        assert_eq!(v.get("b64").and_then(|x| x.as_str()), Some("QUJD"));
+        assert_eq!(v.pointer("/seed").and_then(|x| x.as_i64()), Some(7));
+    }
+
+    #[test]
+    fn edit_image_response_without_data_is_a_parse_failure() {
+        // 没有图片数据不能静默成功 —— 否则前端会拿一个空结果去替换原图。
+        let e = parse_image_response(r#"{"data":[]}"#, 200).unwrap_err();
+        assert_eq!(e.kind, "parse");
+        assert_eq!(e.focus, "baseUrl");
+    }
+
+    #[test]
+    fn too_small_image_gets_an_actionable_hint() {
+        // 实测踩到过：FLUX 的 VAE 有 3x3 卷积核，输入比 kernel 还小就报
+        // "Kernel size can't be greater than actual input size"。
+        // 用户拿一张几十像素的小图标来改图就会撞上 ——
+        // 提示里必须说清"换张大图"，而不是把英文报错原样丢给他。
+        let body = r#"{"error":"RuntimeError(\"Calculated padded input size per channel: (2 x 2). Kernel size: (3 x 3). Kernel size can't be greater than actual input size\")"}"#;
+        let f = image_http_failure(500, body, "");
+        assert!(f.hint.contains("太小"), "{}", f.hint);
+        assert!(f.hint.contains("64"), "{}", f.hint);
+    }
+
+    #[test]
+    fn ordinary_server_error_keeps_the_generic_hint() {
+        // 阴性对照：不是"图太小"的问题，就别把人往"换张大图"上引。
+        let body = r#"{"error":"ComfyUI workflow failed: model not found"}"#;
+        let f = image_http_failure(500, body, "");
+        assert!(!f.hint.contains("太小"), "{}", f.hint);
+    }
+
     // ==================== 真实网关直连 ====================
 
     /// 免密钥的私有网关必须能生成大纲（未设 `ZBIZ_GW` 时静默跳过）。
@@ -557,5 +847,49 @@ mod tests {
         let out = ai_generate_outline(args).await.expect("真实调用失败");
         assert!(!out.trim().is_empty(), "返回为空（网关 {gw}）");
         println!("[mind → {gw}] {}", out.trim());
+    }
+
+    /// 真实网关改图（未设 `ZBIZ_GW` 时静默跳过）。
+    ///
+    /// 这一条测的是**整条 Rust 链路**：JSON 请求体的形状（data URL + denoise）、
+    /// 响应解析、超时设定。单测只能钉住纯函数，网关这头是活的、只能真跑。
+    ///
+    /// ```sh
+    /// ZBIZ_GW=http://192.168.31.249:8200/v1 ZBIZ_MODEL=zBiz-Image-FLUX \
+    ///   cargo test -p z-biz-tool-mind live_edit -- --nocapture
+    /// ```
+    #[tokio::test]
+    async fn live_edit_image_against_real_gateway() {
+        let Ok(gw) = std::env::var("ZBIZ_GW") else {
+            return;
+        };
+        let model = std::env::var("ZBIZ_MODEL").unwrap_or_else(|_| "zBiz-Image-FLUX".to_string());
+
+        // 一张 64x64 的红色 PNG。
+        //
+        // 尺寸不能更小：FLUX 的 VAE 有 3x3 的卷积核，输入比 kernel 还小会直接
+        // 报 "Kernel size can't be greater than actual input size"（实测踩过）。
+        // 这也说明真实用户拿一张极小的图来改，网关会失败 —— 那是网关的能力边界，
+        // 不是本仓的 bug；错误会原样透给用户。
+        let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsItz/fMYxgi+hcEKLNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywLzk8EPlvGqjQAAAABJRU5ErkJggg==";
+        let args = ImageEditArgs {
+            endpoint: gw.clone(),
+            model,
+            prompt: "把这张图改画成蓝色方块".to_string(),
+            image: format!("data:image/png;base64,{png_b64}"),
+            denoise: default_denoise(),
+            api_key: String::new(),
+            timeout_sec: 600,
+        };
+
+        let v = ai_edit_image(args).await.expect("真实改图失败");
+        let b64 = v
+            .get("b64")
+            .and_then(|x| x.as_str())
+            .expect("响应里没有 b64");
+        assert!(!b64.is_empty(), "b64 是空的");
+        // 解出来的必须是 PNG 字节（魔数）—— 空串/错误页都过不了这一关。
+        assert!(b64.starts_with("iVBORw0KGgo"), "不是 PNG 数据");
+        println!("[mind 改图 → {gw}] seed={:?}", v.get("seed"));
     }
 }

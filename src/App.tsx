@@ -37,6 +37,7 @@ import { AiTopicDialog } from "./views/AiTopicDialog.tsx";
 import { AiDiagramDialog } from "./views/AiDiagramDialog.tsx";
 import { AiImageDialog } from "./views/AiImageDialog.tsx";
 import { AiVisionDialog } from "./views/AiVisionDialog.tsx";
+import { AiEditImageDialog } from "./views/AiEditImageDialog.tsx";
 import { plainText } from "./types/model.ts";
 import { OptionsView } from "./views/OptionsView.tsx";
 import { ThemePanel } from "./views/ThemePanel.tsx";
@@ -111,6 +112,8 @@ function Shell() {
   const page = useDoc((s) => activePage(s));
   const visionShapeId = useUi((s) => s.visionShapeId);
   const visionShape = page?.shapes[visionShapeId];
+  const editImageShapeId = useUi((s) => s.editImageShapeId);
+  const editImageShape = page?.shapes[editImageShapeId];
   const title = useDoc((s) => s.title);
   const path = useDoc((s) => s.path);
   const savedAt = useDoc((s) => s.savedAt);
@@ -1015,6 +1018,13 @@ function Shell() {
         shapeId={visionShapeId}
         topicText={visionShape ? plainText(visionShape.text).slice(0, 30) : ""}
         hasImage={Boolean(visionShape?.extras.image)}
+      />
+      <AiEditImageDialog
+        open={dialog === "aiEditImage"}
+        onClose={closeDialog}
+        shapeId={editImageShapeId}
+        topicText={editImageShape ? plainText(editImageShape.text).slice(0, 30) : ""}
+        hasImage={Boolean(editImageShape?.extras.image)}
       />
       <Modal
         open={Boolean(pendingSwitch)}

@@ -683,6 +683,34 @@ export const native = {
   },
 
   /**
+   * AI 改图（第四步，图生图）：原图 + 改动要求 → 新图。
+   *
+   * 与 aiGenerateImage 同一处配置、同一套失败分类，只是端点变成 /images/edits、
+   * 多带一张原图。denoise 是重绘力度（0.05~0.95），越大改得越狠。
+   */
+  async aiEditImage(args: {
+    endpoint: string;
+    model: string;
+    prompt: string;
+    image: string;
+    denoise: number;
+    apiKey?: string;
+    timeoutSec?: number;
+  }): Promise<{ b64?: string; url?: string; seed?: number; elapsedS?: number }> {
+    if (!isTauri) {
+      throw new Error("AI 改图需要在桌面版里使用（浏览器模式没有网络栈与密钥库）。");
+    }
+    try {
+      return await call<{ b64?: string; url?: string; seed?: number; elapsedS?: number }>(
+        "ai_edit_image",
+        { args }
+      );
+    } catch (e) {
+      throw toAiFailureError(e);
+    }
+  },
+
+  /**
    * AI 看图（第三步，多模态理解）：图片 + 指令 → 文本回复。
    *
    * 与 aiGenerateOutline 同一条 cap-llm 通道，只是消息里带图片

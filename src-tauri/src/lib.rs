@@ -210,6 +210,7 @@ pub fn run() {
             ai::ai_generate_outline,
             ai::ai_generate_diagram,
             ai::ai_generate_image,
+            ai::ai_edit_image,
             ai::ai_vision,
             commands::reveal_in_folder,
             commands::history_list,

@@ -25,6 +25,7 @@ export const MENU_ACTION_GROUPS: readonly { k: string; label: string }[] = [
   { k: "aiDiagram", label: "AI 生成图（一句话生成结构图）" },
   { k: "aiImage", label: "AI 绘图（一句话生成图像）" },
   { k: "aiVision", label: "AI 看图（读图转导图 / 提取文字）" },
+  { k: "aiEditImage", label: "AI 改图（按要求重画这张图）" },
   { k: "boundary", label: "外框" },
   { k: "summary", label: "概要" },
   { k: "rel", label: "关系线（连线 / 取消连线）" },
