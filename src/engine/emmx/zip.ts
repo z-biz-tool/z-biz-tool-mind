@@ -11,6 +11,8 @@
  * 那仍是合法 ZIP，亿图照样能打开 —— 宁可不压缩，也不要写出打不开的文件。
  */
 
+import { crc32 } from "z-biz-tool-shared/hash";
+
 export interface ZipEntry {
   name: string;
   data: Uint8Array;
@@ -36,21 +38,7 @@ function le32(n: number): number[] {
   return [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >>> 24) & 0xff];
 }
 
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let i = 0; i < 256; i += 1) {
-    let c = i;
-    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[i] = c >>> 0;
-  }
-  return t;
-})();
-
-export function crc32(bytes: Uint8Array): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < bytes.length; i += 1) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
+// CRC-32/IEEE 走 z-biz-tool-shared/hash（Rust cap-hash 金标，golden 夹具双向对账）
 
 const decoder = /* @__PURE__ */ new TextDecoder("utf-8");
 const encoder = /* @__PURE__ */ new TextEncoder();
