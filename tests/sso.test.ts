@@ -219,14 +219,20 @@ async function main(): Promise<void> {
 
       // openBrowser 之后协议层才等回调；这里用定时器在 URL 出现后造一个
       // 带**真 state** 的回调 —— state 从授权 URL 里抄出来，模拟 ctc 原样回传。
+      // ⚠ 间歇性失败的修复：原来 `if (state)` 不满足就直接退出且 clearInterval，
+      //    openedUrl 晚一拍出现时回调永远不发生 ⇒ waitCallback 等到空查询串 ⇒
+      //    no_code。改成「没拿到 state 就继续等下一拍」，只在真发出回调后停。
       const watcher = setInterval(() => {
-        if (openedUrl && callbackQuery === null) {
-          const state = new URL(openedUrl).searchParams.get("state");
-          if (state) {
-            clearInterval(watcher);
-            void fetch(`http://127.0.0.1:${callbackPort}/callback?code=auth-xyz&state=${state}`);
-          }
+        if (callbackQuery !== null) {
+          // 回调已被别的路径捕获（重试保护），停。
+          clearInterval(watcher);
+          return;
         }
+        if (!openedUrl) return; // 浏览器还没开，下一拍再试
+        const state = new URL(openedUrl).searchParams.get("state");
+        if (!state) return; // URL 还没带全参数（理论上有这种中间态），下一拍再试
+        clearInterval(watcher);
+        void fetch(`http://127.0.0.1:${callbackPort}/callback?code=auth-xyz&state=${state}`);
       }, 5);
 
       const res = await login();
@@ -280,12 +286,16 @@ async function main(): Promise<void> {
       openedUrl = null;
       callbackQuery = null; // 复位：桩读的是全局捕获值，不复位会立刻拿到上一轮的旧回调
       // 回调里只有 error —— 用户在 ctc 页面点了「拒绝」。
+      // （与成功用例同样的重试保护：openedUrl 晚一拍出现不该让回调永远不发生。）
       const watcher = setInterval(() => {
-        if (openedUrl && callbackQuery === null) {
+        if (callbackQuery !== null) {
           clearInterval(watcher);
-          const state = new URL(openedUrl!).searchParams.get("state");
-          void fetch(`http://127.0.0.1:${callbackPort}/callback?error=access_denied&state=${state}`);
+          return;
         }
+        if (!openedUrl) return;
+        clearInterval(watcher);
+        const state = new URL(openedUrl).searchParams.get("state");
+        void fetch(`http://127.0.0.1:${callbackPort}/callback?error=access_denied&state=${state}`);
       }, 5);
       const res = await login();
       clearInterval(watcher);
@@ -297,10 +307,13 @@ async function main(): Promise<void> {
       openedUrl = null;
       callbackQuery = null;
       const watcher = setInterval(() => {
-        if (openedUrl && callbackQuery === null) {
+        if (callbackQuery !== null) {
           clearInterval(watcher);
-          void fetch(`http://127.0.0.1:${callbackPort}/callback?code=auth-xyz&state=forged`);
+          return;
         }
+        if (!openedUrl) return;
+        clearInterval(watcher);
+        void fetch(`http://127.0.0.1:${callbackPort}/callback?code=auth-xyz&state=forged`);
       }, 5);
       const res = await login();
       clearInterval(watcher);

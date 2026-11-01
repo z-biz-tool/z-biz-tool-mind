@@ -105,20 +105,17 @@ const invokeByName = async <T = unknown>(
 };
 
 /**
- * ctc 侧的接入参数（2026-11-01 起有真值 —— ctc 侧 OAuth 授权服务器已建成，
- * 见 z-ctc `c20882c`；client `z-biz-tool-mind` 已在 ctc 的配置表预登记，
- * redirect 白名单为 loopback 任意端口形态（127.0.0.1 任意端口 + /callback 路径）。
+ * ctc 侧的接入参数（2026-11-01 起有真值 —— ctc 侧 OAuth 授权服务器已上生产，
+ * 见 z-ctc `c20882c` + `e22d209`；client `z-biz-tool-mind` 已在生产 ConfigMap
+ * 预登记，redirect 白名单为 loopback 任意端口形态，127.0.0.1 任意端口 + /callback 路径）。
  *
- * ⚠ 域名以 ctc 生产实际可达地址为准（context-path `/ctc` 时要带前缀）——
- *   mind 首次启用 SSO 前先探一次真实 URL，探完回来改这一处。
- *
- * **mind 是纯本地桌面应用，没有服务端 —— 端点只能烧进二进制。**
- * ctc 换域名 / 换 client_id 时 mind 要发一次版（remote 从服务端拉，没有这个代价）。
+ * 端点是**公网边缘路由真值**（2026-11-01 实测 200/400 正常）：
+ *   https://opc.zopc.top/kapi/z-ctc/api/ctc/oauth/{authorize|token|userinfo}
  */
 export const CTC_CONFIG = {
-  authorizeUrl: "https://ctc.zopc.top/api/ctc/oauth/authorize",
-  tokenUrl: "https://ctc.zopc.top/api/ctc/oauth/token",
-  userInfoUrl: "https://ctc.zopc.top/api/ctc/oauth/userinfo",
+  authorizeUrl: "https://opc.zopc.top/kapi/z-ctc/api/ctc/oauth/authorize",
+  tokenUrl: "https://opc.zopc.top/kapi/z-ctc/api/ctc/oauth/token",
+  userInfoUrl: "https://opc.zopc.top/kapi/z-ctc/api/ctc/oauth/userinfo",
   clientId: "z-biz-tool-mind",
   scope: "openid profile email",
 };
