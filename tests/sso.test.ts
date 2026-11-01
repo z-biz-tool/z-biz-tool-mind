@@ -222,6 +222,12 @@ async function main(): Promise<void> {
       // ⚠ 间歇性失败的修复：原来 `if (state)` 不满足就直接退出且 clearInterval，
       //    openedUrl 晚一拍出现时回调永远不发生 ⇒ waitCallback 等到空查询串 ⇒
       //    no_code。改成「没拿到 state 就继续等下一拍」，只在真发出回调后停。
+      // ⚠⚠ 第二个间歇源（2026-11-01 修复）：state 是 16 个**原始随机字节**的
+      //    latin1 串，可含 `+ & # %` 等字符 —— 直接模板字符串拼 URL 的话，
+      //    `+` 会被回调服务端当成空格、`&` 会截断参数 ⇒ parseCallbackQuery
+      //    解出 != 原始 state ⇒ 「state 对不上，已拒绝」。8 跑 2 红就是它。
+      //    ctc 真实回传走的是它自己的 302 Location，参数必然 URL 编码 ——
+      //    桩必须与之一致：encodeURIComponent 后再拼。
       const watcher = setInterval(() => {
         if (callbackQuery !== null) {
           // 回调已被别的路径捕获（重试保护），停。
@@ -232,7 +238,9 @@ async function main(): Promise<void> {
         const state = new URL(openedUrl).searchParams.get("state");
         if (!state) return; // URL 还没带全参数（理论上有这种中间态），下一拍再试
         clearInterval(watcher);
-        void fetch(`http://127.0.0.1:${callbackPort}/callback?code=auth-xyz&state=${state}`);
+        void fetch(
+          `http://127.0.0.1:${callbackPort}/callback?code=auth-xyz&state=${encodeURIComponent(state)}`,
+        );
       }, 5);
 
       const res = await login();
@@ -294,8 +302,11 @@ async function main(): Promise<void> {
         }
         if (!openedUrl) return;
         clearInterval(watcher);
+        // state 必须编码后再拼（同上：原始字节含 + & # % 时未编码会变形）。
         const state = new URL(openedUrl).searchParams.get("state");
-        void fetch(`http://127.0.0.1:${callbackPort}/callback?error=access_denied&state=${state}`);
+        void fetch(
+          `http://127.0.0.1:${callbackPort}/callback?error=access_denied&state=${encodeURIComponent(state ?? "")}`,
+        );
       }, 5);
       const res = await login();
       clearInterval(watcher);
@@ -313,7 +324,11 @@ async function main(): Promise<void> {
         }
         if (!openedUrl) return;
         clearInterval(watcher);
-        void fetch(`http://127.0.0.1:${callbackPort}/callback?code=auth-xyz&state=forged`);
+        // forged 用例故意造一个**不匹配**的 state —— 也要编码，保证进到
+        // 「state 不匹配」分支而不是先在解析层坏掉。
+        void fetch(
+          `http://127.0.0.1:${callbackPort}/callback?code=auth-xyz&state=${encodeURIComponent("forged")}`,
+        );
       }, 5);
       const res = await login();
       clearInterval(watcher);

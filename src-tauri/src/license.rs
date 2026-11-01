@@ -664,7 +664,9 @@ mod tests {
     fn e2e_external_code_from_java_issuer_is_accepted() {
         let _g = crate::lock_config_env();
         let code = std::env::var("ZBIZ_E2E_CODE_JAVA").unwrap_or_else(|_| {
-            panic!("没给 ZBIZ_E2E_CODE_JAVA —— 先用 z-trade 的 LicenseCodeSigner 签一张，再把码放进来")
+            panic!(
+                "没给 ZBIZ_E2E_CODE_JAVA —— 先用 z-trade 的 LicenseCodeSigner 签一张，再把码放进来"
+            )
         });
         let dir = isolated("e2e-ext-java");
         let s = redeem(code.trim()).expect("Java 签发器产出的码必须能兑换");
