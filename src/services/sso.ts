@@ -105,28 +105,24 @@ const invokeByName = async <T = unknown>(
 };
 
 /**
- * ctc 侧的接入参数。
+ * ctc 侧的接入参数（2026-11-01 起有真值 —— ctc 侧 OAuth 授权服务器已建成，
+ * 见 z-ctc `c20882c`；client `z-biz-tool-mind` 已在 ctc 的配置表预登记，
+ * redirect 白名单为 loopback 任意端口形态（127.0.0.1 任意端口 + /callback 路径）。
  *
- * **当前为空** —— ctc 侧的 OAuth 应用（client_id / 端点 / redirect_uri 登记）
- * 至今没有确定。这里留出形状是为了让「参数一到就能用」，
- * 而不是让每个仓各自发明一套配置格式。
+ * ⚠ 域名以 ctc 生产实际可达地址为准（context-path `/ctc` 时要带前缀）——
+ *   mind 首次启用 SSO 前先探一次真实 URL，探完回来改这一处。
  *
- * 填上之后要做两件事：
- * 1. ctc 侧登记 `http://127.0.0.1:<端口>/callback`（端口由内核分配，
- *    所以登记时要用**通配端口**或让 ctc 侧接受任意回环端口 —— 这点要跟 ctc 侧确认）；
- * 2. 把下面四个常量填上真实值。
- *
- * 注意这里**不带 `as const`**：测试要用一个假 ctc（本地 HTTP 服务扮演）
- * 走完整链路，得临时把这几个字段填上 —— `as const` 会把字段锁成空串，
- * 测试里改不动。真实值上线后这里仍然只有测试会写。
+ * **mind 是纯本地桌面应用，没有服务端 —— 端点只能烧进二进制。**
+ * ctc 换域名 / 换 client_id 时 mind 要发一次版（remote 从服务端拉，没有这个代价）。
  */
 export const CTC_CONFIG = {
-  authorizeUrl: "",
-  tokenUrl: "",
-  userInfoUrl: "",
-  clientId: "",
+  authorizeUrl: "https://ctc.zopc.top/api/ctc/oauth/authorize",
+  tokenUrl: "https://ctc.zopc.top/api/ctc/oauth/token",
+  userInfoUrl: "https://ctc.zopc.top/api/ctc/oauth/userinfo",
+  clientId: "z-biz-tool-mind",
   scope: "openid profile email",
 };
+
 
 /**
  * SSO 配置是否齐全。
