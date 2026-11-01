@@ -341,33 +341,30 @@ pub async fn ai_generate_image(args: ImageGenArgs) -> Result<serde_json::Value, 
         req = req.bearer_auth(args.api_key.trim());
     }
 
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| {
-            // 连接层失败：区分「地址打不开」和「等太久」，两者下一步动作不同
-            let msg = e.to_string();
-            let (kind, hint) = if msg.contains("timed out") || msg.contains("timeout") {
-                (
-                    "timeout",
-                    "图像服务在超时时间内没有返回。自建 FLUX 网关冷启动可能超过 2 分钟——\
+    let resp = req.send().await.map_err(|e| {
+        // 连接层失败：区分「地址打不开」和「等太久」，两者下一步动作不同
+        let msg = e.to_string();
+        let (kind, hint) = if msg.contains("timed out") || msg.contains("timeout") {
+            (
+                "timeout",
+                "图像服务在超时时间内没有返回。自建 FLUX 网关冷启动可能超过 2 分钟——\
                      到「选项 → 网络」把超时调大（生图建议 ≥300s），或确认网关已启动。",
-                )
-            } else {
-                (
-                    "network",
-                    "连不上图像服务。请确认地址正确、服务在线（浏览器打开 {host}/health 验证）。\
+            )
+        } else {
+            (
+                "network",
+                "连不上图像服务。请确认地址正确、服务在线（浏览器打开 {host}/health 验证）。\
                      生图网关是自建服务，不保证 7x24 在线。",
-                )
-            };
-            LlmFailure {
-                kind,
-                status: None,
-                hint: hint.replace("{host}", endpoint.split('/').nth(2).unwrap_or("网关")),
-                focus: "baseUrl",
-                message: cap_llm::redact(&msg, &args.api_key),
-            }
-        })?;
+            )
+        };
+        LlmFailure {
+            kind,
+            status: None,
+            hint: hint.replace("{host}", endpoint.split('/').nth(2).unwrap_or("网关")),
+            focus: "baseUrl",
+            message: cap_llm::redact(&msg, &args.api_key),
+        }
+    })?;
 
     let status = resp.status().as_u16();
     let body = resp.text().await.map_err(|e| LlmFailure {
