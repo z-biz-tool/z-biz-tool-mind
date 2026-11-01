@@ -84,7 +84,8 @@ fn defaults() -> Map<String, Value> {
             "crashReport": false,
             "logLevel": "info",
             "aiEndpoint": "",
-            "aiModel": ""
+            "aiModel": "",
+            "visionModel": ""
         }),
     );
     m.insert("rightMenu".into(), serde_json::json!({ "enabled": [] }));

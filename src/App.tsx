@@ -36,6 +36,8 @@ import { TopicInfoDialog } from "./views/TopicInfoDialog.tsx";
 import { AiTopicDialog } from "./views/AiTopicDialog.tsx";
 import { AiDiagramDialog } from "./views/AiDiagramDialog.tsx";
 import { AiImageDialog } from "./views/AiImageDialog.tsx";
+import { AiVisionDialog } from "./views/AiVisionDialog.tsx";
+import { plainText } from "./types/model.ts";
 import { OptionsView } from "./views/OptionsView.tsx";
 import { ThemePanel } from "./views/ThemePanel.tsx";
 import { activeDoc, activePage, depthOf, dirtyOf, useDoc } from "./stores/docStore.ts";
@@ -107,6 +109,8 @@ function Shell() {
   const { message, modal } = AntdApp.useApp();
   const doc = useDoc((s) => activeDoc(s));
   const page = useDoc((s) => activePage(s));
+  const visionShapeId = useUi((s) => s.visionShapeId);
+  const visionShape = page?.shapes[visionShapeId];
   const title = useDoc((s) => s.title);
   const path = useDoc((s) => s.path);
   const savedAt = useDoc((s) => s.savedAt);
@@ -1005,7 +1009,13 @@ function Shell() {
       <AiTopicDialog open={dialog === "aiTopic"} onClose={closeDialog} />
       <AiDiagramDialog open={dialog === "aiDiagram"} onClose={closeDialog} />
       <AiImageDialog open={dialog === "aiImage"} onClose={closeDialog} />
-
+      <AiVisionDialog
+        open={dialog === "aiVision"}
+        onClose={closeDialog}
+        shapeId={visionShapeId}
+        topicText={visionShape ? plainText(visionShape.text).slice(0, 30) : ""}
+        hasImage={Boolean(visionShape?.extras.image)}
+      />
       <Modal
         open={Boolean(pendingSwitch)}
         title={pendingSwitch ? `${pendingSwitch.label}：当前文档有未保存的修改` : ""}

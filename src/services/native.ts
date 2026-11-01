@@ -682,6 +682,30 @@ export const native = {
     }
   },
 
+  /**
+   * AI 看图（第三步，多模态理解）：图片 + 指令 → 文本回复。
+   *
+   * 与 aiGenerateOutline 同一条 cap-llm 通道，只是消息里带图片
+   * （data URL / 纯 base64 都收，编码细节在后端 wire 层）。
+   * 视觉模型与文本模型可以是不同的名字，由调用方显式传入。
+   */
+  async aiVision(args: {
+    endpoint: string;
+    model: string;
+    prompt: string;
+    image: string;
+    timeoutSec: number;
+  }): Promise<string> {
+    if (!isTauri) {
+      throw new Error("AI 看图需要在桌面版里使用（浏览器模式没有本机加密库与网络栈）。");
+    }
+    try {
+      return await call<string>("ai_vision", { args });
+    } catch (e) {
+      throw toAiFailureError(e);
+    }
+  },
+
   async revealInFolder(path: string): Promise<void> {
     if (!isTauri) throw new Error("浏览器模式打不开所在目录，请在桌面版里使用");
     await call<void>("reveal_in_folder", { path });

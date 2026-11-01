@@ -11,7 +11,7 @@
 //! 不出 Rust 进程 —— 设置页也不需要它（只探 `secret_exists`）。
 
 use cap_llm::{Focus, LlmConfig, Message, ProviderKind};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// 与前端「选项 → 高级」密钥输入框约定的槽位名（secret.rs 同名）
 const SECRET_KEY: &str = "ai-api-key";
@@ -167,6 +167,56 @@ pub async fn ai_generate_diagram(args: AiGenerateArgs) -> Result<String, LlmFail
         ),
         Message::user(&args.prompt),
     ];
+    let reply = cap_llm::chat(&cfg, &messages)
+        .await
+        .map_err(LlmFailure::from_error)?;
+    Ok(reply.content)
+}
+
+// ==================== 多模态看图（第三步） ====================
+
+/// 看图命令参数。
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionArgs {
+    /// OpenAI 兼容服务地址（同文本三件套的 endpoint）
+    pub endpoint: String,
+    /// 视觉模型名（如 zBiz-Vision-35B；与文本模型可以不同，由前端显式传入）
+    pub model: String,
+    pub prompt: String,
+    /// 图片：data URL（data:image/png;base64,…）或纯 base64 —— cap-llm 两种都收
+    pub image: String,
+    #[serde(default = "default_vision_timeout")]
+    pub timeout_sec: u64,
+}
+
+fn default_vision_timeout() -> u64 {
+    120
+}
+
+/// 多模态看图：图片 + 指令 → 文本回复。
+///
+/// ## 为什么走 cap-llm 的 `images` 字段而不是手拼 content parts
+///
+/// 网关（zbiz_ai_api.py）对 chat 请求是**原样转发**给 llama-server 的 ——
+/// 实测确认 llama-server 认 OpenAI 标准 content parts（`image_url` + data URL），
+/// 而 cap-llm 的 `openai_messages` 对非空 `images` 恰好就是这个编码（wire.rs:336）。
+/// 所以「把 base64 塞进 `Message::with_images`」就是正确协议，不需要在 mind 里
+/// 再手写一份多模态报文。
+///
+/// ## 为什么 key 沿用文本三件套的 `SECRET_KEY`
+///
+/// 视觉与文本走的是**同一个** OpenAI 兼容端点（自建网关上甚至是同一个
+/// llama-server 进程 + mmproj）。另开一个密钥槽等于让用户把同一个 key 粘两遍。
+#[tauri::command]
+pub async fn ai_vision(args: VisionArgs) -> Result<String, LlmFailure> {
+    let cfg = prepare(&AiGenerateArgs {
+        prompt: args.prompt.clone(),
+        endpoint: args.endpoint.clone(),
+        model: args.model.clone(),
+        timeout_sec: args.timeout_sec,
+    })?;
+    let messages = [Message::user(&args.prompt).with_images(vec![args.image.clone()])];
     let reply = cap_llm::chat(&cfg, &messages)
         .await
         .map_err(LlmFailure::from_error)?;
@@ -402,6 +452,62 @@ mod tests {
         let json = r#"{"prompt":"p","endpoint":"https://x.com","model":"m"}"#;
         let a: AiGenerateArgs = serde_json::from_str(json).unwrap();
         assert_eq!(a.timeout_sec, 20);
+    }
+
+    // ==================== 多模态看图（第三步） ====================
+
+    fn vision_args(endpoint: &str, model: &str) -> VisionArgs {
+        VisionArgs {
+            endpoint: endpoint.to_string(),
+            model: model.to_string(),
+            prompt: "描述这张图".to_string(),
+            image: "data:image/png;base64,QUJD".to_string(),
+            timeout_sec: 120,
+        }
+    }
+
+    #[test]
+    fn vision_reuses_text_config_gates() {
+        // 看图与文本共用 prepare() 的三件套校验：缺地址/缺模型都指到同一栏。
+        // 直接调 ai_vision 会真发请求，这里只验证参数校验路径（prepare 是同步的）。
+        let a = vision_args("", "zBiz-Vision-35B");
+        let e = prepare(&AiGenerateArgs {
+            prompt: a.prompt.clone(),
+            endpoint: a.endpoint.clone(),
+            model: a.model.clone(),
+            timeout_sec: a.timeout_sec,
+        })
+        .unwrap_err();
+        assert_eq!(e.focus, "baseUrl");
+        assert!(e.message.contains("接口地址"));
+    }
+
+    #[test]
+    fn vision_args_round_trip_camel_case() {
+        let a = vision_args("http://192.168.31.249:8200/v1", "zBiz-Vision-35B");
+        let json = serde_json::to_value(&a).unwrap();
+        // camelCase 线上形状：前端传的键必须是 image/timeoutSec
+        assert!(json.get("image").is_some(), "{json}");
+        assert!(json.get("timeoutSec").is_some(), "{json}");
+        assert!(json.get("endpoint").is_some(), "{json}");
+        let back: VisionArgs = serde_json::from_value(serde_json::json!({
+            "endpoint": a.endpoint,
+            "model": a.model,
+            "prompt": a.prompt,
+            "image": a.image,
+            "timeoutSec": 120,
+        }))
+        .unwrap();
+        assert_eq!(back.image, a.image);
+        assert_eq!(back.timeout_sec, 120);
+    }
+
+    #[test]
+    fn vision_default_timeout_is_generous() {
+        // 视觉推理是秒级到十秒级；比文本的 20s 宽，比生图的 600s 紧。
+        let json = r#"{"endpoint":"http://x/v1","model":"m","prompt":"p","image":"QQ=="}"#;
+        let a: VisionArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(a.timeout_sec, 120);
     }
 
     // ==================== 真实网关直连 ====================

@@ -1186,6 +1186,18 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                 />
               </Field>
               <Field
+                label="视觉模型名"
+                hint="AI 看图用（读画布上的图片：转成导图 / 提取文字 / 描述内容）。留空回落上面的 AI 模型名 —— 视觉与文本同一个模型的端点不用重复填。"
+              >
+                <Input
+                  size="small"
+                  style={{ width: 220 }}
+                  placeholder="zBiz-Vision-35B"
+                  value={settings.advanced.visionModel}
+                  onChange={(e) => void patch("advanced", { visionModel: e.target.value })}
+                />
+              </Field>
+              <Field
                 label="API Key"
                 hint={
                   <>

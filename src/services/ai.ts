@@ -14,7 +14,7 @@ import type { InsertMode, OutlineLine } from "../engine/outline.ts";
 import { parseDiagram, placeDiagram, attachImageToShape, imageMediaName } from "../engine/diagram.ts";
 import type { NormalizedDiagram } from "../engine/diagram.ts";
 import { removeShape, insertChild, setFloating } from "../engine/tree.ts";
-import { activePage, useDoc } from "../stores/docStore.ts";
+import { activePage, activeDoc, useDoc } from "../stores/docStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import { useUi } from "../stores/uiStore.ts";
 import { canGenerate } from "../utils/entitlement.ts";
@@ -728,5 +728,180 @@ export async function runAiImageDraw(
   return {
     ok: true,
     message: `AI 绘图完成（耗时 ${r.elapsedS ?? "?"} 秒）。图像已作为一个新主题落到画布上，可拖动、可随文档保存。`,
+  };
+}
+
+// ======================================================================
+// AI 看图（第三步，多模态理解）：画布上的图 → 视觉模型 → 结构化结果。
+//
+// 与结构化图/大纲共用同一条纪律（配置 → 预检 → 锁 → 生成 → 结算 → 提交），
+// 差别有三：输入是图片字节而不是一句话；模型是视觉模型（可与文本模型不同名）；
+// 产出固定是「大纲行」，落成选中主题的子枝 —— 图片转导图是 mind 的差异化。
+// ======================================================================
+
+/** 看图的三个动词。文案与提示词一一对应，测试钉住。 */
+export type VisionVerb = "toOutline" | "extractText" | "describe";
+
+export const VISION_VERB_LABEL: Record<VisionVerb, string> = {
+  toOutline: "转成导图",
+  extractText: "提取文字",
+  describe: "描述内容",
+};
+
+/** 纯函数：三个动词各自的指令（发给视觉模型）。单独导出便于测试钉住协议要点。 */
+export function buildVisionPrompt(verb: VisionVerb, topic: string, extra: string): string {
+  const anchor = topic ? `（这张图挂在主题「${topic}」下）` : "";
+  const hint = extra.trim();
+  switch (verb) {
+    case "toOutline":
+      return (
+        `请把这张图片的内容整理成思维导图大纲${anchor}。` +
+        `只输出大纲本身：每行一个要点，用缩进（空格或制表符）表示层级，不要编号、不要解释、不要代码围栏。` +
+        (hint ? `\n附加要求：${hint}` : "")
+      );
+    case "extractText":
+      return (
+        `请提取这张图片里的全部文字${anchor}。` +
+        `只输出提取到的文字：按阅读顺序每行一段，保留原有层级缩进（如有）；图中没有文字就回答「图中没有文字」。` +
+        (hint ? `\n附加要求：${hint}` : "")
+      );
+    case "describe":
+      return (
+        `请描述这张图片的内容${anchor}。` +
+        `只输出描述本身：每行一个要点，可用缩进表示从属关系，不要开场白、不要代码围栏。` +
+        (hint ? `\n附加要求：${hint}` : "")
+      );
+  }
+}
+
+/** 纯函数：Uint8Array → base64（分块避免 String.fromCharCode 栈溢出）。 */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
+/**
+ * 「AI 看图」完整流程：取图 → 预检 → 锁 → 生成 → 结算 → 落成子枝。
+ *
+ * - 图片从 doc.media 取（ai 绘图/既有图片都存在那里）；取不到字节时报一句人话。
+ * - 模型用视觉模型名（settings.advanced.visionModel），空则回落文本模型 ——
+ *   单模型端点（多数云服务商）不用再填一遍。
+ * - 结果一律走 outline 协议入树（insertAiLines）：AI 看图的产出跟手打大纲是同一种东西。
+ */
+export async function runAiVision(
+  shapeId: string,
+  verb: VisionVerb,
+  extra: string
+): Promise<AiResult> {
+  const page = activePage(useDoc.getState());
+  const shape = page?.shapes[shapeId];
+  if (!page || !shape) {
+    return { ok: false, message: "选中的主题已经不在画布上了，请重新选择后再用 AI 看图。" };
+  }
+
+  // ---- 取图：extras.image 引用 → doc.media 字节。引用在字节不在 = 报错不静默。
+  const doc = activeDoc(useDoc.getState());
+  const ref = shape.extras.image;
+  if (!ref) {
+    return {
+      ok: false,
+      message: "这个主题上没有图片。先插入图片（或用「AI 绘图」生成一张），再看图。",
+    };
+  }
+  const bytes = doc?.media[ref.relId];
+  if (!bytes || !bytes.length) {
+    return {
+      ok: false,
+      message: "图片数据缺失（引用在，字节不在）。这个文件可能在别的设备上生成、同步时丢了媒体内容。",
+    };
+  }
+
+  // ---- 配置三件套：与文本同一把钥匙（端点/密钥），模型可用视觉模型名覆盖。
+  const conn = await aiConnection();
+  if (!conn.ok) return conn;
+  const settings = useSettings.getState().settings;
+  const visionModel = settings.advanced.visionModel.trim() || conn.model;
+  const endpoint = conn.endpoint;
+
+  // ---- 配额预检：图片按张折算字数（一张图 200 字 ≈ 20 点，与生图同量级的粗口径）。
+  const prompt = buildVisionPrompt(verb, plainText(shape.text), extra);
+  const IMAGE_BILLED_CHARS = 200;
+  const q = useSettings.getState().settings.quota;
+  const precheck = canGenerate(IMAGE_BILLED_CHARS, q.aiPoints, q.aiUsed);
+  if (!precheck.ok) {
+    logEvent(
+      "warn",
+      `AI 配额不足（看图）：需要 ${precheck.need} 点，可用 ${Math.max(0, q.aiPoints - q.aiUsed)} 点`
+    );
+    return { ok: false, message: precheck.reason };
+  }
+
+  logEvent(
+    "info",
+    `AI 看图请求 → ${originOf(endpoint)}（模型 ${visionModel}，动词 ${VISION_VERB_LABEL[verb]}，图 ${bytes.length} 字节）`
+  );
+
+  // ---- 锁 + 生成。视觉推理 5~30s，锁画布可接受（与文本生成同策略）。
+  let content: string;
+  try {
+    useUi.getState().setAiBusy(true);
+    content = await native.aiVision({
+      endpoint,
+      model: visionModel,
+      prompt,
+      image: `data:image/png;base64,${bytesToBase64(bytes)}`,
+      timeoutSec: Math.max(30, settings.network.timeoutSec || 60) * 3,
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : String(e),
+      failure: failureOf(e) ?? undefined,
+    };
+  } finally {
+    useUi.getState().setAiBusy(false);
+  }
+  if (!content.trim()) {
+    logEvent("warn", `AI 看图返回空内容（${originOf(endpoint)}，模型 ${visionModel}）`);
+    return { ok: false, message: "视觉模型没有返回任何内容，请换一张更清晰的图或换个说法。" };
+  }
+
+  // ---- 结算：按实际回复字数（与大纲同口径）；会员在 spendAiPoints 里放行。
+  const billed = await billOutline(content);
+  if (!billed.ok) return { ok: false, message: billed.message };
+
+  // ---- 落树：解析交给 outline 协议（P-3 的纪律——再写一套解析就是第二份数据结构的病）。
+  const lines = parseOutline(flattenIndent(stripFence(content)), true);
+  if (!lines.length) {
+    logEvent("warn", `AI 看图结果无法识别为大纲（${content.length} 字）`);
+    return { ok: true, message: "AI 看图完成，但结果不是可识别的大纲格式，没有写入树。" };
+  }
+  const before = Object.keys(page.shapes).length;
+  const committed = useDoc.getState().mutate(`AI 看图（${VISION_VERB_LABEL[verb]}）`, (live) =>
+    insertAiLines(live, shapeId, lines, "appendChildren")
+  );
+  if (!committed) {
+    logEvent("error", `AI 看图结果未能写入：文档已关闭（${content.length} 字）`);
+    return { ok: false, message: "AI 看图失败：文档已经关闭，生成结果没有写入。" };
+  }
+  const now = activePage(useDoc.getState());
+  const added = now ? Object.keys(now.shapes).length - before : 0;
+  if (!added) {
+    return { ok: true, message: "AI 看图完成，但没有生成新的主题。" };
+  }
+
+  const after = useSettings.getState().settings.quota;
+  const left = Math.max(0, after.aiPoints - after.aiUsed);
+  logEvent(
+    "info",
+    `AI 看图落树：锚点 ${shapeId}，新增 ${added} 主题，扣 ${billed.need} 点，余 ${left} 点`
+  );
+  return {
+    ok: true,
+    message: `AI 看图完成：新增 ${added} 个主题，消耗 ${billed.need} 点，剩余 ${left} 点。`,
   };
 }

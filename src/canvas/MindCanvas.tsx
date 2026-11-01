@@ -1018,6 +1018,15 @@ export function MindCanvas({ page }: MindCanvasProps) {
           tip: "一句话生成一张图像，落到画布上（插画 / 示意图）",
           run: () => useUi.getState().openDialog("aiImage"),
         });
+        // 看图只在「这根枝真的挂着图」时出现：给没有图的主题推一个必失败的入口是噪声。
+        if (only.extras.image) {
+          out.push({
+            k: "aiVision",
+            label: "AI 看图",
+            tip: "读懂这张图：转成导图 / 提取文字 / 描述内容",
+            run: () => useUi.getState().openVision(id),
+          });
+        }
       }
     }
     if (ids.length >= 2 && boxes.length === ids.length) {

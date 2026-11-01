@@ -48,6 +48,8 @@ export interface Settings {
     /** 像素级生图网关（OpenAI 兼容 /v1/images/generations）。空 = 功能未配置，UI 给引导不崩。 */
     imageEndpoint: string;
     imageModel: string;
+    /** AI 看图的视觉模型名。空 = 回落文本模型（单模型端点不用重复填）。 */
+    visionModel: string;
   };
   /** 画布右键菜单的动作白名单：空 = 全部显示，裁剪规则在 canvas/menuActions.ts。 */
   rightMenu: { enabled: string[] };
@@ -89,6 +91,7 @@ export const DEFAULT_SETTINGS: Settings = {
     aiModel: "",
     imageEndpoint: "",
     imageModel: "",
+    visionModel: "",
   },
   rightMenu: { enabled: [] },
   recent: { maxCount: QUOTA.recentMax },

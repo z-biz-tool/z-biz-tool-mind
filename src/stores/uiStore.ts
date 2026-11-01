@@ -21,7 +21,7 @@ export const PROJECTIONS: { id: Projection; label: string }[] = [
 ];
 
 export type DialogKind =
-  "export" | "print" | "options" | "search" | "history" | "share" | "topicInfo" | "themes" | "aiTopic" | "aiDiagram" | "aiImage" | null;
+  "export" | "print" | "options" | "search" | "history" | "share" | "topicInfo" | "themes" | "aiTopic" | "aiDiagram" | "aiImage" | "aiVision" | null;
 
 interface UiState {
   projection: Projection;
@@ -67,6 +67,9 @@ interface UiState {
    */
   aiBusy: boolean;
   setAiBusy: (v: boolean) => void;
+  /** 「AI 看图」对话框要读的主题：打开对话框时钉住，关掉清空。 */
+  visionShapeId: string;
+  openVision: (shapeId: string) => void;
   openDialog: (d: DialogKind) => void;
   closeDialog: () => void;
   setExportFormat: (f: ExportFormat) => void;
@@ -145,8 +148,10 @@ export const useUi = create<UiState>((set, get) => ({
     }),
   aiBusy: false,
   setAiBusy: (aiBusy) => set({ aiBusy }),
+  visionShapeId: "",
+  openVision: (visionShapeId) => set({ visionShapeId, dialog: "aiVision" }),
   openDialog: (dialog) => set({ dialog, searchOpen: dialog === "search" }),
-  closeDialog: () => set({ dialog: null, searchOpen: false }),
+  closeDialog: () => set({ dialog: null, searchOpen: false, visionShapeId: "" }),
   setExportFormat: (exportFormat) => set({ exportFormat }),
   setSearch: (patch) => set({ ...patch, activeMatch: -1 }),
   setActiveMatch: (activeMatch) => set({ activeMatch }),
