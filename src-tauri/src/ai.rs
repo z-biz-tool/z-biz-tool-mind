@@ -238,6 +238,30 @@ pub async fn ai_generate_outline(args: AiGenerateArgs) -> Result<String, LlmFail
     Ok(reply.content)
 }
 
+/// 生成结构化图（非流式）。
+///
+/// 与 [`ai_generate_outline`] 的差别只有系统提示词：这里要求严格 JSON
+/// （nodes + edges），解析与校验在前端 `engine/diagram.ts` —— 那边有
+/// 四道闸（结构/引用/环/规模）和完整的失败文案，Rust 侧不重复一遍。
+/// 传输、鉴权、错误分类、脱敏全部走同一条 cap-llm 通道。
+#[tauri::command]
+pub async fn ai_generate_diagram(args: AiGenerateArgs) -> Result<String, LlmFailure> {
+    let cfg = prepare(&args)?;
+    let messages = [
+        Message::system(
+            "你是结构图数据生成器。只输出一个 JSON 对象，形状为 \
+             {\"nodes\":[{\"id\",\"text\",\"parent\"}],\"edges\":[{\"from\",\"to\",\"text\"}]}。\
+             恰好一个节点 parent 为 null（根）；其余 parent 指向已存在的 id。\
+             不带代码围栏、不带解释文字。",
+        ),
+        Message::user(&args.prompt),
+    ];
+    let reply = cap_llm::chat(&cfg, &messages)
+        .await
+        .map_err(LlmFailure::from_error)?;
+    Ok(reply.content)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

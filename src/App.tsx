@@ -34,6 +34,7 @@ import { ExportDialog } from "./views/ExportDialog.tsx";
 import { PrintDialog } from "./views/PrintDialog.tsx";
 import { TopicInfoDialog } from "./views/TopicInfoDialog.tsx";
 import { AiTopicDialog } from "./views/AiTopicDialog.tsx";
+import { AiDiagramDialog } from "./views/AiDiagramDialog.tsx";
 import { OptionsView } from "./views/OptionsView.tsx";
 import { ThemePanel } from "./views/ThemePanel.tsx";
 import { activeDoc, activePage, depthOf, dirtyOf, useDoc } from "./stores/docStore.ts";
@@ -873,6 +874,14 @@ function Shell() {
         <Button size="small" onClick={() => void doAi()}>
           AI 生成
         </Button>
+        <Button
+          size="small"
+          disabled={!hasDoc}
+          onClick={() => openDialog("aiDiagram")}
+          title="一句话生成一张可编辑的结构图（流程图 / 架构图 / 时间线…）"
+        >
+          AI 生成图
+        </Button>
       </ToolGroup>
 
       <ToolGroup>
@@ -985,6 +994,7 @@ function Shell() {
       <ThemePanel open={dialog === "themes"} onClose={closeDialog} />
       <TopicInfoDialog page={page} onClose={closeDialog} />
       <AiTopicDialog open={dialog === "aiTopic"} onClose={closeDialog} />
+      <AiDiagramDialog open={dialog === "aiDiagram"} onClose={closeDialog} />
 
       <Modal
         open={Boolean(pendingSwitch)}

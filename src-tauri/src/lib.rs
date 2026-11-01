@@ -208,6 +208,7 @@ pub fn run() {
             commands::secret_exists,
             // AI 生成收口到 Rust（cap-llm）：key 从本机加密库自取，不再回传前端界面
             ai::ai_generate_outline,
+            ai::ai_generate_diagram,
             commands::reveal_in_folder,
             commands::history_list,
             openfile::open_take_pending,

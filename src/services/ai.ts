@@ -11,6 +11,8 @@ import type { Page } from "../types/model.ts";
 import { plainText } from "../types/model.ts";
 import { insertOutline, parseOutline } from "../engine/outline.ts";
 import type { InsertMode, OutlineLine } from "../engine/outline.ts";
+import { parseDiagram, placeDiagram } from "../engine/diagram.ts";
+import type { NormalizedDiagram } from "../engine/diagram.ts";
 import { removeShape } from "../engine/tree.ts";
 import { activePage, useDoc } from "../stores/docStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
@@ -63,7 +65,16 @@ function originOf(url: string): string {
 
 // 系统提示词在 Rust 侧（ai.rs）—— 前端只管把用户的主题描述送过去。
 
-export async function generateOutline(req: AiRequest): Promise<string> {
+/**
+ * 通用文本生成底座：结构化图与大纲走同一条传输通道（Rust cap-llm），
+ * 系统提示词由后端命令自己决定 —— 前端只区分调哪个命令。
+ *
+ * 单独露出来是因为 generateOutline 的大纲语义（空内容提示写"换一种描述"）
+ * 对图同样成立，而传输/脱敏/结构化失败的那一套两个入口共用。
+ */
+async function generateText(
+  req: AiRequest & { kind: "outline" | "diagram" }
+): Promise<string> {
   const endpoint = req.endpoint.trim();
   if (!endpoint) {
     throw new Error(
@@ -86,12 +97,16 @@ export async function generateOutline(req: AiRequest): Promise<string> {
   // 2026-10-26 起请求走 Rust 命令（cap-llm）：明文 key 由后端从本机加密库解出，
   // **不再回传 webview** —— 此前前端自己拼 Authorization 头 fetch，key 一直摊在 JS 内存里。
   try {
-    const content = await native.aiGenerateOutline({
+    const callArgs = {
       prompt: req.prompt,
       endpoint,
       model,
       timeoutSec,
-    });
+    };
+    const content =
+      req.kind === "diagram"
+        ? await native.aiGenerateDiagram(callArgs)
+        : await native.aiGenerateOutline(callArgs);
     if (!content.trim()) {
       logEvent("warn", `AI 返回空内容（${originOf(endpoint)}，模型 ${model}）`);
       throw new Error("AI 服务没有返回任何内容，请换一种更具体的描述后重试。");
@@ -108,6 +123,10 @@ export async function generateOutline(req: AiRequest): Promise<string> {
     logEvent("error", `AI 生成失败：${message}（${originOf(endpoint)}）`);
     throw failure ? toAiFailureError(e) : e instanceof Error ? e : new Error(message);
   }
+}
+
+export async function generateOutline(req: AiRequest): Promise<string> {
+  return generateText({ ...req, kind: "outline" });
 }
 
 /** AI 生成的内容打上 extras.ai（会话级打标；.emmx 无对应键，存盘重开即丢 —— 有意为之）。 */
@@ -246,10 +265,14 @@ async function billOutline(
 }
 
 /** 生成期间的画布锁：只有生成这一段收着，提交（mutate）在解锁之后，不会被自己的锁挡住。 */
-async function generateLocked(prompt: string, conn: Extract<AiConnection, { ok: true }>): Promise<string> {
+async function generateLocked(
+  prompt: string,
+  conn: Extract<AiConnection, { ok: true }>,
+  kind: "outline" | "diagram" = "outline"
+): Promise<string> {
   useUi.getState().setAiBusy(true);
   try {
-    return await generateOutline({ prompt, endpoint: conn.endpoint, model: conn.model });
+    return await generateText({ prompt, endpoint: conn.endpoint, model: conn.model, kind });
   } finally {
     useUi.getState().setAiBusy(false);
   }
@@ -371,8 +394,7 @@ export function applyTopicAction(page: Page, id: string, verb: AiVerb, outline: 
   return insertAiLines(next, id, lines, "appendChildren");
 }
 
-/** 选中主题上的完整流程，与 runAiInsert 同一条纪律：配置 → 预检 → 锁 → 生成 → 结算 → 提交。 */
-export async function runAiOnTopic(id: string, verb: AiVerb): Promise<AiResult> {
+/** 选中主题上的完整流程，与 runAiInsert 同一条纪律：配置 → 预检 → 锁 → 生成 → 结算 → 提交。 */export async function runAiOnTopic(id: string, verb: AiVerb): Promise<AiResult> {
   const conn = await aiConnection();
   if (!conn.ok) return conn;
 
@@ -439,5 +461,120 @@ export async function runAiOnTopic(id: string, verb: AiVerb): Promise<AiResult> 
   return {
     ok: true,
     message: `AI ${AI_VERB_LABEL[verb]}完成：${deltaText}，消耗 ${billed.need} 点，剩余 ${left} 点。`,
+  };
+}
+
+// ======================================================================
+// AI 生成结构化图（§3.13 A 层延伸）：一句话 → 节点/连线 JSON → 可编辑的图。
+//
+// 与大纲生成共用同一条管道（配置 → 预检 → 锁 → 生成 → 结算 → mutate 提交），
+// 差别有三：提示词要求 JSON；解析走 engine/diagram.ts 的第二份协议（它必须
+// 存在的理由见那个文件的头注释）；落图是"replace 整页"而不是"append 子枝"。
+// ======================================================================
+
+/** 纯函数：结构化图的提示词。单独导出便于测试钉住协议要点。 */
+export function buildDiagramPrompt(description: string): string {
+  return (
+    `请根据下面的描述，生成一张结构图的 JSON 数据。结构图用于思维导图软件展示，` +
+    `节点之间用 parent（父子隶属）表达层级，用 edges（连线）表达流程或引用关系。\n\n` +
+    `输出格式（严格 JSON，不要代码围栏、不要解释）：\n` +
+    `{"nodes":[{"id":"n1","text":"节点文字","parent":null},` +
+    `{"id":"n2","text":"子节点文字","parent":"n1"}],` +
+    `"edges":[{"from":"n1","to":"n2","text":"连线说明"}]}\n\n` +
+    `规则：\n` +
+    `- 恰好一个节点 parent 为 null（根）；其余节点的 parent 指向已存在的 id。\n` +
+    `- 层级用 parent 表达隶属；不属于隶属关系的连接（流程、引用、依赖）放进 edges。\n` +
+    `- id 用 n1/n2/n3 这样的短代号；节点文字不超过 20 字。\n` +
+    `- 不要把没有连线语义的图硬造 edges；纯层级图 edges 给空数组。\n\n` +
+    `描述：\n${description}`
+  );
+}
+
+/** 纯函数：把模型回包落成整页（replace）。解析失败返回 null，由调用方给用户一句人话。 */
+export function applyDiagramToPage(page: Page, raw: string): NormalizedDiagram | null {
+  const parsed = parseDiagram(raw);
+  if (!parsed.ok) return null;
+  placeDiagram(page, parsed.diagram, "replace");
+  return parsed.diagram;
+}
+
+/**
+ * 「AI 生成图」的完整流程（工具栏入口）。
+ *
+ * 与 runAiInsert 同一条纪律的每一步都不能省：
+ * - 配置三件套预检：不花网络钱就能发现的失败，先拦。
+ * - 配额预检按输入字数：注定失败的请求不发出。
+ * - 画布锁只在生成这一段收着：提交在解锁之后，不会被自己的锁挡住。
+ * - 结算按生成出来的实际字数：模型回了多少字就扣多少。
+ */
+export async function runAiDiagram(description: string): Promise<AiResult> {
+  const label = description.trim();
+  if (!label) {
+    return { ok: false, message: "请先描述要生成的图，例如「一个登录流程：输入账号 → 校验 → 进首页」。" };
+  }
+
+  const conn = await aiConnection();
+  if (!conn.ok) return conn;
+
+  const page = activePage(useDoc.getState());
+  if (!page) {
+    return { ok: false, message: "还没有打开文档，请先新建或打开一个脑图，再让 AI 生成。" };
+  }
+
+  const q = useSettings.getState().settings.quota;
+  const prompt = buildDiagramPrompt(label);
+  const precheck = canGenerate(prompt.length, q.aiPoints, q.aiUsed);
+  if (!precheck.ok) {
+    logEvent(
+      "warn",
+      `AI 配额不足（生成图）：需要 ${precheck.need} 点，可用 ${Math.max(0, q.aiPoints - q.aiUsed)} 点`
+    );
+    return { ok: false, message: precheck.reason };
+  }
+
+  let raw: string;
+  try {
+    raw = await generateLocked(prompt, conn, "diagram");
+  } catch (e) {
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : String(e),
+      failure: failureOf(e) ?? undefined,
+    };
+  }
+
+  const billed = await billOutline(raw);
+  if (!billed.ok) return { ok: false, message: billed.message };
+
+  // 解析在提交之前：脏回包在这里整份拒绝，点数已扣但树不会落半棵 ——
+  // 日志里要留得下「扣了点为什么没有图」这一句。
+  const parsed = parseDiagram(raw);
+  if (!parsed.ok) {
+    logEvent("error", `AI 生成图解析失败：${parsed.message}（回包 ${raw.length} 字）`);
+    return { ok: false, message: parsed.message };
+  }
+
+  // 在 mutate 的回调里对**当前页**重算落图：生成期间用户可能又改了主题。
+  const nodeCount = parsed.diagram.nodes.length;
+  const edgeCount = parsed.diagram.edges.length;
+  const committed = useDoc.getState().mutate("AI 生成图", (live) => {
+    const r = placeDiagram(live, parsed.diagram, "replace");
+    return r.page;
+  });
+  if (!committed) {
+    logEvent("error", `AI 生成图未能写入：文档已关闭（${nodeCount} 节点）`);
+    return { ok: false, message: "AI 生成失败：文档已经关闭，生成结果没有写入。" };
+  }
+
+  const after = useSettings.getState().settings.quota;
+  const left = Math.max(0, after.aiPoints - after.aiUsed);
+  logEvent(
+    "info",
+    `AI 生成图落树：${nodeCount} 节点 / ${edgeCount} 连线，扣 ${billed.need} 点，余 ${left} 点`
+  );
+  const edgeText = edgeCount ? `、${edgeCount} 条连线` : "";
+  return {
+    ok: true,
+    message: `AI 生成图完成：${nodeCount} 个节点${edgeText}，消耗 ${billed.need} 点，剩余 ${left} 点。可在画布上继续编辑。`,
   };
 }

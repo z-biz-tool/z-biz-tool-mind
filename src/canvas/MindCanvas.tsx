@@ -1003,6 +1003,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
           tip: "AI 生成子主题 / 丰富 / 精简 / 重新生成",
           run: () => useUi.getState().openDialog("aiTopic"),
         });
+        out.push({
+          k: "aiDiagram",
+          label: "AI 生成图",
+          tip: "一句话生成一张可编辑的结构图（替换当前画布，可撤销）",
+          run: () => useUi.getState().openDialog("aiDiagram"),
+        });
       }
     }
     if (ids.length >= 2 && boxes.length === ids.length) {

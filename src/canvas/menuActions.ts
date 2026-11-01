@@ -22,6 +22,7 @@ export const MENU_ACTION_GROUPS: readonly { k: string; label: string }[] = [
   { k: "edit", label: "改名 / 改文字" },
   { k: "callout", label: "新建标注" },
   { k: "ai", label: "AI 助手（生成子主题 / 丰富 / 精简）" },
+  { k: "aiDiagram", label: "AI 生成图（一句话生成结构图）" },
   { k: "boundary", label: "外框" },
   { k: "summary", label: "概要" },
   { k: "rel", label: "关系线（连线 / 取消连线）" },

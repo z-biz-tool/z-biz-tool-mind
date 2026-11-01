@@ -632,6 +632,29 @@ export const native = {
     }
   },
 
+  /**
+   * AI 生成结构化图（与 aiGenerateOutline 同一条传输通道，系统提示词不同）。
+   *
+   * 后端只回原始 JSON 文本 —— 解析、四道闸校验、失败文案全在前端
+   * engine/diagram.ts。这里与 aiGenerateOutline 一样只负责把结构化失败
+   * 包成 Error 往上抛。
+   */
+  async aiGenerateDiagram(args: {
+    prompt: string;
+    endpoint: string;
+    model: string;
+    timeoutSec: number;
+  }): Promise<string> {
+    if (!isTauri) {
+      throw new Error("AI 生成需要在桌面版里使用（浏览器模式没有本机加密库与网络栈）。");
+    }
+    try {
+      return await call<string>("ai_generate_diagram", { args });
+    } catch (e) {
+      throw toAiFailureError(e);
+    }
+  },
+
   async revealInFolder(path: string): Promise<void> {
     if (!isTauri) throw new Error("浏览器模式打不开所在目录，请在桌面版里使用");
     await call<void>("reveal_in_folder", { path });
