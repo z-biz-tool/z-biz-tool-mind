@@ -1165,6 +1165,27 @@ export function OptionsView({ open, onClose }: OptionsViewProps) {
                 />
               </Field>
               <Field
+                label="图像服务端点"
+                hint="AI 绘图用（OpenAI 兼容 /v1/images/generations 生图网关）。自建服务不保证在线，连不上时先确认服务已启动。"
+              >
+                <Input
+                  size="small"
+                  style={{ width: 300 }}
+                  placeholder="http://192.168.31.249:8200/v1"
+                  value={settings.advanced.imageEndpoint}
+                  onChange={(e) => void patch("advanced", { imageEndpoint: e.target.value })}
+                />
+              </Field>
+              <Field label="图像模型名" hint="网关 /v1/models 列表里的图像模型 id。">
+                <Input
+                  size="small"
+                  style={{ width: 220 }}
+                  placeholder="zBiz-Image-FLUX"
+                  value={settings.advanced.imageModel}
+                  onChange={(e) => void patch("advanced", { imageModel: e.target.value })}
+                />
+              </Field>
+              <Field
                 label="API Key"
                 hint={
                   <>

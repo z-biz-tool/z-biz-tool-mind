@@ -655,6 +655,33 @@ export const native = {
     }
   },
 
+  /**
+   * AI 像素级生图（第二步）。端点/模型/密钥来自「选项 → 高级」的图像服务三件套。
+   *
+   * 网关是自建服务、不保证在线；后端已按 未配置/不可达/超时/HTTP 四类给出
+   * 结构化失败，这里照旧包成 Error 透传。
+   */
+  async aiGenerateImage(args: {
+    endpoint: string;
+    model: string;
+    prompt: string;
+    size: string;
+    apiKey?: string;
+    timeoutSec?: number;
+  }): Promise<{ b64?: string; url?: string; seed?: number; elapsedS?: number }> {
+    if (!isTauri) {
+      throw new Error("AI 生图需要在桌面版里使用（浏览器模式没有网络栈与密钥库）。");
+    }
+    try {
+      return await call<{ b64?: string; url?: string; seed?: number; elapsedS?: number }>(
+        "ai_generate_image",
+        { args }
+      );
+    } catch (e) {
+      throw toAiFailureError(e);
+    }
+  },
+
   async revealInFolder(path: string): Promise<void> {
     if (!isTauri) throw new Error("浏览器模式打不开所在目录，请在桌面版里使用");
     await call<void>("reveal_in_folder", { path });

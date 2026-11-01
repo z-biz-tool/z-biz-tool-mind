@@ -35,6 +35,7 @@ import { PrintDialog } from "./views/PrintDialog.tsx";
 import { TopicInfoDialog } from "./views/TopicInfoDialog.tsx";
 import { AiTopicDialog } from "./views/AiTopicDialog.tsx";
 import { AiDiagramDialog } from "./views/AiDiagramDialog.tsx";
+import { AiImageDialog } from "./views/AiImageDialog.tsx";
 import { OptionsView } from "./views/OptionsView.tsx";
 import { ThemePanel } from "./views/ThemePanel.tsx";
 import { activeDoc, activePage, depthOf, dirtyOf, useDoc } from "./stores/docStore.ts";
@@ -882,6 +883,14 @@ function Shell() {
         >
           AI 生成图
         </Button>
+        <Button
+          size="small"
+          disabled={!hasDoc}
+          onClick={() => openDialog("aiImage")}
+          title="一句话生成一张图像（插画 / 示意图），落到画布上"
+        >
+          AI 绘图
+        </Button>
       </ToolGroup>
 
       <ToolGroup>
@@ -995,6 +1004,7 @@ function Shell() {
       <TopicInfoDialog page={page} onClose={closeDialog} />
       <AiTopicDialog open={dialog === "aiTopic"} onClose={closeDialog} />
       <AiDiagramDialog open={dialog === "aiDiagram"} onClose={closeDialog} />
+      <AiImageDialog open={dialog === "aiImage"} onClose={closeDialog} />
 
       <Modal
         open={Boolean(pendingSwitch)}

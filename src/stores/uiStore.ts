@@ -21,7 +21,7 @@ export const PROJECTIONS: { id: Projection; label: string }[] = [
 ];
 
 export type DialogKind =
-  "export" | "print" | "options" | "search" | "history" | "share" | "topicInfo" | "themes" | "aiTopic" | "aiDiagram" | null;
+  "export" | "print" | "options" | "search" | "history" | "share" | "topicInfo" | "themes" | "aiTopic" | "aiDiagram" | "aiImage" | null;
 
 interface UiState {
   projection: Projection;

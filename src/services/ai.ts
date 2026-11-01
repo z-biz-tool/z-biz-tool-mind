@@ -11,9 +11,9 @@ import type { Page } from "../types/model.ts";
 import { plainText } from "../types/model.ts";
 import { insertOutline, parseOutline } from "../engine/outline.ts";
 import type { InsertMode, OutlineLine } from "../engine/outline.ts";
-import { parseDiagram, placeDiagram } from "../engine/diagram.ts";
+import { parseDiagram, placeDiagram, attachImageToShape, imageMediaName } from "../engine/diagram.ts";
 import type { NormalizedDiagram } from "../engine/diagram.ts";
-import { removeShape } from "../engine/tree.ts";
+import { removeShape, insertChild, setFloating } from "../engine/tree.ts";
 import { activePage, useDoc } from "../stores/docStore.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import { useUi } from "../stores/uiStore.ts";
@@ -576,5 +576,157 @@ export async function runAiDiagram(description: string): Promise<AiResult> {
   return {
     ok: true,
     message: `AI 生成图完成：${nodeCount} 个节点${edgeText}，消耗 ${billed.need} 点，剩余 ${left} 点。可在画布上继续编辑。`,
+  };
+}
+
+// ======================================================================
+// 像素级生图（第二步）：一句话 → 生图网关 → PNG 落到一个主题上。
+//
+// 与结构化图的分工：结构图管逻辑（可编辑的节点树），像素图管观感
+// （插画/示意图/封面）。两者并存互补，入口也在同一个对话框里。
+//
+// 兜底纪律（CEO 裁定）：网关是自建服务，不保证在线 ——
+// 未配置/不可达/超时都必须给一句能照着改的话，UI 不灰不崩不静默。
+// ======================================================================
+
+const IMAGE_SECRET_KEY = "image-api-key";
+
+/** 生图配置预检：endpoint/model 必须已填，key 可选（自建网关常免鉴权）。 */
+async function imageConnection(): Promise<
+  { ok: true; endpoint: string; model: string; apiKey: string } | { ok: false; message: string; failure?: AiFailure }
+> {
+  const settings = useSettings.getState().settings;
+  const endpoint = settings.advanced.imageEndpoint.trim();
+  const model = settings.advanced.imageModel.trim();
+  if (!endpoint) {
+    return {
+      ok: false,
+      message: "尚未配置图像服务地址，请在「选项 → 高级」里填写生图网关（如 http://192.168.31.249:8200/v1）。",
+      failure: {
+        kind: "notConfigured",
+        status: null,
+        message: "尚未配置图像服务地址。",
+        hint: "填 OpenAI 兼容的生图网关根地址（以 /v1 结尾）。自建网关不保证在线，连不上时先确认服务已启动。",
+        focus: "baseUrl",
+      },
+    };
+  }
+  if (!model) {
+    return {
+      ok: false,
+      message: "尚未配置图像模型名，请在「选项 → 高级」里填写（如 zBiz-Image-FLUX）。",
+      failure: {
+        kind: "notConfigured",
+        status: null,
+        message: "尚未配置图像模型名。",
+        hint: "填网关 /v1/models 列表里的图像模型 id。",
+        focus: "model",
+      },
+    };
+  }
+  let apiKey = "";
+  try {
+    // 密钥可选：自建网关常免鉴权，探不到不拦
+    const has = await native.secretExists(IMAGE_SECRET_KEY);
+    apiKey = has ? "present" : "";
+  } catch {
+    apiKey = "";
+  }
+  return { ok: true, endpoint, model, apiKey };
+}
+
+/** 尺寸档位：FLUX 支持任意，但对思维导图场景三档够了。 */
+export const IMAGE_SIZES = ["1024x1024", "1024x576", "576x1024"] as const;
+export type ImageSize = (typeof IMAGE_SIZES)[number];
+
+/**
+ * 「AI 绘图」完整流程：预检 → 生成（长等待，不锁画布——用户可以继续编辑别的）→
+ * 落成一个新主题（media 字节 + extras.image 引用）。
+ *
+ * 为什么不锁画布：FLUX 55~140s/张，锁 2 分钟画布不可编辑是不可接受的。
+ * 落图用 mutate 一步提交，生成期间用户的编辑互不干扰。
+ */
+export async function runAiImageDraw(
+  prompt: string,
+  size: ImageSize = "1024x1024"
+): Promise<AiResult & { shapeId?: string }> {
+  const desc = prompt.trim();
+  if (!desc) {
+    return { ok: false, message: "请先描述要生成的图像内容。" };
+  }
+
+  const conn = await imageConnection();
+  if (!conn.ok) return conn;
+
+  const page = activePage(useDoc.getState());
+  if (!page) {
+    return { ok: false, message: "还没有打开文档，请先新建或打开一个脑图。" };
+  }
+
+  logEvent(
+    "info",
+    `AI 生图请求 → ${conn.endpoint}（模型 ${conn.model}，尺寸 ${size}，描述 ${desc.length} 字）`
+  );
+
+  let r: { b64?: string; url?: string; seed?: number; elapsedS?: number };
+  try {
+    r = await native.aiGenerateImage({
+      endpoint: conn.endpoint,
+      model: conn.model,
+      prompt: desc,
+      size,
+      timeoutSec: Math.max(300, useSettings.getState().settings.network.timeoutSec || 300),
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : String(e),
+      failure: failureOf(e) ?? undefined,
+    };
+  }
+
+  if (!r.b64 && !r.url) {
+    return { ok: false, message: "图像服务没有返回图片数据。" };
+  }
+
+  // 落图：建一个浮动主题，PNG 字节进 doc.media，引用进 extras.image。
+  // mutate 回调必须同步 —— b64 解码在回调外先做好。
+  let bytes: Uint8Array | null = null;
+  if (r.b64) {
+    const bin = atob(r.b64);
+    bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  }
+
+  // 先在回调外拿 nextShapeId（回调里不能 await，但 nextShapeId 是纯函数，
+  // 在回调内对活页现算 —— 生成期间用户可能加了主题，旧号会撞）。
+  const committed = useDoc.getState().mutateDoc("AI 绘图", (doc) => {
+    const livePage = doc.pages.find((p) => p.id === (activePage(useDoc.getState())?.id ?? "")) ?? doc.pages[0];
+    // 插一个主题到根下再转浮动：浮动主题位置归用户（P-2 例外），画布上独立成点。
+    const r2 = insertChild(livePage, livePage.rootId, desc.slice(0, 40) || "AI 图像");
+    const sid = r2.id;
+    let p2 = setFloating(r2.page, sid, 0, 0, true);
+    if (bytes) {
+      p2 = attachImageToShape(p2, sid, 320, 320);
+    }
+    const mediaName = imageMediaName(sid);
+    const media = { ...doc.media };
+    if (bytes) media[mediaName] = bytes;
+    return {
+      ...doc,
+      media,
+      pages: doc.pages.map((p) => (p.id === livePage.id ? p2 : p)),
+    };
+  });
+
+  if (!committed) {
+    logEvent("error", "AI 生图结果未能写入：文档已关闭");
+    return { ok: false, message: "AI 生图失败：文档已经关闭，生成结果没有写入。" };
+  }
+
+  logEvent("info", `AI 生图落图成功（seed=${r.seed ?? "?"}，耗时 ${r.elapsedS ?? "?"}s）`);
+  return {
+    ok: true,
+    message: `AI 绘图完成（耗时 ${r.elapsedS ?? "?"} 秒）。图像已作为一个新主题落到画布上，可拖动、可随文档保存。`,
   };
 }

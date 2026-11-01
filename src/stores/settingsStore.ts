@@ -45,6 +45,9 @@ export interface Settings {
     logLevel: string;
     aiEndpoint: string;
     aiModel: string;
+    /** 像素级生图网关（OpenAI 兼容 /v1/images/generations）。空 = 功能未配置，UI 给引导不崩。 */
+    imageEndpoint: string;
+    imageModel: string;
   };
   /** 画布右键菜单的动作白名单：空 = 全部显示，裁剪规则在 canvas/menuActions.ts。 */
   rightMenu: { enabled: string[] };
@@ -78,7 +81,15 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   network: { proxyMode: "system", proxyHost: "", proxyPort: 0, timeoutSec: 20 },
   shortcut: { custom: {} },
-  advanced: { autoUpdate: true, crashReport: false, logLevel: "info", aiEndpoint: "", aiModel: "" },
+  advanced: {
+    autoUpdate: true,
+    crashReport: false,
+    logLevel: "info",
+    aiEndpoint: "",
+    aiModel: "",
+    imageEndpoint: "",
+    imageModel: "",
+  },
   rightMenu: { enabled: [] },
   recent: { maxCount: QUOTA.recentMax },
   quota: { aiPoints: 0, aiUsed: 0 },

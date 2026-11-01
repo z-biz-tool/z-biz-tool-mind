@@ -262,6 +262,171 @@ pub async fn ai_generate_diagram(args: AiGenerateArgs) -> Result<String, LlmFail
     Ok(reply.content)
 }
 
+// ==================== 像素级生图（第二步） ====================
+
+/// 生图命令参数。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageGenArgs {
+    /// OpenAI 兼容的生图网关根地址（如 http://192.168.31.249:8200/v1）
+    pub endpoint: String,
+    /// 模型名（如 zBiz-Image-FLUX）
+    pub model: String,
+    pub prompt: String,
+    /// 形如 "1024x1024"
+    pub size: String,
+    /// 生图网关 Bearer 密钥（自建网关常免鉴权，可空）
+    #[serde(default)]
+    pub api_key: String,
+    /// 秒。FLUX 冷启动 90s+、热态 55s，给足余量
+    #[serde(default = "default_image_timeout")]
+    pub timeout_sec: u64,
+}
+
+fn default_image_timeout() -> u64 {
+    600
+}
+
+/// 像素级生图：POST {endpoint}/images/generations，OpenAI 兼容形状。
+///
+/// ## 兜底纪律（CEO 裁定）
+///
+/// 网关是自建服务，不保证在线。所有失败必须给**能照着改**的人话：
+/// 未配置/不可达/超时/HTTP 错误四类分开说，绝不静默失败或崩栈。
+/// 请求可能长达数分钟 —— 超时默认 600s，**不设重试**（一张图几分钟，
+/// 重试等于翻倍等待，用户宁可自己重发）。
+#[tauri::command]
+pub async fn ai_generate_image(args: ImageGenArgs) -> Result<serde_json::Value, LlmFailure> {
+    use serde_json::json;
+
+    let endpoint = args.endpoint.trim().trim_end_matches('/').to_string();
+    if endpoint.is_empty() {
+        return Err(LlmFailure::local(
+            "尚未配置图像服务地址。请在「选项 → 高级 → 图像服务端点」填写 OpenAI 兼容的生图网关（如 http://192.168.31.249:8200/v1）。",
+            "baseUrl",
+        ));
+    }
+    if args.model.trim().is_empty() {
+        return Err(LlmFailure::local(
+            "尚未配置图像模型名（如 zBiz-Image-FLUX、flux.1-schnell）。",
+            "model",
+        ));
+    }
+    if args.prompt.trim().is_empty() {
+        return Err(LlmFailure::local("生成描述不能为空。", "none"));
+    }
+
+    let url = format!("{}/images/generations", endpoint);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(args.timeout_sec.max(1)))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| LlmFailure {
+            kind: "io",
+            status: None,
+            hint: "本机网络栈初始化失败，请重启应用重试。".into(),
+            focus: "none",
+            message: e.to_string(),
+        })?;
+
+    let mut req = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&json!({
+            "model": args.model.trim(),
+            "prompt": args.prompt.trim(),
+            "size": args.size,
+        }));
+    if !args.api_key.trim().is_empty() {
+        req = req.bearer_auth(args.api_key.trim());
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| {
+            // 连接层失败：区分「地址打不开」和「等太久」，两者下一步动作不同
+            let msg = e.to_string();
+            let (kind, hint) = if msg.contains("timed out") || msg.contains("timeout") {
+                (
+                    "timeout",
+                    "图像服务在超时时间内没有返回。自建 FLUX 网关冷启动可能超过 2 分钟——\
+                     到「选项 → 网络」把超时调大（生图建议 ≥300s），或确认网关已启动。",
+                )
+            } else {
+                (
+                    "network",
+                    "连不上图像服务。请确认地址正确、服务在线（浏览器打开 {host}/health 验证）。\
+                     生图网关是自建服务，不保证 7x24 在线。",
+                )
+            };
+            LlmFailure {
+                kind,
+                status: None,
+                hint: hint.replace("{host}", endpoint.split('/').nth(2).unwrap_or("网关")),
+                focus: "baseUrl",
+                message: cap_llm::redact(&msg, &args.api_key),
+            }
+        })?;
+
+    let status = resp.status().as_u16();
+    let body = resp.text().await.map_err(|e| LlmFailure {
+        kind: "network",
+        status: Some(status),
+        hint: "服务响应无法读取。".into(),
+        focus: "none",
+        message: e.to_string(),
+    })?;
+    if status >= 400 {
+        return Err(LlmFailure {
+            kind: "http",
+            status: Some(status),
+            hint: match status {
+                401 | 403 => "图像服务要求鉴权。到「选项 → 高级 → 图像服务密钥」填写网关的 Bearer Token。".into(),
+                404 => "端点路径不对。确认地址末尾是 /v1（完整地址形如 http://host:8200/v1）。".into(),
+                _ => "图像服务返回了错误。检查网关日志；若提示模型不存在，核对「图像模型名」与网关 /v1/models 列表一致。".into(),
+            },
+            focus: if status == 401 || status == 403 { "apiKey" } else { "baseUrl" },
+            message: cap_llm::truncate_chars(&cap_llm::redact(&body, &args.api_key), 300),
+        });
+    }
+
+    let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| LlmFailure {
+        kind: "parse",
+        status: Some(status),
+        hint: "服务响应不是 JSON——这个地址可能不是 OpenAI 兼容生图端点。".into(),
+        focus: "baseUrl",
+        message: e.to_string(),
+    })?;
+
+    let b64 = v
+        .get("data")
+        .and_then(|d| d.get(0))
+        .and_then(|x| x.get("b64_json"))
+        .and_then(|b| b.as_str());
+    match b64 {
+        Some(b) if !b.is_empty() => Ok(json!({
+            "b64": b,
+            "seed": v.pointer("/data/0/seed"),
+            "elapsedS": v.pointer("/data/0/elapsed_s"),
+        })),
+        // 空串视同没有 b64（服务异常语义），与 None 同走 url 兜底
+        Some(_) | None => {
+            let u = v.pointer("/data/0/url").and_then(|x| x.as_str());
+            match u {
+                Some(url) => Ok(json!({ "url": url })),
+                None => Err(LlmFailure {
+                    kind: "parse",
+                    status: Some(status),
+                    hint: "响应里既没有 b64_json 也没有 url 字段。确认该端点是 /v1/images/generations 协议。".into(),
+                    focus: "baseUrl",
+                    message: "图片接口返回缺少图片数据".into(),
+                }),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -62,7 +62,7 @@ import {
   addCallout,
   addSummary,
 } from "../engine/tree.ts";
-import { useDoc } from "../stores/docStore.ts";
+import { useDoc, activeDoc } from "../stores/docStore.ts";
 import { usePalette } from "../stores/usePalette.ts";
 import { useSettings } from "../stores/settingsStore.ts";
 import { useUi } from "../stores/uiStore.ts";
@@ -315,6 +315,8 @@ export function MindCanvas({ page }: MindCanvasProps) {
   const [liveBranch, setLiveBranch] = useState<{ id: string; x: number; y: number } | null>(null);
   // P-2：布局是算出来的。page 是整页快照，换指向就是唯一的失效信号；
   // 框宽模式不在 page 里（它是应用级设置），所以换模式也得重算，否则开关只在下一次编辑时才生效。
+  // media（AI 生图字节）随文档走：主题挂图渲染需要它，缺了只是图不画。
+  const media = useMemo(() => activeDoc(useDoc.getState())?.media ?? {}, [page]);
   const paint = useMemo(
     () =>
       paintPage(page, {
@@ -323,8 +325,9 @@ export function MindCanvas({ page }: MindCanvasProps) {
         liveBranch: liveBranch ?? undefined,
         palette,
         reveal,
+        media,
       }),
-    [page, displayLevels, topicWidthMode, liveBranch, palette, reveal]
+    [page, displayLevels, topicWidthMode, liveBranch, palette, reveal, media]
   );
   const lineOf = useMemo(() => new Map(paint.boxes.map((b) => [b.id, b.line])), [paint]);
   const axis = paint.layout.axis;
@@ -1009,6 +1012,12 @@ export function MindCanvas({ page }: MindCanvasProps) {
           tip: "一句话生成一张可编辑的结构图（替换当前画布，可撤销）",
           run: () => useUi.getState().openDialog("aiDiagram"),
         });
+        out.push({
+          k: "aiImage",
+          label: "AI 绘图",
+          tip: "一句话生成一张图像，落到画布上（插画 / 示意图）",
+          run: () => useUi.getState().openDialog("aiImage"),
+        });
       }
     }
     if (ids.length >= 2 && boxes.length === ids.length) {
@@ -1222,6 +1231,26 @@ export function MindCanvas({ page }: MindCanvasProps) {
                 stroke={b.line}
                 strokeWidth={b.lineWidth}
               />
+              {/* 主题挂图（AI 生图）：盖在底色上、文字之下，与 SVG 导出同一份判定 */}
+              {b.image && paint.mediaOf && paint.mediaOf(b.image) && (
+                <>
+                  <defs>
+                    <clipPath id={`clip-${b.id}`}>
+                      <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={rxOf(b)} />
+                    </clipPath>
+                  </defs>
+                  <image
+                    x={b.x}
+                    y={b.y}
+                    width={b.w}
+                    height={Math.max(10, b.h - 18)}
+                    preserveAspectRatio="xMidYMid slice"
+                    clipPath={`url(#clip-${b.id})`}
+                    href={paint.mediaOf(b.image) as string}
+                    pointerEvents="none"
+                  />
+                </>
+              )}
               {b.id !== editingId && topicLines(b)}
               {cornerBadgePaths(b).map((d, i) => (
                 <path

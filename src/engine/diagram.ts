@@ -500,5 +500,44 @@ export function diagramTexts(page: Page, ids: readonly string[]): string[] {
   return ids.map((id) => (page.shapes[id] ? plainText(page.shapes[id].text) : "")).filter(Boolean);
 }
 
+// ======================================================================
+// 像素级图（第二步）：生图结果落到一个主题上。
+//
+// 媒体引用约定（全仓唯一一份）：
+// - 字节进 `doc.media["ai-<shapeId>.png"]`（.emmx 的 media/ 容器已有读写通路，
+//   不动亿图 XML 格式 —— 零格式风险）；
+// - 引用记 `extras.image = { relId: "ai-<shapeId>.png", width, height }`；
+// - 渲染层（画布/SVG/PNG/PDF）看到 extras.image 就画 <image>。
+// 读侧（从 .emmx 回读 image）暂不实现：亿图样张没有 AI 图，第三步做。
+// ======================================================================
+
+/**
+ * 把一张 PNG（base64）挂到一个主题上：引用进 extras。
+ * 字节本身由调用方写进 doc.media（键用 imageMediaName(shapeId)）——
+ * mutateDoc 才能改 media，本函数只管页内。
+ */
+export function attachImageToShape(
+  page: Page,
+  shapeId: string,
+  width: number,
+  height: number
+): Page {
+  const s = page.shapes[shapeId];
+  if (!s) return page;
+  const name = imageMediaName(shapeId);
+  return {
+    ...page,
+    shapes: {
+      ...page.shapes,
+      [shapeId]: { ...s, extras: { ...s.extras, image: { relId: name, width, height } } },
+    },
+  };
+}
+
+/** media 字典的键（docStore 侧用它写 DocumentModel.media）。 */
+export function imageMediaName(shapeId: string): string {
+  return `ai-${shapeId}.png`;
+}
+
 /** 关系线的类型别名导出，便于外部引用而不必引 types/model.ts。 */
 export type { RelationshipShape };

@@ -42,6 +42,9 @@ getrandom = "0.2"
 ed25519-dalek = "2.1.1"
 # 能力共享层：协议/鉴权/错误脱敏统一在 cap-llm，mind 不再自建请求代码
 cap-llm = { path = "../../z-biz-tool-capability/crates/cap-llm" }
+# 像素级生图（ai.rs 的 ai_generate_image）：生图网关是 OpenAI 形状但不是 chat，
+# cap-llm 明确划界不做图片生成 ⇒ 这里自己发，版本对齐 capability workspace（0.12）。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 # 只为真实网关直连用例（live_zbiz_*）提供 #[tokio::test]；

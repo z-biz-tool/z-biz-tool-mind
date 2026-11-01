@@ -38,6 +38,12 @@ export interface RenderOptions {
   palette?: ThemePalette;
   /** 只显示这些分支（下钻 / 单页导出）。 */
   only?: string[];
+  /**
+   * 媒体字节表（doc.media）：键 = media 名（如 ai-123.png），值 = 文件字节。
+   * 渲染 extras.image 的主题时用它解出 <image> 的 data URL。
+   * 画布/导出/打印都从 docStore 拿同一份传入 —— 缺了只是图片不画，布局不受影响。
+   */
+  media?: Record<string, Uint8Array>;
   /** 主题框宽：fixed 把整页对齐到同一个宽度（与画布同一个开关）。 */
   topicWidthMode?: "auto" | "fixed";
   /** 画布拖动中的那一枝的临时位移（只用于屏幕上的实时跟随，导出永远不传）。 */
@@ -74,6 +80,11 @@ export interface ShapePaint {
   labels: string[];
   /** 标签条占掉的高度：正文按 h - stripH 居中。 */
   stripH: number;
+  /**
+   * 该主题挂的媒体名（media/ 容器键，如 ai-123.png）。
+   * 渲染层用 dataUrlOf(name) 解出字节画 <image>；null = 没有图。
+   */
+  image?: string;
 }
 
 export interface Paint {
@@ -91,6 +102,11 @@ export interface Paint {
   background: string;
   /** 这一份用的字族（来自色板 = 文档的 ThemeText）。整页一个值：styleFor 的字族就取自色板。 */
   fontFamily: string;
+  /**
+   * media 名 → data URL（image/png;base64,...）。渲染 <image> 用；
+   * 未传 media 时为 undefined（图片主题退化成普通盒子，不崩）。
+   */
+  mediaOf?: (name: string) => string | undefined;
 }
 
 export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
@@ -134,6 +150,11 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
       link: Boolean(s.extras.hyperlink),
       labels: s.extras.labels ?? [],
       stripH: b.stripH,
+      // 媒体引用：media 字节表里有的才画（引用在、字节不在 = 旧文档/被剥离，静默跳过）
+      image:
+        s.extras.image && opts.media && opts.media[s.extras.image.relId]
+          ? s.extras.image.relId
+          : undefined,
     });
   }
   const pad = opts.padding ?? 40;
@@ -178,6 +199,15 @@ export function paintPage(page: Page, opts: RenderOptions = {}): Paint {
     minY: layout.bounds.minY - pad,
     background: opts.background ?? "#ffffff",
     fontFamily: palette.fontFamily,
+    mediaOf: opts.media
+      ? (name: string) => {
+          const bytes = opts.media?.[name];
+          if (!bytes) return undefined;
+          let bin = "";
+          for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+          return `data:image/png;base64,${btoa(bin)}`;
+        }
+      : undefined,
   };
 }
 
@@ -277,6 +307,20 @@ export function renderSvg(p: Paint, view: SvgView = fullView(p)): string {
       `<rect x="${round(b.x)}" y="${round(b.y)}" width="${round(b.w)}" height="${round(b.h)}" rx="${round(rx)}" ` +
         `fill="${b.fill}" stroke="${b.line}" stroke-width="${b.lineWidth}"/>`
     );
+    // 主题挂图（AI 生图等）：盖在底色上、文字之下。data URL 内嵌 ——
+    // SVG 导出 / PNG / 位图 PDF 走 <img> 解码路径也能带上，不需要外部文件。
+    if (b.image && p.mediaOf) {
+      const dataUrl = p.mediaOf(b.image);
+      if (dataUrl) {
+        // 图占盒子上部（留 18px 给文字条），保持盒子的圆角裁剪
+        const ih = Math.max(10, b.h - 18);
+        out.push(
+          `<clipPath id="clip-${esc(b.id)}"><rect x="${round(b.x)}" y="${round(b.y)}" width="${round(b.w)}" height="${round(b.h)}" rx="${round(rx)}"/></clipPath>` +
+            `<image x="${round(b.x)}" y="${round(b.y)}" width="${round(b.w)}" height="${round(ih)}" ` +
+            `preserveAspectRatio="xMidYMid slice" clip-path="url(#clip-${esc(b.id)})" href="${esc(dataUrl)}"/>`
+        );
+      }
+    }
     const lh = lineGap(b.fontSize);
     const startY = textStartY(b);
     b.lines.forEach((line, ix) => {
