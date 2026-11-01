@@ -645,4 +645,32 @@ mod tests {
         std::env::remove_var("Z_MIND_CONFIG_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// **跨语言端到端（Java 签发方）**：z-trade 的 `LicenseCodeSigner`
+    /// （JDK 17 原生 Ed25519，支付成功后自动开通走的就是它）签出的码，Rust 客户端认不认。
+    ///
+    /// 与 Node 版同理但覆盖的是**另一条实现**：黄金向量在 Java 侧钉「Java 与 Node 逐字节
+    /// 一致」，这条钉「Java 签的码（真私钥、真公钥）Rust 验得过」—— 两道都在，
+    /// 支付回调自动开通才敢往上接。
+    ///
+    /// ```text
+    /// cd z-opc-foundation/z-trade && mvn -pl z-trade-license/z-trade-license-core -am test-compile
+    /// # 用 jshell 载入 ~/.zbiz/license-signing.key 与本文件的 PUBLIC_KEY_HEX，签一张码
+    /// cd z-biz-tool-mind/src-tauri
+    /// ZBIZ_E2E_CODE_JAVA='ZBIZ-MIND-…' cargo test --lib license::tests::e2e_external_code_from_java -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "需要环境变量 ZBIZ_E2E_CODE_JAVA 里放一张由 z-trade LicenseCodeSigner 签出的码"]
+    fn e2e_external_code_from_java_issuer_is_accepted() {
+        let _g = crate::lock_config_env();
+        let code = std::env::var("ZBIZ_E2E_CODE_JAVA").unwrap_or_else(|_| {
+            panic!("没给 ZBIZ_E2E_CODE_JAVA —— 先用 z-trade 的 LicenseCodeSigner 签一张，再把码放进来")
+        });
+        let dir = isolated("e2e-ext-java");
+        let s = redeem(code.trim()).expect("Java 签发器产出的码必须能兑换");
+        assert!(s.active, "Java 码兑换后应是会员: {s:?}");
+        assert_eq!(s.tier, "member");
+        std::env::remove_var("Z_MIND_CONFIG_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
